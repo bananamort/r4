@@ -234,6 +234,150 @@ fn desugar_pipeline_lowers_a_luau_function() {
 }
 
 #[test]
+fn removes_code_after_infinite_loop() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        while true do
+            work()
+        end
+        after()
+        "#,
+    );
+
+    let removed = canonicalize::remove_unreachable_code(&mut block, &model)
+        .expect("unreachable code removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(output.contains("work()"), "unexpected: {output}");
+    assert!(!output.contains("after()"), "unexpected: {output}");
+}
+
+#[test]
+fn folds_constant_if_statements() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local enabled = false
+        if enabled then
+            dead()
+        else
+            live()
+        end
+        "#,
+    );
+
+    let removed = canonicalize::remove_unreachable_code(&mut block, &model)
+        .expect("unreachable code removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(!output.contains("dead()"), "unexpected: {output}");
+    assert!(output.contains("live()"), "unexpected: {output}");
+    assert!(!output.contains("if enabled"), "unexpected: {output}");
+}
+
+#[test]
+fn folds_constant_true_if_statements() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        if true then
+            keep()
+        else
+            drop()
+        end
+        "#,
+    );
+
+    let removed = canonicalize::remove_unreachable_code(&mut block, &model)
+        .expect("unreachable code removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(output.contains("keep()"), "unexpected: {output}");
+    assert!(!output.contains("drop()"), "unexpected: {output}");
+}
+
+#[test]
+fn removes_false_while_loops() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local running = false
+        while running do
+            work()
+        end
+        after()
+        "#,
+    );
+
+    let removed = canonicalize::remove_unreachable_code(&mut block, &model)
+        .expect("unreachable code removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(!output.contains("while"), "unexpected: {output}");
+    assert!(!output.contains("work()"), "unexpected: {output}");
+    assert!(output.contains("after()"), "unexpected: {output}");
+}
+
+#[test]
+fn removes_code_after_do_return() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        do
+            return 1
+        end
+        after()
+        "#,
+    );
+
+    let removed = canonicalize::remove_unreachable_code(&mut block, &model)
+        .expect("unreachable code removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(output.contains("return 1"), "unexpected: {output}");
+    assert!(!output.contains("after()"), "unexpected: {output}");
+}
+
+#[test]
+fn keeps_unknown_control_flow() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        if condition then
+            a()
+        else
+            b()
+        end
+        c()
+        "#,
+    );
+
+    let removed = canonicalize::remove_unreachable_code(&mut block, &model)
+        .expect("unreachable code removal must succeed with tokens");
+
+    assert_eq!(removed, 0);
+    let output = generate(&block);
+    assert!(output.contains("a()"), "unexpected: {output}");
+    assert!(output.contains("b()"), "unexpected: {output}");
+    assert!(output.contains("c()"), "unexpected: {output}");
+}
+
+#[test]
+fn unreachable_code_pass_requires_token_data() {
+    let mut block = parse("local running = false\nwhile running do work() end\nafter()");
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("semantic analysis must succeed");
+
+    let error = canonicalize::remove_unreachable_code(&mut block, &model)
+        .expect_err("token-less declarations must be rejected explicitly");
+    assert!(matches!(
+        error,
+        canonicalize::UnreachableCodeError::ConstantPropagation(_)
+    ));
+}
+
+#[test]
 fn removes_unused_local_assignments() {
     let (mut block, model) = analyze_with_tokens("local unused = 1\nreturn 2");
 

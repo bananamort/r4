@@ -285,8 +285,12 @@ the follow-ups):
 - [x] **6. One-pass unused-variable elimination** —
   `rules::canonicalize::remove_unused_variables` using O(1) symbol counts
   (`b9c09ef`).
-- [ ] **4b. AST provenance from CFG blocks to statements**, needed to delete
-  unreachable AST statements directly from reachability.
+- [x] **4b. AST provenance from CFG blocks to statements** —
+  `cfg::{statement_token_key, expression_token_key}` map block contents and
+  branch conditions back to AST nodes through source tokens, and
+  `rules::canonicalize::remove_unreachable_code` combines constant propagation,
+  branch folding and reachability to delete unreachable statements, fold
+  constant `if` statements and drop `while false` loops (this change).
 - [ ] **2. Symbol-keyed rename pass** with scope-precise collision checks.
 - [ ] **7. Resolution-based `require` handling.**
 - [ ] **8. Freshened synthetic names** for `remove_call_match` and the bundler.

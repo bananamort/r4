@@ -186,7 +186,7 @@ fn last_call_token(call: &FunctionCall) -> Option<&Token> {
     }
 }
 
-fn first_statement_token(statement: &Statement) -> Option<&Token> {
+pub(crate) fn first_statement_token(statement: &Statement) -> Option<&Token> {
     match statement {
         Statement::Assign(assign) => assign
             .iter_variables()
@@ -229,6 +229,37 @@ fn first_statement_token(statement: &Statement) -> Option<&Token> {
                 Some(&tokens.r#type)
             }
         }),
+    }
+}
+
+/// Returns the first token of an expression, when token data is available.
+pub(crate) fn first_expression_token(expression: &Expression) -> Option<&Token> {
+    match expression {
+        Expression::Binary(binary) => first_expression_token(binary.left()),
+        Expression::Call(call) => first_prefix_token(call.get_prefix()),
+        Expression::Field(field) => first_prefix_token(field.get_prefix()),
+        Expression::Function(function) => function.get_tokens().map(|tokens| &tokens.function),
+        Expression::Identifier(identifier) => identifier.get_token(),
+        Expression::If(if_expression) => first_expression_token(if_expression.get_condition()),
+        Expression::Index(index) => first_prefix_token(index.get_prefix()),
+        Expression::Number(number) => number.get_token(),
+        Expression::Parenthese(parenthese) => parenthese
+            .get_tokens()
+            .map(|tokens| &tokens.left_parenthese),
+        Expression::String(string) => string.get_token(),
+        Expression::InterpolatedString(string) => {
+            string.get_tokens().map(|tokens| &tokens.opening_tick)
+        }
+        Expression::Table(table) => table.get_tokens().map(|tokens| &tokens.opening_brace),
+        Expression::Nil(token)
+        | Expression::False(token)
+        | Expression::True(token)
+        | Expression::VariableArguments(token) => token.as_ref(),
+        Expression::Unary(unary) => unary.get_token(),
+        Expression::TypeCast(type_cast) => first_expression_token(type_cast.get_expression()),
+        Expression::TypeInstantiation(type_instantiation) => {
+            first_prefix_token(type_instantiation.get_prefix())
+        }
     }
 }
 
