@@ -2,11 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::cfg::analysis::{
-    evaluate_with_environment, fold_constant_branches_with, ConstantPropagation,
-    ConstantPropagationError, Reachability,
+    fold_constant_branches_with, ConstantPropagation, ConstantPropagationError, Reachability,
 };
 use crate::cfg::{build_chunk, expression_token_key, statement_token_key, CfgError, Terminator};
-use crate::nodes::{Block, DoStatement, Expression, IfStatement, Statement, WhileStatement};
+use crate::nodes::{
+    Block, DoStatement, Expression, Identifier, IfStatement, Statement, WhileStatement,
+};
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
 use crate::semantic::{SemanticModel, TokenKey};
 
@@ -74,13 +75,16 @@ pub fn remove_unreachable_code(
         }
 
         if let Terminator::Branch { condition, .. } = cfg.terminator(block_id) {
-            let value = evaluate_with_environment(
-                &evaluator,
-                condition,
-                analysis.block_exit_constants(block_id),
-                model,
-            );
-            if let Some(truthy) = value.is_truthy() {
+            let constants = analysis.block_exit_constants(block_id);
+            let value = evaluator
+                .evaluate_with(condition, &|identifier: &Identifier| {
+                    model
+                        .resolve_identifier(identifier)
+                        .and_then(|symbol| constants.get(&symbol).cloned())
+                })
+                .and_then(|value| value.is_truthy());
+
+            if let Some(truthy) = value {
                 block_decisions[block_id.index()] = Some(truthy);
                 if let Some(key) = expression_token_key(condition) {
                     condition_decisions.insert(key, truthy);

@@ -871,6 +871,161 @@ fn function_bodies_build_their_own_graph() {
 }
 
 #[test]
+fn dominator_tree_detects_natural_while_loops() {
+    let (cfg, _) = build("while condition do work() end");
+    let tree = DominatorTree::analyze(&cfg);
+
+    let header = jump_target(&cfg, cfg.entry);
+    let (body, exit) = branch_blocks(&cfg, header);
+
+    assert!(tree.is_loop_header(header));
+    assert_eq!(tree.back_edges().len(), 1);
+    assert_eq!(tree.back_edges()[0].latch, body);
+    assert_eq!(tree.back_edges()[0].header, header);
+
+    let blocks = tree.natural_loop_blocks(header, body);
+    assert!(blocks.contains(&header));
+    assert!(blocks.contains(&body));
+    assert!(!blocks.contains(&cfg.entry));
+    assert!(!blocks.contains(&exit));
+    assert_eq!(tree.try_natural_loop_blocks(cfg.entry, cfg.exit), None);
+}
+
+#[test]
+fn dominator_tree_detects_repeat_loops() {
+    let (cfg, _) = build("repeat work() until done");
+    let tree = DominatorTree::analyze(&cfg);
+
+    let body = jump_target(&cfg, cfg.entry);
+    let condition = jump_target(&cfg, body);
+
+    assert!(tree.is_loop_header(body));
+    let blocks = tree.natural_loop_blocks(body, condition);
+    assert!(blocks.contains(&body));
+    assert!(blocks.contains(&condition));
+    assert_eq!(blocks.len(), 2);
+}
+
+#[test]
+fn dominator_tree_detects_for_loops() {
+    let (cfg, _) = build("for i = 1, 10 do work() end");
+    let tree = DominatorTree::analyze(&cfg);
+
+    let header = jump_target(&cfg, cfg.entry);
+    let (body, exit) = match cfg.terminator(header) {
+        Terminator::ForLoop { body, exit } => (*body, *exit),
+        other => panic!("expected a for-loop terminator, got {other:?}"),
+    };
+
+    assert!(tree.is_loop_header(header));
+    let blocks = tree.natural_loop_blocks(header, body);
+    assert!(blocks.contains(&header));
+    assert!(blocks.contains(&body));
+    assert!(!blocks.contains(&exit));
+}
+
+#[test]
+#[should_panic(expected = "not a natural loop back edge")]
+fn natural_loop_blocks_rejects_non_back_edges() {
+    let (cfg, _) = build("return 1");
+    let tree = DominatorTree::analyze(&cfg);
+
+    tree.natural_loop_blocks(cfg.entry, cfg.exit);
+}
+
+#[test]
+fn dominance_prunes_after_a_removed_branch_edge() {
+    let (cfg, _) = build("if false then a() else b() end\nc()");
+    let tree = DominatorTree::analyze(&cfg);
+
+    let (then_block, else_block) = branch_blocks(&cfg, cfg.entry);
+    let pruned = tree.prune_after_removed_edge(&cfg, cfg.entry, then_block);
+
+    assert!(pruned.contains(&then_block));
+    assert!(!pruned.contains(&else_block));
+    for block in tree.dominator_subtree(then_block) {
+        assert!(
+            pruned.contains(&block),
+            "{block:?} is dominated by the removed target"
+        );
+    }
+}
+
+#[test]
+fn dominance_pruning_closes_over_the_dominator_subtree() {
+    let (cfg, _) = build(
+        r#"
+        if false then
+            while condition do
+                work()
+            end
+        end
+        after()
+        "#,
+    );
+    let tree = DominatorTree::analyze(&cfg);
+
+    let (then_block, _) = branch_blocks(&cfg, cfg.entry);
+    let pruned = tree.prune_after_removed_edge(&cfg, cfg.entry, then_block);
+
+    for block in tree.dominator_subtree(then_block) {
+        assert!(
+            pruned.contains(&block),
+            "{block:?} must be pruned through dominance"
+        );
+    }
+}
+
+#[test]
+fn dominance_pruning_is_empty_when_another_path_can_reach_the_target() {
+    let (cfg, _) = build_lua52(
+        r#"
+        do
+            goto done
+        end
+        print("skipped")
+        ::done::
+        "#,
+    );
+    let tree = DominatorTree::analyze(&cfg);
+
+    let label_block = *cfg
+        .label_blocks
+        .values()
+        .next()
+        .expect("the label block must exist");
+    let pruned = tree.prune_after_removed_edge(&cfg, cfg.entry, label_block);
+    assert!(
+        pruned.is_empty(),
+        "the label is also the target of the print block's edge"
+    );
+}
+
+#[test]
+fn unreachable_blocks_have_no_natural_loops() {
+    let (cfg, _) = build("do return 1 end\nwhile condition do work() end");
+    let tree = DominatorTree::analyze(&cfg);
+
+    let reachability = Reachability::analyze(&cfg);
+    for edge in tree.back_edges() {
+        assert!(
+            reachability.is_reachable(edge.header),
+            "back edges only exist between reachable blocks"
+        );
+    }
+}
+
+#[test]
+fn dominance_proves_unreachability_from_marked_blocks() {
+    let (cfg, _) = build("do return 1 end\nafter()");
+    let tree = DominatorTree::analyze(&cfg);
+
+    let dead = block_with_call(&cfg, "after");
+    assert!(tree.is_provably_unreachable(dead, |block| block == dead));
+    assert!(!tree.is_provably_unreachable(cfg.entry, |block| block == dead));
+}
+
+#[test]
 fn unreachable_blocks_are_not_dominated_by_entry() {
     let (cfg, _) = build(
         r#"

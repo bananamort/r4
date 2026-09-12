@@ -336,12 +336,39 @@ the follow-ups):
 
 ### Still open
 
-- **Dominator tree consumer** (loop-invariant motion) — implemented but no
-  behavior-preserving rule needs it yet.
+- **Loop optimizations (LICM)** — the exact natural-loop and dominance
+  primitives now exist, but no behavior-preserving pass consumes them yet;
+  hoisting requires preheaders and scope-safe movement, which is a new
+  optimization rather than a migration.
 - **`resolve_in_scope` for token-less ASTs** — semantic passes still require
   token preservation to map occurrences; a scope-range API would lift that.
-- **Evaluator environment layering** — `evaluate_with_environment` lives in
-  `cfg` because it needs token→symbol resolution; an environment trait in
-  `process::Evaluator` would invert the dependency.
-- **Bundler/`remove_call_match`** do not exist in `r4`, so their name-collision
-  fixes remain design guidance.
+- **Bundler port** — `remove_call_match` and `remove_assertions` are now ported
+  model-first with the strict `NameGenerator`; the bundler itself does not
+  exist in `r4` yet. When it is ported it must be built on the same generator.
+
+### Strict semantics upgrade
+
+- [x] **First-class evaluator environment** — `Evaluator::evaluate_with`
+  evaluates against a strict `Fn(&Identifier) -> Option<LuaValue>` lookup:
+  missing entries, calls, fields, indexes and `...` propagate as `None`
+  (no `Unknown` fallback). All recursive arms (`evaluate_binary_with`,
+  `evaluate_unary_with`, `evaluate_if_with`, `evaluate_prefix_with`,
+  interpolated strings, type instantiations) pass the lookup through, and the
+  CFG constant folder/ propagation now call it directly.
+- [x] **`resolve_in_scope` / `captured_symbols` coverage** — exact tests for
+  innermost-shadow resolution, global fallback with strict `None` for
+  never-analyzed names, direct/transitive upvalue marking, and the invariant
+  that unreferenced outer variables never appear in `captured_symbols`.
+- [x] **Dominator-tree primitives** — `BackEdge`, exact natural-loop detection
+  (back edges plus dominated reach-back sets), `is_loop_header`,
+  `natural_loop_blocks` (panics on non-back-edges; `try_` for fallible use),
+  `dominator_subtree`, `is_provably_unreachable`, and
+  `prune_after_removed_edge` (exact: only seeds when the removed target has no
+  other predecessor, then closes over the dominator subtree).
+- [x] **Model-first `NameGenerator`** — reserves every model symbol, the
+  default/Roblox host globals and all previously generated names, so generated
+  identifiers cannot collide in any visible scope.
+- [x] **`remove_call_match` + `remove_assertions`** — the framework resolves
+  calls through the model (`identifier_resolves_to_global` recognizes read-only
+  aliases), preserves argument side effects, and allocates reserved-global
+  aliases with `NameGenerator` instead of counter-based names.

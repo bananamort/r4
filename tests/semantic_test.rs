@@ -333,6 +333,162 @@ fn goto_binding_is_available_through_token_data() {
 }
 
 #[test]
+fn resolve_in_scope_returns_the_innermost_declaration() {
+    let model = analyze(
+        r#"
+        local value = 1
+        do
+            local value = 2
+            print(value)
+        end
+        print(value)
+        "#,
+    );
+
+    let locals = local_symbols_named(&model, "value");
+    assert_eq!(locals.len(), 2);
+    let outer = locals[0];
+    let inner = locals[1];
+
+    assert_eq!(
+        model.resolve_in_scope(inner.declaring_scope, "value"),
+        Some(inner.id),
+        "the inner scope must resolve to its own declaration"
+    );
+    assert_eq!(
+        model.resolve_in_scope(outer.declaring_scope, "value"),
+        Some(outer.id),
+        "the outer scope must resolve to the outer declaration"
+    );
+    assert_eq!(
+        model.resolve_in_scope(model.chunk_scope(), "value"),
+        Some(outer.id)
+    );
+}
+
+#[test]
+fn resolve_in_scope_never_returns_a_shadowed_global() {
+    let model = analyze("local print = 1\nprint(print)");
+
+    let local = local_symbols_named(&model, "print")[0];
+    assert_eq!(
+        model.resolve_in_scope(local.declaring_scope, "print"),
+        Some(local.id)
+    );
+    assert_eq!(
+        model.global_symbol("print"),
+        None,
+        "a fully shadowed builtin must not be interned as a global"
+    );
+}
+
+#[test]
+fn resolve_in_scope_resolves_undeclared_names_to_globals() {
+    let model = analyze("return missing");
+
+    let global = model
+        .global_symbol("missing")
+        .expect("an undeclared name creates a global symbol");
+    assert_eq!(model.symbol(global).kind, SymbolKind::Global);
+    assert_eq!(
+        model.resolve_in_scope(model.chunk_scope(), "missing"),
+        Some(global)
+    );
+
+    assert_eq!(
+        model.resolve_in_scope(model.chunk_scope(), "never_mentioned"),
+        None,
+        "a name that was never analyzed does not resolve"
+    );
+}
+
+#[test]
+fn captured_symbols_contains_exactly_the_captured_locals() {
+    let model = analyze(
+        r#"
+        local captured = 1
+        local unrelated = 2
+        local function closure()
+            return captured
+        end
+        return closure, unrelated
+        "#,
+    );
+
+    let names: Vec<&str> = model
+        .captured_symbols()
+        .map(|symbol| symbol.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["captured"]);
+
+    let unrelated = symbols_named(&model, "unrelated")[0];
+    assert!(!unrelated.is_captured());
+    assert!(unrelated.capturing_scopes.is_empty());
+}
+
+#[test]
+fn captured_symbols_marks_transitive_captures_once_per_function() {
+    let model = analyze(
+        r#"
+        local outermost = 1
+        local function level_one()
+            local middle = outermost
+            local function level_two()
+                local function level_three()
+                    return outermost + middle
+                end
+                return level_three
+            end
+            return level_two
+        end
+        return level_one
+        "#,
+    );
+
+    let names: Vec<&str> = model
+        .captured_symbols()
+        .map(|symbol| symbol.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["outermost", "middle"]);
+
+    let outermost = symbols_named(&model, "outermost")[0];
+    assert_eq!(
+        outermost.capturing_scopes.len(),
+        3,
+        "all three nested functions must carry the upvalue"
+    );
+    let middle = symbols_named(&model, "middle")[0];
+    assert_eq!(middle.capturing_scopes.len(), 2);
+}
+
+#[test]
+fn captured_symbols_distinguishes_shadowed_names() {
+    let model = analyze(
+        r#"
+        local value = 1
+        local function closure()
+            local value = 2
+            return value
+        end
+        return closure, value
+        "#,
+    );
+
+    let locals = local_symbols_named(&model, "value");
+    assert_eq!(locals.len(), 2);
+    assert!(!locals[0].is_captured(), "the outer value stays outside");
+    assert!(
+        !locals[1].is_captured(),
+        "the inner value is local to the closure"
+    );
+    assert_eq!(
+        model.captured_symbols().count(),
+        0,
+        "no variable crosses a function boundary"
+    );
+}
+
+#[test]
 fn declaration_initializers_record_global_aliases() {
     let model = analyze(
         r#"

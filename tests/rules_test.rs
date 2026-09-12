@@ -1,7 +1,7 @@
 use r4::generator::{LuaGenerator, ReadableLuaGenerator};
 use r4::nodes::{Block, Statement};
 use r4::process::{Evaluator, LuaValue};
-use r4::rules::{self, canonicalize, desugar, rename_variables};
+use r4::rules::{self, canonicalize, desugar, rename_variables, NameGenerator};
 use r4::semantic::{SemanticAnalyzer, SemanticModel, SymbolKind};
 use r4::Parser;
 
@@ -272,6 +272,115 @@ fn desugar_pipeline_lowers_a_luau_function() {
     assert!(output.contains("math.floor"), "unexpected: {output}");
 
     parse(&output);
+}
+
+#[test]
+fn name_generator_avoids_model_symbols_and_host_globals() {
+    let (_, model) =
+        analyze_with_tokens("local a = 1\nlocal __R4_SELECT = 2\nreturn a + __R4_SELECT");
+
+    let mut generator = NameGenerator::new(&model);
+    let names: Vec<String> = (0..5).map(|_| generator.generate()).collect();
+
+    let unique: std::collections::HashSet<&String> = names.iter().collect();
+    assert_eq!(unique.len(), names.len(), "generated names must be unique");
+
+    for name in &names {
+        assert!(
+            !model.symbols.iter().any(|symbol| symbol.name == *name),
+            "generated `{name}` collides with a model symbol"
+        );
+        assert!(!rename_variables::DEFAULT_GLOBALS.contains(&name.as_str()));
+        assert!(!rename_variables::ROBLOX_GLOBALS.contains(&name.as_str()));
+    }
+
+    let prefixed = generator.generate_with_prefix("__R4_SELECT");
+    assert_ne!(
+        prefixed, "__R4_SELECT",
+        "the prefix collides with a model symbol"
+    );
+}
+
+#[test]
+fn removes_assert_statement() {
+    let (mut block, model) = analyze_with_tokens("assert(true)\nreturn 1");
+
+    let removed = canonicalize::remove_assertions(&mut block, &model);
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(!output.contains("assert"), "unexpected: {output}");
+}
+
+#[test]
+fn rewrites_multi_argument_assert_with_select() {
+    let (mut block, model) = analyze_with_tokens("local x = assert(1, \"message\")\nreturn x");
+
+    let removed = canonicalize::remove_assertions(&mut block, &model);
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(output.contains("select(1, 1"), "unexpected: {output}");
+}
+
+#[test]
+fn keeps_shadowed_assert_calls() {
+    let (mut block, model) = analyze_with_tokens(
+        "local assert = function(value) return value end\nlocal x = assert(true)\nreturn x",
+    );
+
+    let removed = canonicalize::remove_assertions(&mut block, &model);
+
+    assert_eq!(removed, 0, "a non-alias shadowing local must not match");
+    assert!(generate(&block).contains("assert(true)"));
+}
+
+#[test]
+fn removes_assert_calls_through_read_only_alias() {
+    let (mut block, model) =
+        analyze_with_tokens("local assert = assert\nlocal x = assert(true)\nreturn x");
+
+    let removed = canonicalize::remove_assertions(&mut block, &model);
+
+    assert_eq!(removed, 1, "a read-only alias must match");
+    let output = generate(&block);
+    assert!(output.contains("local x = true"), "unexpected: {output}");
+}
+
+#[test]
+fn reserved_select_alias_is_collision_free() {
+    let (mut block, model) = analyze_with_tokens(
+        "local __R4_SELECT = 1\nlocal select = function() end\nlocal x = assert(1, 2)\nreturn x + __R4_SELECT",
+    );
+
+    let removed = canonicalize::remove_assertions(&mut block, &model);
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(
+        output.contains("__R4_SELECT1 = select"),
+        "the alias must avoid the existing name: {output}"
+    );
+    assert!(
+        output.contains("__R4_SELECT1(1, 1, 2)"),
+        "the replacement must use the fresh alias: {output}"
+    );
+    parse(&output);
+}
+
+#[test]
+fn single_argument_assert_does_not_reserve_select() {
+    let (mut block, model) =
+        analyze_with_tokens("local select = function() end\nlocal x = assert(1)\nreturn x, select");
+
+    let removed = canonicalize::remove_assertions(&mut block, &model);
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(
+        !output.contains("__R4_"),
+        "no alias is needed for a single argument: {output}"
+    );
 }
 
 #[test]

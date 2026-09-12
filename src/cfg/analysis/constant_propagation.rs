@@ -23,10 +23,7 @@ use std::fmt;
 use bitvec::prelude::*;
 
 use crate::cfg::{BlockId, ControlFlowGraph, Terminator};
-use crate::nodes::{
-    BinaryExpression, BinaryOperator, Expression, Identifier, Statement, UnaryExpression,
-    UnaryOperator, Variable,
-};
+use crate::nodes::{Expression, Identifier, Statement, Variable};
 use crate::process::{DefaultVisitor, Evaluator, LuaValue, NodeProcessor, NodeVisitor};
 use crate::semantic::{SemanticModel, SymbolId, SymbolKind};
 
@@ -163,13 +160,16 @@ pub fn fold_constant_branches_with_propagation(
     let decisions: Vec<Option<bool>> = cfg
         .iter_block_ids()
         .map(|block| match cfg.terminator(block) {
-            Terminator::Branch { condition, .. } => evaluate_with_environment(
-                &evaluator,
-                condition,
-                analysis.block_exit_constants(block),
-                model,
-            )
-            .is_truthy(),
+            Terminator::Branch { condition, .. } => {
+                let constants = analysis.block_exit_constants(block);
+                evaluator
+                    .evaluate_with(condition, &|identifier: &Identifier| {
+                        model
+                            .resolve_identifier(identifier)
+                            .and_then(|symbol| constants.get(&symbol).cloned())
+                    })
+                    .and_then(|value| value.is_truthy())
+            }
             _ => None,
         })
         .collect();
@@ -177,126 +177,6 @@ pub fn fold_constant_branches_with_propagation(
     Ok(fold_constant_branches_with(cfg, |block, _| {
         decisions[block.index()]
     }))
-}
-
-/// Evaluates an expression, resolving identifiers through the given constants.
-///
-/// The evaluator is used for the environment-independent parts; identifiers
-/// present in `constants` are substituted with their value, and short-circuit
-/// `and`/`or`/`not` are handled so that symbolic branches still fold.
-pub fn evaluate_with_environment(
-    evaluator: &Evaluator,
-    expression: &Expression,
-    constants: &HashMap<SymbolId, LuaValue>,
-    model: &SemanticModel,
-) -> LuaValue {
-    match expression {
-        Expression::Identifier(identifier) => model
-            .resolve_identifier(identifier)
-            .and_then(|symbol| constants.get(&symbol).cloned())
-            .unwrap_or(LuaValue::Unknown),
-        Expression::Parenthese(parenthese) => {
-            evaluate_with_environment(evaluator, parenthese.inner_expression(), constants, model)
-        }
-        Expression::Unary(unary) => match unary.operator() {
-            UnaryOperator::Not => {
-                match evaluate_with_environment(evaluator, unary.get_expression(), constants, model)
-                    .is_truthy()
-                {
-                    Some(true) => LuaValue::False,
-                    Some(false) => LuaValue::True,
-                    None => LuaValue::Unknown,
-                }
-            }
-            _ => {
-                match evaluate_with_environment(evaluator, unary.get_expression(), constants, model)
-                    .to_expression()
-                {
-                    Some(inner) => {
-                        evaluator.evaluate(&UnaryExpression::new(unary.operator(), inner).into())
-                    }
-                    None => LuaValue::Unknown,
-                }
-            }
-        },
-        Expression::Binary(binary) => match binary.operator() {
-            BinaryOperator::And => {
-                let left = evaluate_with_environment(evaluator, binary.left(), constants, model);
-                match left.is_truthy() {
-                    Some(true) => {
-                        evaluate_with_environment(evaluator, binary.right(), constants, model)
-                    }
-                    Some(false) => left,
-                    None => LuaValue::Unknown,
-                }
-            }
-            BinaryOperator::Or => {
-                let left = evaluate_with_environment(evaluator, binary.left(), constants, model);
-                match left.is_truthy() {
-                    Some(true) => left,
-                    Some(false) => {
-                        evaluate_with_environment(evaluator, binary.right(), constants, model)
-                    }
-                    None => LuaValue::Unknown,
-                }
-            }
-            _ => {
-                let left = evaluate_with_environment(evaluator, binary.left(), constants, model);
-                let right = evaluate_with_environment(evaluator, binary.right(), constants, model);
-                match (left.to_expression(), right.to_expression()) {
-                    (Some(left), Some(right)) => evaluator
-                        .evaluate(&BinaryExpression::new(binary.operator(), left, right).into()),
-                    _ => LuaValue::Unknown,
-                }
-            }
-        },
-        Expression::If(if_expression) => {
-            let condition = evaluate_with_environment(
-                evaluator,
-                if_expression.get_condition(),
-                constants,
-                model,
-            );
-            match condition.is_truthy() {
-                Some(true) => evaluate_with_environment(
-                    evaluator,
-                    if_expression.get_result(),
-                    constants,
-                    model,
-                ),
-                Some(false) => {
-                    for branch in if_expression.iter_branches() {
-                        let branch_condition = evaluate_with_environment(
-                            evaluator,
-                            branch.get_condition(),
-                            constants,
-                            model,
-                        );
-                        match branch_condition.is_truthy() {
-                            Some(true) => {
-                                return evaluate_with_environment(
-                                    evaluator,
-                                    branch.get_result(),
-                                    constants,
-                                    model,
-                                )
-                            }
-                            Some(false) => {}
-                            None => return LuaValue::Unknown,
-                        }
-                    }
-                    evaluate_with_environment(
-                        evaluator,
-                        if_expression.get_else_result(),
-                        constants,
-                        model,
-                    )
-                }
-                None => LuaValue::Unknown,
-            }
-        }
-        other => evaluator.evaluate(other),
-    }
 }
 
 // ----------------------------------------------------------------------
@@ -642,12 +522,12 @@ fn compute_definition_value(
         environment.insert(symbol, found?.clone());
     }
 
-    let value = evaluate_with_environment(evaluator, expression, &environment, model);
-    if matches!(value, LuaValue::Unknown) {
-        None
-    } else {
-        Some(value)
-    }
+    let lookup = |identifier: &Identifier| {
+        model
+            .resolve_identifier(identifier)
+            .and_then(|symbol| environment.get(&symbol).cloned())
+    };
+    evaluator.evaluate_with(expression, &lookup)
 }
 
 // ----------------------------------------------------------------------

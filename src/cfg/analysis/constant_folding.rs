@@ -1,6 +1,6 @@
 //! Constant-aware control-flow simplification.
 
-use crate::nodes::Expression;
+use crate::nodes::{Expression, Identifier};
 use crate::process::Evaluator;
 
 use crate::cfg::{BlockId, ControlFlowGraph, Terminator};
@@ -17,7 +17,9 @@ use crate::cfg::{BlockId, ControlFlowGraph, Terminator};
 pub fn fold_constant_branches(cfg: &mut ControlFlowGraph) -> usize {
     let evaluator = Evaluator::default();
     fold_constant_branches_with(cfg, move |_, condition| {
-        evaluator.evaluate(condition).is_truthy()
+        evaluator
+            .evaluate_with(condition, &|_: &Identifier| None)
+            .and_then(|value| value.is_truthy())
     })
 }
 

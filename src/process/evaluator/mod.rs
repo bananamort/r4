@@ -492,6 +492,274 @@ impl Evaluator {
             LuaValue::Unknown
         }
     }
+
+    /// Evaluates an expression against a strict identifier environment.
+    ///
+    /// Returns `None` when the expression cannot be reduced to a concrete
+    /// [`LuaValue`]: an identifier that `lookup` does not provide, a call, a
+    /// field access, an index, `...`, or any operation over such a value.
+    /// Unlike [`Evaluator::evaluate`], there is no `LuaValue::Unknown` and no
+    /// fallback: a missing environment entry propagates as `None`.
+    pub fn evaluate_with<F>(&self, expression: &Expression, lookup: &F) -> Option<LuaValue>
+    where
+        F: Fn(&Identifier) -> Option<LuaValue>,
+    {
+        match expression {
+            Expression::False(_) => Some(LuaValue::False),
+            Expression::Function(_) => Some(LuaValue::Function),
+            Expression::Nil(_) => Some(LuaValue::Nil),
+            Expression::Number(number) => Some(LuaValue::from(number.compute_value())),
+            Expression::String(string) => Some(LuaValue::from(string.get_value())),
+            Expression::Table(_) => Some(LuaValue::Table),
+            Expression::True(_) => Some(LuaValue::True),
+            Expression::Binary(binary) => self.evaluate_binary_with(binary, lookup),
+            Expression::Unary(unary) => self.evaluate_unary_with(unary, lookup),
+            Expression::Parenthese(parenthese) => {
+                self.evaluate_with(parenthese.inner_expression(), lookup)
+            }
+            Expression::If(if_expression) => self.evaluate_if_with(if_expression, lookup),
+            Expression::InterpolatedString(string) => {
+                self.evaluate_interpolated_string_with(string, lookup)
+            }
+            Expression::TypeCast(type_cast) => {
+                self.evaluate_with(type_cast.get_expression(), lookup)
+            }
+            Expression::TypeInstantiation(type_instantiation) => {
+                self.evaluate_type_instantiation_with(type_instantiation, lookup)
+            }
+            Expression::Identifier(identifier) => lookup(identifier),
+            // Calls, field reads, index reads and `...` depend on runtime state
+            // that an identifier environment cannot describe.
+            Expression::Call(_)
+            | Expression::Field(_)
+            | Expression::Index(_)
+            | Expression::VariableArguments(_) => None,
+        }
+    }
+
+    fn evaluate_binary_with<F>(&self, expression: &BinaryExpression, lookup: &F) -> Option<LuaValue>
+    where
+        F: Fn(&Identifier) -> Option<LuaValue>,
+    {
+        match expression.operator() {
+            BinaryOperator::And => {
+                let left = self.evaluate_with(expression.left(), lookup)?;
+                match left.is_truthy()? {
+                    true => self.evaluate_with(expression.right(), lookup),
+                    false => Some(left),
+                }
+            }
+            BinaryOperator::Or => {
+                let left = self.evaluate_with(expression.left(), lookup)?;
+                match left.is_truthy()? {
+                    true => Some(left),
+                    false => self.evaluate_with(expression.right(), lookup),
+                }
+            }
+            BinaryOperator::Equal => {
+                let left = self.evaluate_with(expression.left(), lookup)?;
+                let right = self.evaluate_with(expression.right(), lookup)?;
+                match self.evaluate_equal(&left, &right) {
+                    LuaValue::Unknown => None,
+                    value => Some(value),
+                }
+            }
+            BinaryOperator::NotEqual => {
+                let left = self.evaluate_with(expression.left(), lookup)?;
+                let right = self.evaluate_with(expression.right(), lookup)?;
+                match self.evaluate_equal(&left, &right) {
+                    LuaValue::True => Some(LuaValue::False),
+                    LuaValue::False => Some(LuaValue::True),
+                    _ => None,
+                }
+            }
+            BinaryOperator::Concat => {
+                let left = self.evaluate_with(expression.left(), lookup)?;
+                let right = self.evaluate_with(expression.right(), lookup)?;
+                Self::concatenate(left, right)
+            }
+            operator => {
+                let left = self.evaluate_with(expression.left(), lookup)?;
+                let right = self.evaluate_with(expression.right(), lookup)?;
+                match operator {
+                    BinaryOperator::LowerThan
+                    | BinaryOperator::LowerOrEqualThan
+                    | BinaryOperator::GreaterThan
+                    | BinaryOperator::GreaterOrEqualThan => {
+                        self.evaluate_relational_operator(operator, left, right)
+                    }
+                    _ => Self::evaluate_math_operator(operator, left, right),
+                }
+            }
+        }
+    }
+
+    fn evaluate_math_operator(
+        operator: BinaryOperator,
+        left: LuaValue,
+        right: LuaValue,
+    ) -> Option<LuaValue> {
+        let LuaValue::Number(left) = left.number_coercion() else {
+            return None;
+        };
+        let LuaValue::Number(right) = right.number_coercion() else {
+            return None;
+        };
+
+        let value = match operator {
+            BinaryOperator::Plus => left + right,
+            BinaryOperator::Minus => left - right,
+            BinaryOperator::Asterisk => left * right,
+            BinaryOperator::Slash => left / right,
+            BinaryOperator::DoubleSlash => (left / right).floor(),
+            BinaryOperator::Caret => left.powf(right),
+            BinaryOperator::Percent => left - right * (left / right).floor(),
+            _ => return None,
+        };
+        Some(LuaValue::Number(value))
+    }
+
+    fn evaluate_relational_operator(
+        &self,
+        operator: BinaryOperator,
+        left: LuaValue,
+        right: LuaValue,
+    ) -> Option<LuaValue> {
+        match (left, right) {
+            (LuaValue::Number(left), LuaValue::Number(right)) => {
+                let result = match operator {
+                    BinaryOperator::LowerThan => left < right,
+                    BinaryOperator::LowerOrEqualThan => left <= right,
+                    BinaryOperator::GreaterThan => left > right,
+                    BinaryOperator::GreaterOrEqualThan => left >= right,
+                    _ => return None,
+                };
+                Some(LuaValue::from(result))
+            }
+            (LuaValue::String(left), LuaValue::String(right)) => {
+                match self.compare_strings(&left, &right, operator) {
+                    LuaValue::Unknown => None,
+                    value => Some(value),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn concatenate(left: LuaValue, right: LuaValue) -> Option<LuaValue> {
+        match (left.string_coercion(), right.string_coercion()) {
+            (LuaValue::String(mut left), LuaValue::String(right)) => {
+                left.extend_from_slice(&right);
+                Some(LuaValue::String(left))
+            }
+            _ => None,
+        }
+    }
+
+    fn evaluate_unary_with<F>(&self, expression: &UnaryExpression, lookup: &F) -> Option<LuaValue>
+    where
+        F: Fn(&Identifier) -> Option<LuaValue>,
+    {
+        let value = self.evaluate_with(expression.get_expression(), lookup)?;
+
+        match expression.operator() {
+            UnaryOperator::Not => Some(LuaValue::from(!value.is_truthy()?)),
+            UnaryOperator::Minus => match value.number_coercion() {
+                LuaValue::Number(number) => Some(LuaValue::from(-number)),
+                _ => None,
+            },
+            UnaryOperator::Length => match value.length() {
+                LuaValue::Unknown => None,
+                length => Some(length),
+            },
+        }
+    }
+
+    fn evaluate_if_with<F>(&self, expression: &IfExpression, lookup: &F) -> Option<LuaValue>
+    where
+        F: Fn(&Identifier) -> Option<LuaValue>,
+    {
+        match self
+            .evaluate_with(expression.get_condition(), lookup)?
+            .is_truthy()?
+        {
+            true => self.evaluate_with(expression.get_result(), lookup),
+            false => {
+                for branch in expression.iter_branches() {
+                    let truthy = self
+                        .evaluate_with(branch.get_condition(), lookup)?
+                        .is_truthy()?;
+                    if truthy {
+                        return self.evaluate_with(branch.get_result(), lookup);
+                    }
+                }
+
+                self.evaluate_with(expression.get_else_result(), lookup)
+            }
+        }
+    }
+
+    fn evaluate_interpolated_string_with<F>(
+        &self,
+        expression: &InterpolatedStringExpression,
+        lookup: &F,
+    ) -> Option<LuaValue>
+    where
+        F: Fn(&Identifier) -> Option<LuaValue>,
+    {
+        let mut result = Vec::new();
+
+        for segment in expression.iter_segments() {
+            match segment {
+                InterpolationSegment::String(string) => {
+                    result.extend_from_slice(string.get_value());
+                }
+                InterpolationSegment::Value(value) => {
+                    match self.evaluate_with(value.get_expression(), lookup)? {
+                        LuaValue::False => result.extend_from_slice(b"false"),
+                        LuaValue::True => result.extend_from_slice(b"true"),
+                        LuaValue::Nil => result.extend_from_slice(b"nil"),
+                        LuaValue::String(string) => result.extend_from_slice(&string),
+                        // Matches `Evaluator::evaluate`, which cannot produce a
+                        // textual form for these values.
+                        LuaValue::Function
+                        | LuaValue::Number(_)
+                        | LuaValue::Table
+                        | LuaValue::Unknown => return None,
+                    }
+                }
+            }
+        }
+
+        Some(LuaValue::String(result))
+    }
+
+    fn evaluate_type_instantiation_with<F>(
+        &self,
+        expression: &TypeInstantiationExpression,
+        lookup: &F,
+    ) -> Option<LuaValue>
+    where
+        F: Fn(&Identifier) -> Option<LuaValue>,
+    {
+        self.evaluate_prefix_with(expression.get_prefix(), lookup)
+    }
+
+    fn evaluate_prefix_with<F>(&self, prefix: &Prefix, lookup: &F) -> Option<LuaValue>
+    where
+        F: Fn(&Identifier) -> Option<LuaValue>,
+    {
+        match prefix {
+            Prefix::Parenthese(parenthese) => {
+                self.evaluate_with(parenthese.inner_expression(), lookup)
+            }
+            Prefix::Identifier(identifier) => lookup(identifier),
+            Prefix::TypeInstantiation(type_instantiation) => {
+                self.evaluate_type_instantiation_with(type_instantiation, lookup)
+            }
+            Prefix::Call(_) | Prefix::Field(_) | Prefix::Index(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -507,6 +775,104 @@ mod test {
                 }
             )*
         };
+    }
+
+    #[test]
+    fn evaluate_with_resolves_identifiers_strictly() {
+        let evaluator = Evaluator::default();
+        let lookup = |identifier: &Identifier| match identifier.get_name().as_str() {
+            "a" => Some(LuaValue::Number(1.0)),
+            "flag" => Some(LuaValue::False),
+            _ => None,
+        };
+
+        let sum = BinaryExpression::new(
+            BinaryOperator::Plus,
+            Expression::identifier("a"),
+            Expression::from(2),
+        );
+        assert_eq!(
+            evaluator.evaluate_with(&sum.into(), &lookup),
+            Some(LuaValue::Number(3.0))
+        );
+
+        let missing = Expression::identifier("missing");
+        assert_eq!(evaluator.evaluate_with(&missing, &lookup), None);
+
+        let and = BinaryExpression::new(
+            BinaryOperator::And,
+            Expression::identifier("flag"),
+            Expression::identifier("missing"),
+        );
+        assert_eq!(
+            evaluator.evaluate_with(&and.into(), &lookup),
+            Some(LuaValue::False),
+            "a falsy left operand short-circuits without the right operand"
+        );
+
+        let or = BinaryExpression::new(
+            BinaryOperator::Or,
+            Expression::identifier("a"),
+            Expression::identifier("missing"),
+        );
+        assert_eq!(
+            evaluator.evaluate_with(&or.into(), &lookup),
+            Some(LuaValue::Number(1.0)),
+            "a truthy left operand short-circuits without the right operand"
+        );
+
+        let call = FunctionCall::from_name("f");
+        assert_eq!(evaluator.evaluate_with(&call.into(), &lookup), None);
+    }
+
+    #[test]
+    fn evaluate_with_requires_if_conditions() {
+        let evaluator = Evaluator::default();
+        let expression = IfExpression::new(Expression::identifier("condition"), 1.0, 2.0).into();
+
+        let truthy = |_: &Identifier| Some(LuaValue::True);
+        let falsy = |_: &Identifier| Some(LuaValue::False);
+        let unknown = |_: &Identifier| None;
+
+        assert_eq!(
+            evaluator.evaluate_with(&expression, &truthy),
+            Some(LuaValue::Number(1.0))
+        );
+        assert_eq!(
+            evaluator.evaluate_with(&expression, &falsy),
+            Some(LuaValue::Number(2.0))
+        );
+        assert_eq!(evaluator.evaluate_with(&expression, &unknown), None);
+    }
+
+    #[test]
+    fn evaluate_with_matches_evaluate_for_closed_expressions() {
+        let evaluator = Evaluator::default();
+        let no_environment = |_: &Identifier| None;
+
+        let cases: Vec<Expression> = vec![
+            Expression::from(true),
+            Expression::from(false),
+            Expression::nil(),
+            DecimalNumber::new(4.0).into(),
+            StringExpression::from_value("x").into(),
+            BinaryExpression::new(
+                BinaryOperator::Plus,
+                DecimalNumber::new(1.0),
+                DecimalNumber::new(2.0),
+            )
+            .into(),
+            UnaryExpression::new(UnaryOperator::Not, false).into(),
+            IfExpression::new(true, 1.0, 2.0).into(),
+        ];
+
+        for expression in cases {
+            assert_eq!(
+                evaluator.evaluate_with(&expression, &no_environment),
+                Some(evaluator.evaluate(&expression)),
+                "closed expression must evaluate identically: {expression:?}"
+            );
+        }
     }
 
     #[test]
