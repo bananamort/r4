@@ -312,25 +312,25 @@ fn goto_inside_a_nested_function_cannot_see_outer_labels() {
 }
 
 #[test]
-fn goto_binding_is_available_through_token_data() {
-    let (block, model) = analyze_lua52_with_tokens("goto target\n::target::");
+fn goto_binding_is_available_structurally() {
+    let block = parse_lua52("goto target\n::target::");
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("token-less analysis must succeed");
 
-    let Statement::Goto(goto_statement) = block
-        .first_statement()
-        .expect("the block must start with a goto")
-    else {
-        panic!("unexpected first statement");
-    };
-
-    let token = goto_statement
-        .get_label()
-        .get_token()
-        .expect("token must exist");
-    let binding = model
-        .goto_binding_at_token(token)
-        .expect("the goto token must resolve to a binding");
-
+    assert_eq!(model.goto_bindings.len(), 1);
+    let binding = &model.goto_bindings[0];
+    assert_eq!(binding.site.name, "target");
     assert_eq!(model.label(binding.label).name, "target");
+
+    let Statement::Label(label) = block
+        .iter_statements()
+        .nth(1)
+        .expect("the block must contain a label")
+    else {
+        panic!("unexpected second statement");
+    };
+    assert_eq!(model.resolve_label(label.get_label()), Some(binding.label));
 }
 
 #[test]
@@ -749,7 +749,7 @@ fn labels_in_separate_functions_may_share_a_name() {
 }
 
 #[test]
-fn token_data_maps_identifiers_to_symbols() {
+fn identifier_bindings_are_structural_with_token_metadata() {
     let (block, model) = analyze_with_tokens(
         r#"
         local value = 1
@@ -767,13 +767,22 @@ fn token_data_maps_identifiers_to_symbols() {
     let identifier = assign.get_variables()[0].get_identifier();
     let symbol = model
         .resolve_identifier(identifier)
-        .expect("the identifier token must resolve to its symbol");
+        .expect("the identifier must resolve structurally");
 
     assert_eq!(model.symbol(symbol).name, "value");
+
+    // Token data stays available as passive diagnostics.
+    assert!(
+        model
+            .uses_of(symbol)
+            .iter()
+            .all(|usage| usage.token.is_some()),
+        "token-preserved analysis must record token metadata"
+    );
 }
 
 #[test]
-fn token_data_maps_labels_to_ids() {
+fn labels_are_bound_structurally_with_token_metadata() {
     let (block, model) = analyze_lua52_with_tokens("::target::");
 
     let Statement::Label(label) = block
@@ -784,10 +793,20 @@ fn token_data_maps_labels_to_ids() {
     };
 
     let label_id = model
-        .label_at_token(label.get_label().get_token().expect("token must exist"))
-        .expect("the label token must resolve");
+        .resolve_label(label.get_label())
+        .expect("the label must resolve structurally");
 
     assert_eq!(model.label(label_id).name, "target");
+
+    // Token data stays available as passive diagnostics.
+    let token = label
+        .get_label()
+        .get_token()
+        .expect("token data must be preserved");
+    assert_eq!(
+        model.label(label_id).token,
+        r4::semantic::TokenKey::of(token)
+    );
 }
 
 #[test]

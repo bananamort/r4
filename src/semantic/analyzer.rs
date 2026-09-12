@@ -70,9 +70,6 @@ pub(super) struct AnalyzerState {
     pub(super) scope_labels: Vec<HashMap<String, LabelId>>,
     pub(super) scope_stack: Vec<ScopeId>,
     pub(super) function_stack: Vec<ScopeId>,
-    pub(super) identifier_bindings: HashMap<TokenKey, SymbolId>,
-    pub(super) label_tokens: HashMap<TokenKey, LabelId>,
-    pub(super) goto_tokens: HashMap<TokenKey, usize>,
     pub(super) global_symbols: HashMap<String, SymbolId>,
     pub(super) uses: Vec<Vec<SymbolUse>>,
     pub(super) next_block_identity: u32,
@@ -92,9 +89,6 @@ impl AnalyzerState {
             scope_labels: Vec::new(),
             scope_stack: Vec::new(),
             function_stack: Vec::new(),
-            identifier_bindings: HashMap::new(),
-            label_tokens: HashMap::new(),
-            goto_tokens: HashMap::new(),
             global_symbols: HashMap::new(),
             uses: Vec::new(),
             next_block_identity: 0,
@@ -122,9 +116,6 @@ impl AnalyzerState {
             goto_bindings,
             self.root_scope,
             self.chunk_scope,
-            self.identifier_bindings,
-            self.label_tokens,
-            self.goto_tokens,
             self.global_symbols,
             self.uses,
         ))
@@ -257,11 +248,6 @@ impl AnalyzerState {
 
     fn bind_identifier(&mut self, identifier: &Identifier, symbol: SymbolId) {
         identifier.set_binding(symbol.as_binding());
-        if let Some(token) = identifier.get_token() {
-            if let Some(key) = TokenKey::of(token) {
-                self.identifier_bindings.insert(key, symbol);
-            }
-        }
     }
 
     /// Assigns a fresh structural identity to `block`.

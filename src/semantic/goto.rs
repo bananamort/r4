@@ -45,9 +45,6 @@ impl AnalyzerState {
             visible_symbols: self.visible_symbols(),
         };
 
-        if let Some(token) = site.token {
-            self.goto_tokens.insert(token, self.goto_sites.len());
-        }
         self.goto_sites.push(site);
     }
 
@@ -90,9 +87,6 @@ impl AnalyzerState {
         });
         self.scope_labels[scope.index()].insert(name, id);
         self.scopes[scope.index()].labels.push(id);
-        if let Some(token) = token {
-            self.label_tokens.insert(token, id);
-        }
 
         Ok(())
     }

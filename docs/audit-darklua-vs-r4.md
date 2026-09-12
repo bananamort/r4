@@ -219,8 +219,8 @@ cannot change other symbols' counts, so no fixed-point loop is needed.
 ## r4 integration recommendations
 
 1. **Make `SemanticModel` a required rule input.** Rules resolve identifiers by
-   `SymbolId` (`resolve_identifier`, `symbol_at_token`, `resolve_in_scope`),
-   never by name strings. This structurally prevents Claim D.
+   `SymbolId` (`resolve_identifier`, `resolve_in_scope`), never by name
+   strings. This structurally prevents Claim D.
 2. **Symbol-keyed renaming with scope-precise collisions.** Reject candidate
    name `G` for local `L` if any `SymbolUse` of a global `G` occurs in a scope
    that is a descendant-or-self of `L.declaring_scope` after `L`'s declaration
@@ -367,10 +367,10 @@ Semantic information now lives on the AST rather than in source coordinates:
   for lowered statements and branch conditions, with a
   `CfgErrorKind::MissingBlockIdentity` error when the model does not match the
   tree. `validate_block_identities` gates the provenance consumers.
-- **Token-keyed APIs stay as diagnostics** — `symbol_at_token`,
-  `label_at_token`, `goto_binding_at_token`, `statement_token_key` and
-  `expression_token_key` remain available when token data exists, but no
-  semantic pass depends on them.
+- **Token data is passive metadata** — the model stores no token→symbol
+  lookup tables. `SymbolUse.token`, `GotoSite.token`, `GotoLabel.token` and
+  the AST token fields remain for diagnostics, line reporting and formatting,
+  and are populated exactly when the parser preserves tokens.
 - **Consumers migrated** — liveness, constant propagation, unused-variable and
   unused-label removal, dead-store removal, unreachable-code removal and
   variable renaming all resolve structurally. `rules::Session` now parses

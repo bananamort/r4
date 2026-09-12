@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use crate::nodes::{Identifier, Token};
+use crate::nodes::Identifier;
 
 use super::label::{GotoBinding, GotoLabel, LabelId};
 use super::scope::{Scope, ScopeId, ScopeKind};
-use super::symbol::{Symbol, SymbolId, SymbolKind, SymbolUse, TokenKey};
+use super::symbol::{Symbol, SymbolId, SymbolKind, SymbolUse};
 
 /// The result of a semantic analysis pass over a parsed [`Block`](crate::nodes::Block).
 ///
@@ -24,16 +24,13 @@ pub struct SemanticModel {
     pub goto_bindings: Vec<GotoBinding>,
     root_scope: ScopeId,
     chunk_scope: ScopeId,
-    identifier_bindings: HashMap<TokenKey, SymbolId>,
-    label_tokens: HashMap<TokenKey, LabelId>,
-    goto_tokens: HashMap<TokenKey, usize>,
     global_symbols: HashMap<String, SymbolId>,
     uses: Vec<Vec<SymbolUse>>,
 }
 
 impl SemanticModel {
-    /// Builds a model from the arenas and lookup tables gathered by the
-    /// analyzer. The arguments mirror the model fields exactly.
+    /// Builds a model from the arenas gathered by the analyzer. The arguments
+    /// mirror the model fields exactly.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         symbols: Vec<Symbol>,
@@ -42,9 +39,6 @@ impl SemanticModel {
         goto_bindings: Vec<GotoBinding>,
         root_scope: ScopeId,
         chunk_scope: ScopeId,
-        identifier_bindings: HashMap<TokenKey, SymbolId>,
-        label_tokens: HashMap<TokenKey, LabelId>,
-        goto_tokens: HashMap<TokenKey, usize>,
         global_symbols: HashMap<String, SymbolId>,
         uses: Vec<Vec<SymbolUse>>,
     ) -> Self {
@@ -55,9 +49,6 @@ impl SemanticModel {
             goto_bindings,
             root_scope,
             chunk_scope,
-            identifier_bindings,
-            label_tokens,
-            goto_tokens,
             global_symbols,
             uses,
         }
@@ -97,15 +88,6 @@ impl SemanticModel {
     #[inline]
     pub fn global_symbol(&self, name: &str) -> Option<SymbolId> {
         self.global_symbols.get(name).copied()
-    }
-
-    /// Returns the symbol bound to an identifier using its source position.
-    ///
-    /// Returns `None` when the AST does not carry token data or when the
-    /// identifier was never analyzed. Prefer [`Self::resolve_identifier`],
-    /// which uses the structural binding stored on the identifier.
-    pub fn symbol_at_token(&self, token: &Token) -> Option<SymbolId> {
-        TokenKey::of(token).and_then(|key| self.identifier_bindings.get(&key).copied())
     }
 
     /// Returns the symbol bound to the given identifier.
@@ -301,18 +283,5 @@ impl SemanticModel {
         self.goto_bindings
             .iter()
             .filter(move |binding| binding.site.function_scope == function)
-    }
-
-    /// Returns the label bound to a label name token, if token data is available.
-    pub fn label_at_token(&self, token: &Token) -> Option<LabelId> {
-        TokenKey::of(token).and_then(|key| self.label_tokens.get(&key).copied())
-    }
-
-    /// Returns the goto binding associated with a goto label name token, if token
-    /// data is available.
-    pub fn goto_binding_at_token(&self, token: &Token) -> Option<&GotoBinding> {
-        TokenKey::of(token)
-            .and_then(|key| self.goto_tokens.get(&key).copied())
-            .map(|index| &self.goto_bindings[index])
     }
 }

@@ -12,14 +12,12 @@
 //! * a condition origin additionally records which construct produced the
 //!   branch condition (`if`/`elseif` branch, `while` or `repeat`).
 //!
-//! Origins work on token-less trees: no source position is involved. The
-//! token-key helpers remain available for callers that only have tokens.
+//! Origins work on token-less trees: no source position is involved.
 
 use std::fmt;
 
-use crate::nodes::{Block, BlockIdentity, Expression, Statement};
+use crate::nodes::{Block, BlockIdentity};
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
-use crate::semantic::TokenKey;
 use crate::utils::lines;
 
 /// The structural position of a statement in the analyzed AST.
@@ -63,18 +61,6 @@ impl ConditionOrigin {
             kind,
         }
     }
-}
-
-/// Returns the source key of a statement's first token, when token data is
-/// available.
-pub fn statement_token_key(statement: &Statement) -> Option<TokenKey> {
-    lines::first_statement_token(statement).and_then(TokenKey::of)
-}
-
-/// Returns the source key of an expression's first token, when token data is
-/// available.
-pub fn expression_token_key(expression: &Expression) -> Option<TokenKey> {
-    lines::first_expression_token(expression).and_then(TokenKey::of)
 }
 
 /// An AST block that has no structural identity.

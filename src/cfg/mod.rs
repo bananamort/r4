@@ -19,6 +19,5 @@ pub use block::{BasicBlock, BlockId, Terminator};
 pub use builder::{build_chunk, build_function, CfgBuilder, CfgError, CfgErrorKind};
 pub use graph::{ControlFlowGraph, InvariantViolation};
 pub use provenance::{
-    expression_token_key, statement_token_key, validate_block_identities, ConditionKind,
-    ConditionOrigin, StatementOrigin, UnidentifiedBlock,
+    validate_block_identities, ConditionKind, ConditionOrigin, StatementOrigin, UnidentifiedBlock,
 };
