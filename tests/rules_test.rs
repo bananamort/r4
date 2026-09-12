@@ -424,7 +424,7 @@ fn removes_unused_labels_in_nested_functions() {
 }
 
 #[test]
-fn unused_label_pass_requires_token_data() {
+fn removes_unused_labels_without_token_data() {
     let mut block = Parser::default()
         .lua52()
         .parse("::unused::\nreturn 1")
@@ -433,12 +433,11 @@ fn unused_label_pass_requires_token_data() {
         .analyze(&block)
         .expect("semantic analysis must succeed");
 
-    let error = canonicalize::remove_unused_labels(&mut block, &model)
-        .expect_err("token-less labels must be rejected explicitly");
-    assert!(matches!(
-        error,
-        canonicalize::UnusedLabelError::MissingTokenData { .. }
-    ));
+    let removed = canonicalize::remove_unused_labels(&mut block, &model)
+        .expect("token-less labels must be removable");
+
+    assert_eq!(removed, 1);
+    assert!(!generate(&block).contains("::unused::"));
 }
 
 #[test]
@@ -502,15 +501,18 @@ fn keeps_side_effecting_stores() {
 }
 
 #[test]
-fn dead_store_pass_requires_token_data() {
+fn dead_store_pass_works_without_token_data() {
     let mut block = parse("local x\nx = 1\nx = 2\nreturn x");
     let model = SemanticAnalyzer::new()
         .analyze(&block)
         .expect("semantic analysis must succeed");
 
-    let error = canonicalize::remove_dead_stores(&mut block, &model)
-        .expect_err("token-less stores must be rejected explicitly");
-    assert!(matches!(error, canonicalize::DeadStoreError::Liveness(_)));
+    let removed = canonicalize::remove_dead_stores(&mut block, &model)
+        .expect("token-less stores must be removable");
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(!output.contains("x = 1"), "unexpected: {output}");
 }
 
 #[test]
@@ -645,22 +647,20 @@ fn renames_parameters_and_iteration_variables() {
 }
 
 #[test]
-fn rename_pass_requires_token_data() {
+fn rename_pass_works_without_token_data() {
     let mut block = parse("local long_name = 1\nreturn long_name");
     let model = SemanticAnalyzer::new()
         .analyze(&block)
         .expect("semantic analysis must succeed");
 
-    let error = rename_variables::rename_variables(&mut block, &model)
-        .expect_err("token-less symbols must be rejected explicitly");
-    assert!(matches!(
-        error,
-        rename_variables::RenameError::MissingTokenData { .. }
-    ));
+    let renamed = rename_variables::rename_variables(&mut block, &model)
+        .expect("token-less symbols must be renamed");
 
+    assert!(renamed >= 1);
     assert!(
-        generate(&block).contains("long_name"),
-        "the block must be left untouched when validation fails"
+        !generate(&block).contains("long_name"),
+        "the local must be renamed: {}",
+        generate(&block)
     );
 }
 
@@ -794,18 +794,19 @@ fn keeps_unknown_control_flow() {
 }
 
 #[test]
-fn unreachable_code_pass_requires_token_data() {
+fn unreachable_code_pass_works_without_token_data() {
     let mut block = parse("local running = false\nwhile running do work() end\nafter()");
     let model = SemanticAnalyzer::new()
         .analyze(&block)
         .expect("semantic analysis must succeed");
 
-    let error = canonicalize::remove_unreachable_code(&mut block, &model)
-        .expect_err("token-less declarations must be rejected explicitly");
-    assert!(matches!(
-        error,
-        canonicalize::UnreachableCodeError::ConstantPropagation(_)
-    ));
+    let removed = canonicalize::remove_unreachable_code(&mut block, &model)
+        .expect("token-less declarations must be resolved");
+
+    assert!(removed >= 1);
+    let output = generate(&block);
+    assert!(!output.contains("while"), "unexpected: {output}");
+    assert!(output.contains("after()"), "unexpected: {output}");
 }
 
 #[test]
@@ -863,21 +864,18 @@ fn partially_used_multi_assignments_are_kept() {
 }
 
 #[test]
-fn unused_variable_pass_requires_token_data() {
+fn unused_variable_pass_works_without_token_data() {
     let mut block = parse("local unused = 1\nreturn 2");
     let model = SemanticAnalyzer::new()
         .analyze(&block)
         .expect("semantic analysis must succeed");
 
-    let error = canonicalize::remove_unused_variables(&mut block, &model)
-        .expect_err("token-less declarations must be rejected explicitly");
-    assert!(matches!(
-        error,
-        canonicalize::UnusedVariableError::MissingTokenData { .. }
-    ));
+    let removed = canonicalize::remove_unused_variables(&mut block, &model)
+        .expect("token-less declarations must be removable");
 
-    // The block must be left untouched when validation fails.
-    assert_eq!(generate(&block).trim(), "local unused = 1\n\nreturn 2");
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(!output.contains("unused"), "unexpected: {output}");
 }
 
 #[test]

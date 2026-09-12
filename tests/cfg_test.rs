@@ -2,8 +2,11 @@ use r4::cfg::analysis::{
     fold_constant_branches, fold_constant_branches_with_propagation, ConstantPropagation,
     DominatorTree, Liveness, Reachability,
 };
-use r4::cfg::{build_chunk, build_function, BlockId, ControlFlowGraph, Terminator};
-use r4::nodes::{Prefix, Statement};
+use r4::cfg::{
+    build_chunk, build_function, validate_block_identities, BlockId, ConditionKind,
+    ConditionOrigin, ControlFlowGraph, StatementOrigin, Terminator,
+};
+use r4::nodes::{Block, Prefix, Statement};
 use r4::process::LuaValue;
 use r4::semantic::{ScopeKind, SemanticAnalyzer, SemanticModel, SymbolId};
 use r4::Parser;
@@ -464,19 +467,21 @@ fn liveness_reports_upward_exposed_uses() {
 }
 
 #[test]
-fn liveness_requires_token_data() {
+fn liveness_works_without_token_data() {
     let block = Parser::default()
         .parse("local x = 1\nreturn x")
         .expect("parse");
     let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
     let cfg = build_chunk(&block, &model).expect("cfg");
 
-    let error =
-        Liveness::analyze(&cfg, &model).expect_err("analysis without tokens must fail explicitly");
-    assert!(matches!(
-        error,
-        r4::cfg::analysis::LivenessError::MissingTokenData { .. }
-    ));
+    let liveness =
+        Liveness::analyze(&cfg, &model).expect("token-less liveness analysis must succeed");
+    let x = symbol_named(&model, "x");
+
+    assert!(
+        liveness.terminator_uses[cfg.entry.index()][x.index()],
+        "the return statement reads x"
+    );
 }
 
 #[test]
@@ -797,19 +802,21 @@ fn constant_propagation_exposes_entry_and_exit_constants() {
 }
 
 #[test]
-fn constant_propagation_requires_token_data() {
+fn constant_propagation_works_without_token_data() {
     let block = Parser::default()
         .parse("local x = 1\nreturn x")
         .expect("parse");
     let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
     let cfg = build_chunk(&block, &model).expect("cfg");
 
-    let error = ConstantPropagation::analyze(&cfg, &model)
-        .expect_err("analysis without tokens must fail explicitly");
-    assert!(matches!(
-        error,
-        r4::cfg::analysis::ConstantPropagationError::MissingTokenData { .. }
-    ));
+    let analysis = ConstantPropagation::analyze(&cfg, &model)
+        .expect("token-less constant propagation must succeed");
+    let x = symbol_named(&model, "x");
+
+    assert_eq!(
+        analysis.block_exit_constants(cfg.entry).get(&x),
+        Some(&LuaValue::Number(1.0))
+    );
 }
 
 #[test]
@@ -1041,4 +1048,129 @@ fn unreachable_blocks_are_not_dominated_by_entry() {
 
     assert!(!tree.dominates(cfg.entry, dead));
     assert_eq!(tree.immediate_dominator(dead), None);
+}
+
+#[test]
+fn cfg_statements_reference_their_ast_blocks() {
+    let block = Parser::default()
+        .parse("local x = 1\nx = 2")
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+
+    let identity = block
+        .get_identity()
+        .expect("the chunk block has an identity");
+    assert_eq!(
+        identity.index(),
+        0,
+        "identities are assigned in source order"
+    );
+
+    let cfg = build_chunk(&block, &model).expect("cfg");
+    let entry = cfg.block(cfg.entry);
+
+    assert_eq!(
+        entry.statement_origin(0),
+        Some(StatementOrigin {
+            block: identity,
+            index: 0
+        })
+    );
+    assert_eq!(
+        entry.statement_origin(1),
+        Some(StatementOrigin {
+            block: identity,
+            index: 1
+        })
+    );
+    assert_eq!(entry.statement_origin(2), None);
+}
+
+#[test]
+fn cfg_branch_terminators_reference_their_ast_statements() {
+    let block = Parser::default()
+        .parse("if a then b() elseif c then d() else e() end")
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+    let identity = block
+        .get_identity()
+        .expect("the chunk block has an identity");
+    let cfg = build_chunk(&block, &model).expect("cfg");
+
+    let origins: Vec<Option<ConditionOrigin>> = cfg
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            matches!(block.terminator, Terminator::Branch { .. }).then_some(block.branch_origin)
+        })
+        .collect();
+
+    assert_eq!(
+        origins,
+        vec![
+            Some(ConditionOrigin {
+                block: identity,
+                statement: 0,
+                kind: ConditionKind::IfBranch(0)
+            }),
+            Some(ConditionOrigin {
+                block: identity,
+                statement: 0,
+                kind: ConditionKind::IfBranch(1)
+            }),
+        ]
+    );
+}
+
+#[test]
+fn cfg_builder_rejects_a_foreign_model() {
+    let block = Parser::default()
+        .parse("local x = 1")
+        .expect("the block must parse");
+    let other = Parser::default()
+        .parse("local y = 1")
+        .expect("the other block must parse");
+    let model = SemanticAnalyzer::new()
+        .analyze(&other)
+        .expect("the other block must analyze");
+
+    let error = build_chunk(&block, &model).expect_err("a foreign model must be rejected");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::MissingBlockIdentity
+    ));
+}
+
+#[test]
+fn validate_block_identities_rejects_unanalyzed_blocks() {
+    let mut block: Block = Statement::Do(Default::default()).into();
+
+    assert!(validate_block_identities(&mut block).is_err());
+
+    let analyzed = Parser::default()
+        .parse("do end")
+        .expect("the block must parse");
+    let _model = SemanticAnalyzer::new()
+        .analyze(&analyzed)
+        .expect("analysis");
+    let mut analyzed = analyzed;
+    assert!(validate_block_identities(&mut analyzed).is_ok());
+}
+
+#[test]
+fn constant_propagation_distinguishes_same_scope_shadowing() {
+    let block = Parser::default()
+        .parse("local x = true\nprint(x)\nlocal x = false\nif x then dead() end")
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+    let mut cfg = build_chunk(&block, &model).expect("cfg");
+
+    let folded = fold_constant_branches_with_propagation(&mut cfg, &model)
+        .expect("propagation must succeed");
+
+    assert_eq!(
+        folded, 1,
+        "the second x shadows the first and is constantly false"
+    );
+    assert_invariants(&cfg);
 }

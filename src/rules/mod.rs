@@ -39,8 +39,8 @@ pub fn desugar_to_lua51(block: &mut Block) {
 /// Semantic passes that need symbol or control-flow information, such as
 /// [`canonicalize::remove_unused_variables`] and
 /// [`canonicalize::remove_unreachable_code`], are not part of this pipeline;
-/// call them with a [`crate::semantic::SemanticModel`] and token-preserved
-/// ASTs.
+/// call them with a [`crate::semantic::SemanticModel`]. They resolve through
+/// structural bindings, so they work on token-less ASTs.
 pub fn canonicalize(block: &mut Block) {
     canonicalize::convert_index_to_field(block);
     canonicalize::remove_nil_declarations(block);

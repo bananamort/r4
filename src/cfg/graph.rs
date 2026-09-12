@@ -77,6 +77,9 @@ impl ControlFlowGraph {
     /// This is the supported way for analysis passes to rewrite control flow:
     /// the old edges are detached before the new terminator targets are
     /// connected, so [`Self::verify_invariants`] continues to hold.
+    ///
+    /// Rewriting control flow invalidates the structural origin of the old
+    /// terminator, so `branch_origin` is cleared.
     pub fn set_terminator(&mut self, block: BlockId, terminator: Terminator) {
         let old_successors = std::mem::take(&mut self.blocks[block.index()].successors);
         for successor in old_successors {
@@ -86,6 +89,7 @@ impl ControlFlowGraph {
         }
 
         let targets = terminator.targets(self.exit);
+        self.blocks[block.index()].branch_origin = None;
         self.blocks[block.index()].terminator = terminator;
 
         for target in targets {
@@ -129,6 +133,14 @@ impl ControlFlowGraph {
 
             if has_duplicates(&block.predecessors) {
                 violations.push(InvariantViolation::DuplicatePredecessor { block: block.id });
+            }
+
+            if block.statement_origins.len() != block.statements.len() {
+                violations.push(InvariantViolation::StatementOriginMismatch {
+                    block: block.id,
+                    statements: block.statements.len(),
+                    origins: block.statement_origins.len(),
+                });
             }
 
             for &successor in &block.successors {
@@ -240,6 +252,15 @@ pub enum InvariantViolation {
         /// The inconsistent predecessor.
         predecessor: BlockId,
     },
+    /// The statement origin list is not parallel to the statement list.
+    StatementOriginMismatch {
+        /// The offending block.
+        block: BlockId,
+        /// The number of statements.
+        statements: usize,
+        /// The number of recorded origins.
+        origins: usize,
+    },
 }
 
 impl std::fmt::Display for InvariantViolation {
@@ -281,6 +302,15 @@ impl std::fmt::Display for InvariantViolation {
                 f,
                 "block {:?} has predecessor {:?} that does not list it as successor",
                 block, predecessor
+            ),
+            InvariantViolation::StatementOriginMismatch {
+                block,
+                statements,
+                origins,
+            } => write!(
+                f,
+                "block {:?} has {} statements but {} statement origins",
+                block, statements, origins
             ),
         }
     }

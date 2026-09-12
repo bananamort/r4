@@ -1,4 +1,5 @@
-use r4::nodes::{Block, Statement};
+use r4::nodes::{Arguments, Block, Expression, Identifier, Statement};
+use r4::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use r4::semantic::{
     AccessKind, SemanticAnalyzer, SemanticErrorKind, SemanticModel, Symbol, SymbolKind,
 };
@@ -814,4 +815,176 @@ fn scope_tree_is_consistent() {
             );
         }
     }
+}
+
+fn local_declaration_identifier(statement: &Statement) -> &Identifier {
+    let Statement::LocalAssign(assignment) = statement else {
+        panic!("expected a local assignment, got {statement:?}");
+    };
+    assignment
+        .iter_variables()
+        .next()
+        .expect("the local assignment has a variable")
+        .get_identifier()
+}
+
+fn call_argument_identifier(statement: &Statement) -> &Identifier {
+    let Statement::Call(call) = statement else {
+        panic!("expected a call, got {statement:?}");
+    };
+    let Arguments::Tuple(arguments) = call.get_arguments() else {
+        panic!("expected tuple arguments");
+    };
+    let expression = arguments
+        .iter_values()
+        .next()
+        .expect("the call has an argument");
+    let Expression::Identifier(identifier) = expression else {
+        panic!("expected an identifier argument, got {expression:?}");
+    };
+    identifier
+}
+
+#[test]
+fn same_scope_shadowing_binds_each_occurrence_exactly() {
+    // Both declarations share a name and a scope, so only occurrence-level
+    // bindings can tell them apart. This must also hold without token data.
+    for preserve_tokens in [true, false] {
+        let mut parser = Parser::default();
+        if preserve_tokens {
+            parser = parser.preserve_tokens();
+        }
+        let block = parser
+            .parse("local x = 1\nprint(x)\nlocal x = 2\nprint(x)")
+            .expect("parse");
+        let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+
+        let statements: Vec<&Statement> = block.iter_statements().collect();
+        let first_decl = local_declaration_identifier(statements[0]);
+        let first_use = call_argument_identifier(statements[1]);
+        let second_decl = local_declaration_identifier(statements[2]);
+        let second_use = call_argument_identifier(statements[3]);
+
+        let first = model
+            .resolve_identifier(first_decl)
+            .expect("the first declaration must resolve");
+        let first_read = model
+            .resolve_identifier(first_use)
+            .expect("the first read must resolve");
+        let second = model
+            .resolve_identifier(second_decl)
+            .expect("the second declaration must resolve");
+        let second_read = model
+            .resolve_identifier(second_use)
+            .expect("the second read must resolve");
+
+        assert_eq!(first, first_read);
+        assert_eq!(second, second_read);
+        assert_ne!(first, second, "the declarations are distinct symbols");
+        assert_eq!(model.symbol(first).name, "x");
+        assert_eq!(model.symbol(second).name, "x");
+        assert_eq!(
+            model.symbol(first).declaring_scope,
+            model.symbol(second).declaring_scope
+        );
+        assert_eq!(model.symbol(first).read_count, 1);
+        assert_eq!(model.symbol(second).read_count, 1);
+
+        // The name-level query returns the most recent declaration: this is
+        // exactly why occurrence bindings exist. The positional query answers
+        // for a specific declaration position.
+        let chunk = model.chunk_scope();
+        assert_eq!(model.resolve_in_scope(chunk, "x"), Some(second));
+        assert_eq!(
+            model.resolve_in_scope_at(chunk, "x", &[(chunk, 1)]),
+            Some(first)
+        );
+        assert_eq!(
+            model.resolve_in_scope_at(chunk, "x", &[(chunk, 2)]),
+            Some(second)
+        );
+    }
+}
+
+#[test]
+fn stale_bindings_are_rejected() {
+    let (block, model) = analyze_with_tokens("local value = 1\nreturn value");
+    let Statement::LocalAssign(assignment) = block
+        .first_statement()
+        .expect("the block must start with a local assignment")
+    else {
+        panic!("unexpected first statement");
+    };
+    let identifier = assignment
+        .iter_variables()
+        .next()
+        .expect("the assignment has a variable")
+        .get_identifier();
+    assert!(model.resolve_identifier(identifier).is_some());
+
+    let mut renamed = identifier.clone();
+    renamed.set_name("renamed");
+
+    assert_eq!(
+        model.resolve_identifier(&renamed),
+        None,
+        "a binding whose name no longer matches the model must be rejected"
+    );
+}
+
+#[test]
+fn labels_are_bound_without_token_data() {
+    let block = parse_lua52("::target::\ngoto target");
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("token-less analysis must succeed");
+
+    let statements: Vec<&Statement> = block.iter_statements().collect();
+    let Statement::Label(label) = statements[0] else {
+        panic!("expected a label statement");
+    };
+
+    let label_id = model
+        .resolve_label(label.get_label())
+        .expect("the label must resolve structurally");
+    assert_eq!(model.label(label_id).name, "target");
+    assert_eq!(model.goto_bindings.len(), 1);
+    assert_eq!(model.goto_bindings[0].label, label_id);
+
+    // A label binding is not a symbol binding.
+    assert_eq!(model.resolve_identifier(label.get_label()), None);
+}
+
+#[test]
+fn analyzed_blocks_have_unique_identities() {
+    let block = parse("do local x = 1 end\nif condition then do end end");
+    let _model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+
+    struct Collector {
+        identities: Vec<r4::nodes::BlockIdentity>,
+    }
+
+    impl NodeProcessor for Collector {
+        fn process_block(&mut self, block: &mut Block) {
+            self.identities.push(
+                block
+                    .get_identity()
+                    .expect("every analyzed block must carry an identity"),
+            );
+        }
+    }
+
+    let mut collector = Collector {
+        identities: Vec::new(),
+    };
+    let mut block = block;
+    DefaultVisitor::visit_block(&mut block, &mut collector);
+
+    let unique: std::collections::HashSet<_> = collector.identities.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        collector.identities.len(),
+        "block identities must be unique"
+    );
+    assert!(collector.identities.len() >= 4);
 }

@@ -9,15 +9,9 @@ use crate::semantic::{SemanticModel, SymbolId};
 /// An error produced by liveness analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LivenessError {
-    /// An identifier has no source position, so it cannot be resolved against
-    /// the semantic model. Parse with token preservation to run data-flow
-    /// analyses.
-    MissingTokenData {
-        /// The name of the unresolved identifier.
-        name: String,
-    },
-    /// An identifier has a source position but is not present in the semantic
-    /// model. This usually means the CFG was not built from the analyzed AST.
+    /// An identifier is not bound in the semantic model. This means the CFG
+    /// was not built from the analyzed AST, or the AST was mutated after the
+    /// analysis.
     UnresolvedIdentifier {
         /// The name of the unresolved identifier.
         name: String,
@@ -29,14 +23,17 @@ pub enum LivenessError {
 impl fmt::Display for LivenessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LivenessError::MissingTokenData { name } => write!(
-                f,
-                "identifier `{}` has no token data; parse with `preserve_tokens` to run liveness analysis",
-                name
-            ),
             LivenessError::UnresolvedIdentifier { name, line } => match line {
-                Some(line) => write!(f, "line {}: identifier `{}` is not bound in the semantic model", line, name),
-                None => write!(f, "identifier `{}` is not bound in the semantic model", name),
+                Some(line) => write!(
+                    f,
+                    "line {}: identifier `{}` is not bound in the semantic model",
+                    line, name
+                ),
+                None => write!(
+                    f,
+                    "identifier `{}` is not bound in the semantic model",
+                    name
+                ),
             },
         }
     }
@@ -83,9 +80,9 @@ pub struct Liveness {
 impl Liveness {
     /// Runs liveness analysis on a graph.
     ///
-    /// Identifiers are resolved through the semantic model using their source
-    /// tokens, so the AST must have been parsed with token preservation (see
-    /// [`Parser::preserve_tokens`](crate::Parser::preserve_tokens)).
+    /// Identifiers are resolved through the structural bindings recorded by
+    /// semantic analysis, so the AST does not need to be parsed with token
+    /// preservation.
     pub fn analyze(cfg: &ControlFlowGraph, model: &SemanticModel) -> Result<Self, LivenessError> {
         let symbol_count = model.symbols.len();
         let block_count = cfg.blocks.len();
@@ -223,18 +220,14 @@ impl<'a> BlockAnalyzer<'a> {
     }
 
     fn resolve(&self, identifier: &Identifier) -> Result<SymbolId, LivenessError> {
-        let Some(token) = identifier.get_token() else {
-            return Err(LivenessError::MissingTokenData {
+        self.model.resolve_identifier(identifier).ok_or_else(|| {
+            LivenessError::UnresolvedIdentifier {
                 name: identifier.get_name().clone(),
-            });
-        };
-
-        self.model
-            .symbol_at_token(token)
-            .ok_or_else(|| LivenessError::UnresolvedIdentifier {
-                name: identifier.get_name().clone(),
-                line: token.get_line_number(),
-            })
+                line: identifier
+                    .get_token()
+                    .and_then(|token| token.get_line_number()),
+            }
+        })
     }
 
     fn read_identifier(&mut self, identifier: &Identifier) -> Result<(), LivenessError> {

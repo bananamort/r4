@@ -389,3 +389,23 @@ fn parse_analyzed_reports_semantic_errors() {
 
     assert!(matches!(error, AnalyzedParseError::Semantic(_)));
 }
+
+#[test]
+fn session_refreshes_model_after_semantic_pass() {
+    let mut session = Session::parse("local unused = 1\nlocal value = 2\nreturn value")
+        .expect("session must parse and analyze");
+
+    // Renaming changes identifier names, so the cached model must not be
+    // reused by the next semantic pass.
+    session
+        .apply_semantic_result(rename_variables::rename_variables)
+        .expect("renaming must succeed");
+
+    let removed = session
+        .apply_semantic_result(canonicalize::remove_unused_variables)
+        .expect("unused variable removal must succeed after renaming");
+    assert_eq!(removed, 1);
+
+    let output = generate(session.block());
+    assert!(!output.contains("unused"), "unexpected: {output}");
+}

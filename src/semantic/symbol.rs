@@ -1,4 +1,4 @@
-use crate::nodes::Token;
+use crate::nodes::{BindingId, Token};
 
 use super::scope::ScopeId;
 
@@ -13,6 +13,12 @@ impl SymbolId {
     #[inline]
     pub const fn index(self) -> usize {
         self.0 as usize
+    }
+
+    /// Returns the structural binding corresponding to this symbol.
+    #[inline]
+    pub const fn as_binding(self) -> BindingId {
+        BindingId::symbol(self.0)
     }
 }
 

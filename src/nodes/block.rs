@@ -1,4 +1,10 @@
-use crate::nodes::{LastStatement, ReturnStatement, Statement, Token, Trivia, TriviaKind};
+use std::fmt;
+
+use crate::nodes::{
+    BlockIdentity, LastStatement, ReturnStatement, Statement, Token, Trivia, TriviaKind,
+};
+
+use super::binding::IdentityCell;
 
 /// Represents the tokens associated with a Lua code block, maintaining
 /// syntax information like semicolons that separate statements.
@@ -24,11 +30,45 @@ impl BlockTokens {
 }
 
 /// Represents a block, a collection of [`Statement`]s that can end with a [`LastStatement`].
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     statements: Vec<Statement>,
     last_statement: Option<LastStatement>,
     tokens: Option<Box<BlockTokens>>,
+    identity: IdentityCell,
+}
+
+impl Clone for Block {
+    fn clone(&self) -> Self {
+        Self {
+            statements: self.statements.clone(),
+            last_statement: self.last_statement.clone(),
+            tokens: self.tokens.clone(),
+            identity: self.identity.clone(),
+        }
+    }
+}
+
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.statements == other.statements
+            && self.last_statement == other.last_statement
+            && self.tokens == other.tokens
+    }
+}
+
+impl Eq for Block {}
+
+impl fmt::Debug for Block {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = f.debug_struct("Block");
+        debug.field("statements", &self.statements);
+        debug.field("last_statement", &self.last_statement);
+        debug.field("tokens", &self.tokens);
+        if let Some(identity) = self.get_identity() {
+            debug.field("identity", &identity);
+        }
+        debug.finish()
+    }
 }
 
 impl Block {
@@ -38,7 +78,29 @@ impl Block {
             statements,
             last_statement,
             tokens: None,
+            identity: IdentityCell::empty(),
         }
+    }
+
+    /// Returns the structural identity of this block, if it was analyzed.
+    ///
+    /// Semantic analysis assigns every block a unique identity; the control
+    /// flow graph uses it to point back at the AST statements it lowers.
+    #[inline]
+    pub fn get_identity(&self) -> Option<BlockIdentity> {
+        self.identity.get().map(BlockIdentity)
+    }
+
+    /// Records the structural identity of this block.
+    #[inline]
+    pub fn set_identity(&self, identity: BlockIdentity) {
+        self.identity.set(identity.0);
+    }
+
+    /// Removes the structural identity of this block.
+    #[inline]
+    pub fn clear_identity(&self) {
+        self.identity.clear();
     }
 
     /// Attaches token information to this block and returns the updated block.

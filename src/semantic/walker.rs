@@ -19,6 +19,8 @@ impl AnalyzerState {
     /// Labels are recorded before being resolved so that forward gotos work;
     /// everything else is dispatched to [`Self::walk_statement`].
     pub(super) fn walk_block_statements(&mut self, block: &Block) -> SemanticResult<()> {
+        self.assign_block_identity(block);
+
         for (index, statement) in block.iter_statements().enumerate() {
             match statement {
                 Statement::Label(label) => {

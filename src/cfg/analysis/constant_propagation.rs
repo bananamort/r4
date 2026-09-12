@@ -36,18 +36,12 @@ type DefId = usize;
 /// An error produced while propagating constants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConstantPropagationError {
-    /// A declaration has no source position, so it cannot be resolved against
-    /// the semantic model. Parse with token preservation to run this analysis.
-    MissingTokenData {
-        /// The name of the unresolved declaration.
+    /// An identifier (a declaration or a read) is not bound in the semantic
+    /// model. This means the CFG was not built from the analyzed AST.
+    UnresolvedIdentifier {
+        /// The name of the unresolved identifier.
         name: String,
-    },
-    /// A declaration has a source position but is not present in the semantic
-    /// model.
-    UnresolvedDeclaration {
-        /// The name of the unresolved declaration.
-        name: String,
-        /// The source line of the declaration, if known.
+        /// The source line of the identifier, if known.
         line: Option<usize>,
     },
 }
@@ -55,20 +49,15 @@ pub enum ConstantPropagationError {
 impl fmt::Display for ConstantPropagationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConstantPropagationError::MissingTokenData { name } => write!(
-                f,
-                "declaration of `{}` has no token data; parse with `preserve_tokens` to run constant propagation",
-                name
-            ),
-            ConstantPropagationError::UnresolvedDeclaration { name, line } => match line {
+            ConstantPropagationError::UnresolvedIdentifier { name, line } => match line {
                 Some(line) => write!(
                     f,
-                    "line {}: declaration of `{}` is not bound in the semantic model",
+                    "line {}: identifier `{}` is not bound in the semantic model",
                     line, name
                 ),
                 None => write!(
                     f,
-                    "declaration of `{}` is not bound in the semantic model",
+                    "identifier `{}` is not bound in the semantic model",
                     name
                 ),
             },
@@ -99,8 +88,9 @@ pub struct ConstantPropagation {
 impl ConstantPropagation {
     /// Runs the analysis on a graph.
     ///
-    /// Declarations are resolved through their source tokens, so the AST must
-    /// have been parsed with token preservation.
+    /// Declarations and reads are resolved through the structural bindings
+    /// recorded by semantic analysis, so the AST does not need to be parsed
+    /// with token preservation.
     pub fn analyze(
         cfg: &ControlFlowGraph,
         model: &SemanticModel,
@@ -226,7 +216,7 @@ fn collect_statement_definitions(
                     model,
                     definitions,
                     block_definitions,
-                );
+                )?;
             }
         }
         Statement::Assign(assignment) => {
@@ -246,7 +236,7 @@ fn collect_statement_definitions(
                         model,
                         definitions,
                         block_definitions,
-                    );
+                    )?;
                 }
             }
         }
@@ -254,7 +244,7 @@ fn collect_statement_definitions(
             if let Variable::Identifier(identifier) = assignment.get_variable() {
                 let symbol = resolve_declaration(model, identifier)?;
                 if trackable(model, symbol) {
-                    push_definition(symbol, None, None, model, definitions, block_definitions);
+                    push_definition(symbol, None, None, model, definitions, block_definitions)?;
                 }
             }
         }
@@ -268,7 +258,7 @@ fn collect_statement_definitions(
                     model,
                     definitions,
                     block_definitions,
-                );
+                )?;
             }
         }
         Statement::Function(function) => {
@@ -283,7 +273,7 @@ fn collect_statement_definitions(
                         model,
                         definitions,
                         block_definitions,
-                    );
+                    )?;
                 }
             }
         }
@@ -300,9 +290,9 @@ fn push_definition(
     model: &SemanticModel,
     definitions: &mut Vec<Definition>,
     block_definitions: &mut Vec<DefId>,
-) {
+) -> Result<(), ConstantPropagationError> {
     let reads = match &mut expression {
-        Some(expression) => collect_reads(expression, model),
+        Some(expression) => collect_reads(expression, model)?,
         None => Vec::new(),
     };
 
@@ -313,6 +303,7 @@ fn push_definition(
         reads,
     });
     block_definitions.push(definitions.len() - 1);
+    Ok(())
 }
 
 /// Returns the expression assigned to the `index`-th assignment target.
@@ -334,16 +325,31 @@ fn initializer_at(
     }
 }
 
-fn collect_reads(expression: &mut Expression, model: &SemanticModel) -> Vec<SymbolId> {
+fn collect_reads(
+    expression: &mut Expression,
+    model: &SemanticModel,
+) -> Result<Vec<SymbolId>, ConstantPropagationError> {
     struct ReadsCollector<'a> {
         model: &'a SemanticModel,
         symbols: Vec<SymbolId>,
+        error: Option<ConstantPropagationError>,
     }
 
     impl NodeProcessor for ReadsCollector<'_> {
         fn process_variable_expression(&mut self, identifier: &mut Identifier) {
-            if let Some(symbol) = self.model.resolve_identifier(identifier) {
-                self.symbols.push(symbol);
+            if self.error.is_some() {
+                return;
+            }
+            match self.model.resolve_identifier(identifier) {
+                Some(symbol) => self.symbols.push(symbol),
+                None => {
+                    self.error = Some(ConstantPropagationError::UnresolvedIdentifier {
+                        name: identifier.get_name().clone(),
+                        line: identifier
+                            .get_token()
+                            .and_then(|token| token.get_line_number()),
+                    });
+                }
             }
         }
     }
@@ -351,11 +357,17 @@ fn collect_reads(expression: &mut Expression, model: &SemanticModel) -> Vec<Symb
     let mut collector = ReadsCollector {
         model,
         symbols: Vec::new(),
+        error: None,
     };
     DefaultVisitor::visit_expression(expression, &mut collector);
+
+    if let Some(error) = collector.error {
+        return Err(error);
+    }
+
     collector.symbols.sort_unstable();
     collector.symbols.dedup();
-    collector.symbols
+    Ok(collector.symbols)
 }
 
 // ----------------------------------------------------------------------
@@ -589,16 +601,12 @@ fn resolve_declaration(
     model: &SemanticModel,
     identifier: &Identifier,
 ) -> Result<SymbolId, ConstantPropagationError> {
-    let Some(token) = identifier.get_token() else {
-        return Err(ConstantPropagationError::MissingTokenData {
-            name: identifier.get_name().clone(),
-        });
-    };
-
     model.resolve_identifier(identifier).ok_or_else(|| {
-        ConstantPropagationError::UnresolvedDeclaration {
+        ConstantPropagationError::UnresolvedIdentifier {
             name: identifier.get_name().clone(),
-            line: token.get_line_number(),
+            line: identifier
+                .get_token()
+                .and_then(|token| token.get_line_number()),
         }
     })
 }

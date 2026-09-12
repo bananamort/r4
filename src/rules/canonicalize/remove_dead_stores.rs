@@ -4,19 +4,29 @@ use std::fmt;
 use bitvec::prelude::*;
 
 use crate::cfg::analysis::{Liveness, LivenessError};
-use crate::cfg::{build_chunk, statement_token_key, CfgError};
+use crate::cfg::{
+    build_chunk, validate_block_identities, BlockId, CfgError, StatementOrigin, UnidentifiedBlock,
+};
 use crate::nodes::{Block, Statement, Variable};
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
-use crate::semantic::{SemanticModel, SymbolKind, TokenKey};
+use crate::semantic::{SemanticModel, SymbolKind};
 
 /// An error produced while removing dead stores.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeadStoreError {
     /// The control flow graph could not be built.
     Cfg(CfgError),
-    /// Liveness could not be computed (usually because the AST has no token
-    /// data).
+    /// Liveness could not be computed.
     Liveness(LivenessError),
+    /// The AST and the semantic model do not match.
+    Provenance(UnidentifiedBlock),
+    /// A statement in the graph has no structural origin.
+    MissingStatementOrigin {
+        /// The graph block containing the statement.
+        block: BlockId,
+        /// The index of the statement inside the block.
+        statement: usize,
+    },
 }
 
 impl From<CfgError> for DeadStoreError {
@@ -31,11 +41,23 @@ impl From<LivenessError> for DeadStoreError {
     }
 }
 
+impl From<UnidentifiedBlock> for DeadStoreError {
+    fn from(error: UnidentifiedBlock) -> Self {
+        DeadStoreError::Provenance(error)
+    }
+}
+
 impl fmt::Display for DeadStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DeadStoreError::Cfg(error) => write!(f, "{}", error),
             DeadStoreError::Liveness(error) => write!(f, "{}", error),
+            DeadStoreError::Provenance(error) => write!(f, "{}", error),
+            DeadStoreError::MissingStatementOrigin { block, statement } => write!(
+                f,
+                "statement {} of graph block {:?} has no structural origin",
+                statement, block
+            ),
         }
     }
 }
@@ -53,16 +75,18 @@ impl std::error::Error for DeadStoreError {}
 /// Writes to captured locals are never removed: a nested function may observe
 /// the value even when the enclosing function never reads it.
 ///
-/// Like the other semantic passes, it resolves identifiers through source
-/// tokens, so the AST must be parsed with token preservation.
+/// Statements are matched to the AST through structural origins recorded by
+/// semantic analysis, so the pass works on token-less trees.
 pub fn remove_dead_stores(
     block: &mut Block,
     model: &SemanticModel,
 ) -> Result<usize, DeadStoreError> {
     let cfg = build_chunk(block, model)?;
     let liveness = Liveness::analyze(&cfg, model)?;
+    validate_block_identities(block)?;
+
     let evaluator = Evaluator::default();
-    let mut dead_statements: HashSet<TokenKey> = HashSet::new();
+    let mut dead_statements: HashSet<StatementOrigin> = HashSet::new();
 
     for block_id in cfg.iter_block_ids() {
         let index = block_id.index();
@@ -78,9 +102,13 @@ pub fn remove_dead_stores(
             let uses = &liveness.statement_uses[index][statement_index];
 
             if is_dead_store(&statements[statement_index], defs, &live, model, &evaluator) {
-                if let Some(key) = statement_token_key(&statements[statement_index]) {
-                    dead_statements.insert(key);
-                }
+                let origin = cfg.blocks[index].statement_origin(statement_index).ok_or(
+                    DeadStoreError::MissingStatementOrigin {
+                        block: block_id,
+                        statement: statement_index,
+                    },
+                )?;
+                dead_statements.insert(origin);
             }
 
             // Transfer: the statement's definitions no longer matter, its
@@ -126,9 +154,10 @@ fn is_dead_store(
         return false;
     };
 
-    let Some(symbol) = model.resolve_identifier(identifier) else {
-        return false;
-    };
+    // Liveness resolved every identifier in the graph before this check runs.
+    let symbol = model
+        .resolve_identifier(identifier)
+        .expect("liveness resolved every identifier in the graph");
 
     let symbol_info = model.symbol(symbol);
     if symbol_info.kind != SymbolKind::Local || !symbol_info.capturing_scopes.is_empty() {
@@ -149,16 +178,24 @@ fn is_dead_store(
 }
 
 struct DeadStoreRemover {
-    dead_statements: HashSet<TokenKey>,
+    dead_statements: HashSet<StatementOrigin>,
     removed: usize,
 }
 
 impl NodeProcessor for DeadStoreRemover {
     fn process_block(&mut self, block: &mut Block) {
+        let identity = block
+            .get_identity()
+            .expect("block identities were validated before the rewrite");
         let mut statements = block.take_statements();
-        statements.retain(|statement| {
-            let key = statement_token_key(statement);
-            if key.is_some_and(|key| self.dead_statements.contains(&key)) {
+        let mut index = 0;
+        statements.retain(|_| {
+            let origin = StatementOrigin {
+                block: identity,
+                index,
+            };
+            index += 1;
+            if self.dead_statements.contains(&origin) {
                 self.removed += 1;
                 false
             } else {

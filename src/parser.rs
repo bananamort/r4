@@ -67,8 +67,8 @@ impl Parser {
 
     /// Parses the source and runs the semantic analysis in one step.
     ///
-    /// Semantic model queries and transformation passes that depend on them
-    /// are token based, so combine this with [`Parser::preserve_tokens`].
+    /// The resulting model is bound structurally: semantic queries and
+    /// transformation passes do not require token preservation.
     pub fn parse_analyzed(&self, code: &str) -> Result<(Block, SemanticModel), AnalyzedParseError> {
         let block = self.parse(code)?;
         let model = SemanticAnalyzer::new().analyze(&block)?;

@@ -5,7 +5,8 @@
 //! [`SemanticModel`](crate::semantic::SemanticModel) into a
 //! [`ControlFlowGraph`]. The [`analysis`] module provides reachability,
 //! dominator, liveness and constant propagation passes on top of it, and the
-//! [`provenance`] helpers link graph contents back to AST nodes.
+//! provenance helpers link graph contents back to AST nodes through structural
+//! origins recorded during lowering.
 
 mod block;
 mod builder;
@@ -17,4 +18,7 @@ pub mod analysis;
 pub use block::{BasicBlock, BlockId, Terminator};
 pub use builder::{build_chunk, build_function, CfgBuilder, CfgError, CfgErrorKind};
 pub use graph::{ControlFlowGraph, InvariantViolation};
-pub use provenance::{expression_token_key, statement_token_key};
+pub use provenance::{
+    expression_token_key, statement_token_key, validate_block_identities, ConditionKind,
+    ConditionOrigin, StatementOrigin, UnidentifiedBlock,
+};

@@ -8,14 +8,8 @@ use crate::utils::expressions_as_statement;
 /// An error produced while removing unused variables.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UnusedVariableError {
-    /// A declaration has no source position, so it cannot be resolved against
-    /// the semantic model. Parse with token preservation to run this pass.
-    MissingTokenData {
-        /// The name of the unresolved declaration.
-        name: String,
-    },
-    /// A declaration has a source position but is not present in the semantic
-    /// model. This usually means the AST does not match the analyzed model.
+    /// A declaration is not bound in the semantic model. This usually means
+    /// the AST does not match the analyzed model.
     UnresolvedDeclaration {
         /// The name of the unresolved declaration.
         name: String,
@@ -27,11 +21,6 @@ pub enum UnusedVariableError {
 impl fmt::Display for UnusedVariableError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            UnusedVariableError::MissingTokenData { name } => write!(
-                f,
-                "declaration of `{}` has no token data; parse with `preserve_tokens` to remove unused variables",
-                name
-            ),
             UnusedVariableError::UnresolvedDeclaration { name, line } => match line {
                 Some(line) => write!(
                     f,
@@ -60,9 +49,8 @@ impl std::error::Error for UnusedVariableError {}
 /// unused are rewritten: partially-used multi-assignments are left untouched
 /// because removing them requires re-aligning multiple return values.
 ///
-/// Declarations are resolved through their source tokens, so the AST must have
-/// been parsed with token preservation (see
-/// [`Parser::preserve_tokens`](crate::Parser::preserve_tokens)). When any
+/// Declarations are resolved through the structural bindings recorded by
+/// semantic analysis, so the pass works on token-less trees. When any
 /// declaration cannot be resolved the pass fails without modifying the block.
 pub fn remove_unused_variables(
     block: &mut Block,
@@ -128,17 +116,13 @@ fn resolve_declaration(
     model: &SemanticModel,
     identifier: &Identifier,
 ) -> Result<SymbolId, UnusedVariableError> {
-    let Some(token) = identifier.get_token() else {
-        return Err(UnusedVariableError::MissingTokenData {
-            name: identifier.get_name().clone(),
-        });
-    };
-
     model
-        .symbol_at_token(token)
+        .resolve_identifier(identifier)
         .ok_or_else(|| UnusedVariableError::UnresolvedDeclaration {
             name: identifier.get_name().clone(),
-            line: token.get_line_number(),
+            line: identifier
+                .get_token()
+                .and_then(|token| token.get_line_number()),
         })
 }
 
@@ -156,7 +140,8 @@ impl Processor<'_> {
     /// if a later `x = ...` exists, removing `local x` would turn that write
     /// into an assignment to a global.
     fn removable_symbol(&self, identifier: &Identifier) -> Option<SymbolId> {
-        let symbol = resolve_declaration(self.model, identifier).ok()?;
+        let symbol = resolve_declaration(self.model, identifier)
+            .expect("declarations were validated before the rewrite");
         (self.model.is_unused(symbol) && self.model.is_immutable(symbol)).then_some(symbol)
     }
 

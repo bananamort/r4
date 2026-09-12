@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::nodes::{Block, Identifier};
+use crate::nodes::{Block, BlockIdentity, Identifier};
 
 use super::error::{SemanticError, SemanticOptions, SemanticResult};
 use super::label::{GotoLabel, GotoSite, LabelId};
@@ -75,6 +75,7 @@ pub(super) struct AnalyzerState {
     pub(super) goto_tokens: HashMap<TokenKey, usize>,
     pub(super) global_symbols: HashMap<String, SymbolId>,
     pub(super) uses: Vec<Vec<SymbolUse>>,
+    pub(super) next_block_identity: u32,
     pub(super) root_scope: ScopeId,
     pub(super) chunk_scope: ScopeId,
 }
@@ -96,6 +97,7 @@ impl AnalyzerState {
             goto_tokens: HashMap::new(),
             global_symbols: HashMap::new(),
             uses: Vec::new(),
+            next_block_identity: 0,
             root_scope: ScopeId(0),
             chunk_scope: ScopeId(0),
         }
@@ -254,11 +256,27 @@ impl AnalyzerState {
     }
 
     fn bind_identifier(&mut self, identifier: &Identifier, symbol: SymbolId) {
+        identifier.set_binding(symbol.as_binding());
         if let Some(token) = identifier.get_token() {
             if let Some(key) = TokenKey::of(token) {
                 self.identifier_bindings.insert(key, symbol);
             }
         }
+    }
+
+    /// Assigns a fresh structural identity to `block`.
+    ///
+    /// Every block the analyzer reaches gets a unique identity so passes can
+    /// correlate statements between the AST and the control flow graph without
+    /// relying on source tokens. Re-analyzing a tree overwrites the identities
+    /// with a fresh deterministic sequence.
+    pub(super) fn assign_block_identity(&mut self, block: &Block) {
+        let identity = BlockIdentity(self.next_block_identity);
+        self.next_block_identity = self
+            .next_block_identity
+            .checked_add(1)
+            .expect("the block identity arena is exhausted");
+        block.set_identity(identity);
     }
 
     pub(super) fn record_access(

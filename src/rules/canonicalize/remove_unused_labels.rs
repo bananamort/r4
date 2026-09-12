@@ -1,17 +1,17 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::nodes::{Block, Statement};
+use crate::nodes::{Block, LabelStatement, Statement};
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
-use crate::semantic::{LabelId, SemanticModel, TokenKey};
+use crate::semantic::{LabelId, SemanticModel};
 
 /// An error produced while removing unused labels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UnusedLabelError {
-    /// An unused label has no source position, so it cannot be removed.
-    /// Parse with token preservation to run this pass.
-    MissingTokenData {
-        /// The name of the label that could not be removed.
+    /// A label statement is not bound in the semantic model, so it cannot be
+    /// removed. This usually means the AST does not match the model.
+    UnresolvedLabel {
+        /// The name of the label that could not be resolved.
         name: String,
     },
 }
@@ -19,11 +19,9 @@ pub enum UnusedLabelError {
 impl fmt::Display for UnusedLabelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            UnusedLabelError::MissingTokenData { name } => write!(
-                f,
-                "label `{}` has no token data; parse with `preserve_tokens` to remove unused labels",
-                name
-            ),
+            UnusedLabelError::UnresolvedLabel { name } => {
+                write!(f, "label `{}` is not bound in the semantic model", name)
+            }
         }
     }
 }
@@ -33,9 +31,8 @@ impl std::error::Error for UnusedLabelError {}
 /// Removes `::label::` statements that no `goto` targets.
 ///
 /// The semantic model resolves go-to bindings, so labels targeted only from
-/// nested scopes or nested functions are recognized as used. Labels without
-/// token data cannot be located in the AST; the pass fails without modifying
-/// the block in that case.
+/// nested scopes or nested functions are recognized as used. Labels are matched
+/// through their structural bindings, so the pass works on token-less trees.
 pub fn remove_unused_labels(
     block: &mut Block,
     model: &SemanticModel,
@@ -46,47 +43,81 @@ pub fn remove_unused_labels(
         .map(|binding| binding.label)
         .collect();
 
-    let mut unused: HashSet<TokenKey> = HashSet::new();
-    for label in &model.labels {
-        if used.contains(&label.id) {
-            continue;
-        }
-        match label.token {
-            Some(token) => {
-                unused.insert(token);
-            }
-            None => {
-                return Err(UnusedLabelError::MissingTokenData {
-                    name: label.name.clone(),
-                })
-            }
-        }
-    }
+    let unused: HashSet<LabelId> = model
+        .labels
+        .iter()
+        .filter(|label| !used.contains(&label.id))
+        .map(|label| label.id)
+        .collect();
 
     if unused.is_empty() {
         return Ok(0);
     }
 
-    let mut remover = LabelRemover { unused, removed: 0 };
+    validate_labels(block, model)?;
+
+    let mut remover = LabelRemover {
+        model,
+        unused,
+        removed: 0,
+    };
     DefaultVisitor::visit_block(block, &mut remover);
 
     Ok(remover.removed)
 }
 
-struct LabelRemover {
-    unused: HashSet<TokenKey>,
+fn validate_labels(block: &mut Block, model: &SemanticModel) -> Result<(), UnusedLabelError> {
+    struct Validator<'a> {
+        model: &'a SemanticModel,
+        error: Option<UnusedLabelError>,
+    }
+
+    impl Validator<'_> {
+        fn check(&mut self, label: &LabelStatement) {
+            if self.error.is_some() {
+                return;
+            }
+            if self.model.resolve_label(label.get_label()).is_none() {
+                self.error = Some(UnusedLabelError::UnresolvedLabel {
+                    name: label.get_label_name().to_string(),
+                });
+            }
+        }
+    }
+
+    impl NodeProcessor for Validator<'_> {
+        fn process_label_statement(&mut self, label: &mut LabelStatement) {
+            self.check(label);
+        }
+    }
+
+    let mut validator = Validator { model, error: None };
+    DefaultVisitor::visit_block(block, &mut validator);
+
+    match validator.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+struct LabelRemover<'a> {
+    model: &'a SemanticModel,
+    unused: HashSet<LabelId>,
     removed: usize,
 }
 
-impl NodeProcessor for LabelRemover {
+impl NodeProcessor for LabelRemover<'_> {
     fn process_block(&mut self, block: &mut Block) {
         let mut statements = block.take_statements();
         statements.retain(|statement| {
             let Statement::Label(label) = statement else {
                 return true;
             };
-            let key = label.get_label().get_token().and_then(TokenKey::of);
-            if key.is_some_and(|key| self.unused.contains(&key)) {
+            let id = self
+                .model
+                .resolve_label(label.get_label())
+                .expect("labels were validated before the rewrite");
+            if self.unused.contains(&id) {
                 self.removed += 1;
                 false
             } else {

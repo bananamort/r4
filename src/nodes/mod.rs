@@ -2,6 +2,7 @@
 
 mod arguments;
 mod attributes;
+mod binding;
 mod block;
 mod expressions;
 mod function_body;
@@ -16,6 +17,7 @@ mod variable;
 
 pub use arguments::*;
 pub use attributes::*;
+pub use binding::*;
 pub use block::*;
 pub use expressions::*;
 pub use function_body::*;

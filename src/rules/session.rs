@@ -56,9 +56,13 @@ pub struct Session {
 }
 
 impl Session {
-    /// Parses the source with token preservation and analyzes it.
+    /// Parses the source and analyzes it.
+    ///
+    /// The AST is parsed without token data: semantic passes resolve
+    /// identifiers and statements through the structural bindings recorded by
+    /// the analyzer, not through source positions.
     pub fn parse(code: &str) -> Result<Self, SessionError> {
-        let block = Parser::default().preserve_tokens().parse(code)?;
+        let block = Parser::default().parse(code)?;
         Self::from_block(block)
     }
 
@@ -101,27 +105,42 @@ impl Session {
     }
 
     /// Applies a pass that needs semantic information, refreshing the model
-    /// first.
+    /// first. The cached model is invalidated afterwards: the pass may have
+    /// changed the block, so the next query re-analyzes.
     pub fn apply_semantic<R>(
         &mut self,
         pass: impl FnOnce(&mut Block, &SemanticModel) -> R,
     ) -> Result<R, SessionError> {
         self.refresh()?;
-        let Self { block, model } = self;
-        let model = model.as_ref().expect("the model was built by the refresh");
-        Ok(pass(block, model))
+        let result = {
+            let model = self
+                .model
+                .as_ref()
+                .expect("the model was built by the refresh");
+            pass(&mut self.block, model)
+        };
+        self.model = None;
+        Ok(result)
     }
 
     /// Applies a fallible pass that needs semantic information, refreshing the
-    /// model first. The pass error is preserved in [`SessionError::Pass`].
+    /// model first. The pass error is preserved in [`SessionError::Pass`]. The
+    /// cached model is invalidated afterwards, even when the pass fails,
+    /// because a failed pass may still have changed the block.
     pub fn apply_semantic_result<R, E>(
         &mut self,
         pass: impl FnOnce(&mut Block, &SemanticModel) -> Result<R, E>,
     ) -> Result<R, SessionError<E>> {
         self.refresh().map_err(SessionError::Semantic)?;
-        let Self { block, model } = self;
-        let model = model.as_ref().expect("the model was built by the refresh");
-        pass(block, model).map_err(SessionError::Pass)
+        let result = {
+            let model = self
+                .model
+                .as_ref()
+                .expect("the model was built by the refresh");
+            pass(&mut self.block, model).map_err(SessionError::Pass)
+        };
+        self.model = None;
+        result
     }
 
     fn refresh(&mut self) -> Result<(), SemanticError> {

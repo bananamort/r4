@@ -3,6 +3,12 @@
 //!
 //! The entry point is [`SemanticAnalyzer::analyze`], which walks a parsed
 //! [`Block`](crate::nodes::Block) and produces a [`SemanticModel`].
+//!
+//! Analysis also stamps structural bindings on the tree itself: every
+//! identifier is bound to the symbol or label it resolves to (exact even for
+//! same-scope shadowing), and every block receives a unique identity. Passes
+//! consume those bindings instead of source tokens, so analysis and
+//! transformations work on token-less ASTs and survive cloning and synthesis.
 
 mod analyzer;
 mod error;

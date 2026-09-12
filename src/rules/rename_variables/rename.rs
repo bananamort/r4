@@ -7,17 +7,18 @@ use crate::nodes::{
 };
 use crate::process::utils::{identifier_permutator, is_valid_identifier};
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
-use crate::semantic::{AccessKind, SemanticModel, SymbolId, SymbolKind};
+use crate::semantic::{SemanticModel, SymbolId, SymbolKind};
 
 use super::globals::{DEFAULT as DEFAULT_GLOBALS, ROBLOX as ROBLOX_GLOBALS};
 
 /// An error produced while renaming variables.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RenameError {
-    /// A symbol occurrence has no source position, so it could not be rewritten
-    /// consistently. Parse with token preservation to run this pass.
-    MissingTokenData {
-        /// The name of the symbol that could not be fully rewritten.
+    /// An identifier is not bound in the semantic model, so it cannot be
+    /// renamed consistently. This usually means the AST does not match the
+    /// analyzed model.
+    UnresolvedIdentifier {
+        /// The name of the identifier that could not be resolved.
         name: String,
     },
 }
@@ -25,9 +26,9 @@ pub enum RenameError {
 impl fmt::Display for RenameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RenameError::MissingTokenData { name } => write!(
+            RenameError::UnresolvedIdentifier { name } => write!(
                 f,
-                "symbol `{}` has an occurrence without token data; parse with `preserve_tokens` to rename variables",
+                "identifier `{}` is not bound in the semantic model",
                 name
             ),
         }
@@ -51,9 +52,9 @@ pub struct RenameOptions {
 /// generated identifiers are globally unique and avoid every global, every
 /// original symbol name, the default host globals and Lua keywords.
 ///
-/// The pass resolves occurrences through source tokens, so the AST must be
-/// parsed with token preservation. When any usage cannot be addressed the pass
-/// fails without modifying the block.
+/// Identifiers are resolved through the structural bindings recorded by
+/// semantic analysis, so the pass works on token-less trees. When any
+/// identifier cannot be resolved the pass fails without modifying the block.
 pub fn rename_variables(
     block: &mut crate::nodes::Block,
     model: &SemanticModel,
@@ -74,7 +75,7 @@ pub fn rename_variables_with_options(
         .map(|symbol| symbol.id)
         .collect();
 
-    validate_usages(&candidates, model)?;
+    validate_identifiers(block, model)?;
 
     let mut reserved: HashSet<String> = HashSet::new();
     reserved.extend(DEFAULT_GLOBALS.iter().map(|name| (*name).to_owned()));
@@ -107,21 +108,82 @@ pub fn rename_variables_with_options(
     Ok(candidates.len())
 }
 
-fn validate_usages(candidates: &[SymbolId], model: &SemanticModel) -> Result<(), RenameError> {
-    for &symbol in candidates {
-        for usage in model.uses_of(symbol) {
-            // Implicit declarations (the method `self` parameter) have no
-            // identifier in the AST, so only non-declaration usages must be
-            // addressable by token.
-            if usage.kind != AccessKind::Declaration && usage.token.is_none() {
-                return Err(RenameError::MissingTokenData {
-                    name: model.symbol(symbol).name.clone(),
+/// Verifies that every identifier the renamer can rewrite is bound in the
+/// model, so a stale or foreign model is rejected before any mutation.
+fn validate_identifiers(
+    block: &mut crate::nodes::Block,
+    model: &SemanticModel,
+) -> Result<(), RenameError> {
+    struct Validator<'a> {
+        model: &'a SemanticModel,
+        error: Option<RenameError>,
+    }
+
+    impl Validator<'_> {
+        fn check(&mut self, identifier: &Identifier) {
+            if self.error.is_some() {
+                return;
+            }
+            if self.model.resolve_identifier(identifier).is_none() {
+                self.error = Some(RenameError::UnresolvedIdentifier {
+                    name: identifier.get_name().clone(),
                 });
+            }
+        }
+
+        fn check_parameters<'a>(&mut self, parameters: impl Iterator<Item = &'a TypedIdentifier>) {
+            for parameter in parameters {
+                self.check(parameter);
             }
         }
     }
 
-    Ok(())
+    impl NodeProcessor for Validator<'_> {
+        fn process_variable_expression(&mut self, identifier: &mut Identifier) {
+            self.check(identifier);
+        }
+
+        fn process_local_assign_statement(&mut self, assignment: &mut VariableAssignment) {
+            for variable in assignment.iter_variables() {
+                self.check(variable.get_identifier());
+            }
+        }
+
+        fn process_local_function_statement(&mut self, function: &mut FunctionAssignment) {
+            self.check(function.get_identifier());
+            self.check_parameters(function.iter_parameters());
+        }
+
+        fn process_function_statement(&mut self, function: &mut FunctionStatement) {
+            self.check_parameters(function.iter_parameters());
+        }
+
+        fn process_function_expression(&mut self, function: &mut FunctionExpression) {
+            self.check_parameters(function.iter_parameters());
+        }
+
+        fn process_numeric_for_statement(&mut self, statement: &mut NumericForStatement) {
+            self.check(statement.get_identifier().get_identifier());
+        }
+
+        fn process_generic_for_statement(&mut self, statement: &mut GenericForStatement) {
+            for identifier in statement.iter_identifiers() {
+                self.check(identifier.get_identifier());
+            }
+        }
+
+        fn process_type_function(&mut self, function: &mut TypeFunctionStatement) {
+            self.check_parameters(function.iter_parameters());
+        }
+    }
+
+    let mut validator = Validator { model, error: None };
+    DefaultVisitor::visit_block(block, &mut validator);
+
+    match validator.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 struct Renamer<'a> {
@@ -131,10 +193,12 @@ struct Renamer<'a> {
 
 impl Renamer<'_> {
     fn rename_identifier(&self, identifier: &mut Identifier) {
-        if let Some(symbol) = self.model.resolve_identifier(identifier) {
-            if let Some(name) = self.renames.get(&symbol) {
-                identifier.set_name(name.clone());
-            }
+        let symbol = self
+            .model
+            .resolve_identifier(identifier)
+            .expect("identifiers were validated before the rewrite");
+        if let Some(name) = self.renames.get(&symbol) {
+            identifier.set_name(name.clone());
         }
     }
 

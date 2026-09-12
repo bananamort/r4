@@ -1,12 +1,45 @@
+use std::fmt;
+
 use crate::nodes::Token;
 
-use super::{Type, TypedIdentifier};
+use super::binding::IdentityCell;
+use super::{BindingId, Type, TypedIdentifier};
 
 /// Represents an identifier (variable name).
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identifier {
     name: String,
     token: Option<Token>,
+    binding: IdentityCell,
+}
+
+impl Clone for Identifier {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            token: self.token.clone(),
+            binding: self.binding.clone(),
+        }
+    }
+}
+
+impl PartialEq for Identifier {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.token == other.token
+    }
+}
+
+impl Eq for Identifier {}
+
+impl fmt::Debug for Identifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = f.debug_struct("Identifier");
+        debug.field("name", &self.name);
+        debug.field("token", &self.token);
+        if let Some(binding) = self.get_binding() {
+            debug.field("binding", &binding);
+        }
+        debug.finish()
+    }
 }
 
 impl Identifier {
@@ -15,7 +48,30 @@ impl Identifier {
         Self {
             name: name.into(),
             token: None,
+            binding: IdentityCell::empty(),
         }
+    }
+
+    /// Returns the semantic binding of this identifier, if it was analyzed.
+    ///
+    /// The binding is written by [`SemanticAnalyzer`](crate::semantic::SemanticAnalyzer)
+    /// and survives cloning: a copied identifier still refers to the same
+    /// symbol or label.
+    #[inline]
+    pub fn get_binding(&self) -> Option<BindingId> {
+        self.binding.get().map(BindingId::from_raw)
+    }
+
+    /// Records the semantic binding of this identifier.
+    #[inline]
+    pub fn set_binding(&self, binding: BindingId) {
+        self.binding.set(binding.raw());
+    }
+
+    /// Removes the semantic binding of this identifier.
+    #[inline]
+    pub fn clear_binding(&self) {
+        self.binding.clear();
     }
 
     /// Converts this identifier into a typed identifier.
@@ -95,6 +151,7 @@ impl<IntoString: Into<String>> From<IntoString> for Identifier {
         Self {
             name: identifier.into(),
             token: None,
+            binding: IdentityCell::empty(),
         }
     }
 }

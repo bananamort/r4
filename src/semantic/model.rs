@@ -102,28 +102,102 @@ impl SemanticModel {
     /// Returns the symbol bound to an identifier using its source position.
     ///
     /// Returns `None` when the AST does not carry token data or when the
-    /// identifier was never analyzed.
+    /// identifier was never analyzed. Prefer [`Self::resolve_identifier`],
+    /// which uses the structural binding stored on the identifier.
     pub fn symbol_at_token(&self, token: &Token) -> Option<SymbolId> {
         TokenKey::of(token).and_then(|key| self.identifier_bindings.get(&key).copied())
     }
 
     /// Returns the symbol bound to the given identifier.
+    ///
+    /// The binding is read from the identifier itself (see
+    /// [`Identifier::get_binding`]), so no token data is required and
+    /// same-scope shadowing resolves exactly: every occurrence is bound to the
+    /// declaration that was visible when it was analyzed.
+    ///
+    /// A binding that points outside the symbol arena, at a label, or at a
+    /// symbol with a different name is rejected, which catches identifiers that
+    /// were never analyzed or that belong to a stale model.
     pub fn resolve_identifier(&self, identifier: &Identifier) -> Option<SymbolId> {
-        identifier
-            .get_token()
-            .and_then(|token| self.symbol_at_token(token))
+        let binding = identifier.get_binding()?;
+        if binding.is_label() {
+            return None;
+        }
+        let id = SymbolId(binding.index());
+        let symbol = self.symbols.get(id.index())?;
+        (symbol.id == id && symbol.name == *identifier.get_name()).then_some(id)
+    }
+
+    /// Returns the label bound to the given label identifier.
+    ///
+    /// Like [`Self::resolve_identifier`] this uses the structural binding
+    /// recorded on the identifier, validates it against the label arena and
+    /// never falls back to source tokens.
+    pub fn resolve_label(&self, identifier: &Identifier) -> Option<LabelId> {
+        let binding = identifier.get_binding()?;
+        if !binding.is_label() {
+            return None;
+        }
+        let id = LabelId(binding.index());
+        let label = self.labels.get(id.index())?;
+        (label.id == id && label.name == *identifier.get_name()).then_some(id)
     }
 
     /// Resolves a name lexically starting from `scope`, without recording any use.
     ///
-    /// This is useful for queries without token data. It performs a nearest-scope
-    /// lookup and never falls back to a different name.
+    /// This is a name-level convenience query: it returns the most recent
+    /// declaration of `name` in the nearest scope that declares it. Because
+    /// Lua allows redeclaring a name inside the same scope, a name alone does
+    /// not identify an occurrence; use [`Self::resolve_identifier`] for exact,
+    /// occurrence-level resolution, or [`Self::resolve_in_scope_at`] to query a
+    /// name at a specific declaration position.
     pub fn resolve_in_scope(&self, scope: ScopeId, name: &str) -> Option<SymbolId> {
         let mut current = Some(scope);
         while let Some(id) = current {
             let scope = &self.scopes[id.index()];
             if let Some(symbol) = scope
                 .symbols
+                .iter()
+                .rev()
+                .find(|&&symbol| self.symbols[symbol.index()].name == name)
+            {
+                return Some(*symbol);
+            }
+            current = scope.parent;
+        }
+        None
+    }
+
+    /// Resolves `name` at a declaration position inside `scope`.
+    ///
+    /// `declared` maps scopes of the active chain (starting at `scope`) to the
+    /// number of declarations that precede the query point. Within a scope only
+    /// the first `declared` symbols are considered, so a use between two
+    /// declarations of the same name resolves to the first one; scopes missing
+    /// from `declared` are treated as fully declared.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a declaration count exceeds the number of symbols the scope
+    /// actually contains: such a count cannot describe this model.
+    pub fn resolve_in_scope_at(
+        &self,
+        scope: ScopeId,
+        name: &str,
+        declared: &[(ScopeId, usize)],
+    ) -> Option<SymbolId> {
+        let mut current = Some(scope);
+        while let Some(id) = current {
+            let scope = &self.scopes[id.index()];
+            let limit = declared
+                .iter()
+                .find_map(|(declared_scope, count)| (*declared_scope == id).then_some(*count))
+                .unwrap_or(scope.symbols.len());
+            assert!(
+                limit <= scope.symbols.len(),
+                "cannot resolve with more declarations than the scope contains"
+            );
+            if let Some(symbol) = scope.symbols[..limit]
                 .iter()
                 .rev()
                 .find(|&&symbol| self.symbols[symbol.index()].name == name)

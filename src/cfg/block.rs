@@ -1,5 +1,7 @@
 use crate::nodes::{Expression, LastStatement, Statement};
 
+use super::provenance::{ConditionOrigin, StatementOrigin};
+
 /// Identifies a basic block inside a [`ControlFlowGraph`](super::ControlFlowGraph).
 ///
 /// The identifier is an index into the graph's flat `blocks` arena.
@@ -83,9 +85,14 @@ pub struct BasicBlock {
     pub id: BlockId,
     /// Statements executed in order when entering this block.
     pub statements: Vec<Statement>,
+    /// The structural origin of each statement, parallel to `statements`.
+    pub statement_origins: Vec<StatementOrigin>,
     /// Expressions evaluated after the statements and before the terminator
     /// (used for `for` loop initialization expressions).
     pub expressions: Vec<Expression>,
+    /// The AST construct that produced a [`Terminator::Branch`], when the
+    /// terminator is a branch lowered from source.
+    pub branch_origin: Option<ConditionOrigin>,
     /// Blocks that can transfer control to this block.
     pub predecessors: Vec<BlockId>,
     /// Blocks this block can transfer control to.
@@ -100,7 +107,9 @@ impl BasicBlock {
         Self {
             id,
             statements: Vec::new(),
+            statement_origins: Vec::new(),
             expressions: Vec::new(),
+            branch_origin: None,
             predecessors: Vec::new(),
             successors: Vec::new(),
             terminator: Terminator::Unreachable,
@@ -117,5 +126,12 @@ impl BasicBlock {
     #[inline]
     pub fn len(&self) -> usize {
         self.statements.len()
+    }
+
+    /// Returns the structural origin of the statement at `index`, if it was
+    /// lowered from the AST.
+    #[inline]
+    pub fn statement_origin(&self, index: usize) -> Option<StatementOrigin> {
+        self.statement_origins.get(index).copied()
     }
 }

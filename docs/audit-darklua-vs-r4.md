@@ -286,17 +286,20 @@ the follow-ups):
   `rules::canonicalize::remove_unused_variables` using O(1) symbol counts
   (`b9c09ef`).
 - [x] **4b. AST provenance from CFG blocks to statements** —
-  `cfg::{statement_token_key, expression_token_key}` map block contents and
-  branch conditions back to AST nodes through source tokens, and
+  semantic analysis stamps every block with a unique `BlockIdentity`, the CFG
+  builder records the structural origin (`StatementOrigin`) of every lowered
+  statement and the `ConditionOrigin` of every source branch, and
   `rules::canonicalize::remove_unreachable_code` combines constant propagation,
   branch folding and reachability to delete unreachable statements, fold
-  constant `if` statements and drop `while false` loops (this change).
+  constant `if` statements and drop `while false` loops (originally via token
+  keys, migrated to structural origins).
 - [x] **2. Symbol-keyed rename pass** —
   `rules::rename_variables::rename_variables` renames by `SymbolId`, keeps
   globals untouched, rewrites shadowed locals/parameters/iteration
   variables/captured upvalues consistently, and generates globally unique
   names that avoid host globals, original names and keywords. Fails before
-  mutation when any occurrence lacks token data (this change).
+  mutation when any identifier is unbound in the model (originated with token
+  validation, migrated to structural binding validation).
 - [ ] **7. Resolution-based `require` handling.** (No `convert_require` port
   exists in `r4` yet; implement with symbol resolution when it is added.)
 - [x] **8. Freshened synthetic names** —
@@ -340,11 +343,39 @@ the follow-ups):
   primitives now exist, but no behavior-preserving pass consumes them yet;
   hoisting requires preheaders and scope-safe movement, which is a new
   optimization rather than a migration.
-- **`resolve_in_scope` for token-less ASTs** — semantic passes still require
-  token preservation to map occurrences; a scope-range API would lift that.
 - **Bundler port** — `remove_call_match` and `remove_assertions` are now ported
   model-first with the strict `NameGenerator`; the bundler itself does not
-  exist in `r4` yet. When it is ported it must be built on the same generator.
+  exist in `r4` yet. When it is ported it must be built on the same generator
+  and resolve through structural bindings.
+- **Type-name resolution** — Luau type names (`Type::Name`) are not bound to
+  declarations; only runtime identifiers and goto labels carry structural
+  bindings today. A type environment can reuse the same binding scheme.
+
+### Structural semantic layer (token-free passes)
+
+Semantic information now lives on the AST rather than in source coordinates:
+
+- **Identifier bindings** — `Identifier` carries a thread-safe binding cell
+  written by `SemanticAnalyzer`. `SemanticModel::resolve_identifier` and
+  `resolve_label` read and validate that binding, so resolution is exact for
+  same-scope shadowing (`local x = 1; print(x); local x = 2; print(x)` binds
+  each occurrence to its own declaration) and works with
+  `Parser::preserve_tokens(false)`. `resolve_in_scope_at` adds positional
+  name lookup for callers that only track declaration counts.
+- **Block identities and CFG origins** — every analyzed block gets a unique
+  `BlockIdentity`; the CFG builder records `StatementOrigin`/`ConditionOrigin`
+  for lowered statements and branch conditions, with a
+  `CfgErrorKind::MissingBlockIdentity` error when the model does not match the
+  tree. `validate_block_identities` gates the provenance consumers.
+- **Token-keyed APIs stay as diagnostics** — `symbol_at_token`,
+  `label_at_token`, `goto_binding_at_token`, `statement_token_key` and
+  `expression_token_key` remain available when token data exists, but no
+  semantic pass depends on them.
+- **Consumers migrated** — liveness, constant propagation, unused-variable and
+  unused-label removal, dead-store removal, unreachable-code removal and
+  variable renaming all resolve structurally. `rules::Session` now parses
+  without token preservation, and `tests/tokenless_test.rs` verifies
+  byte-identical pipelines with and without tokens.
 
 ### Strict semantics upgrade
 

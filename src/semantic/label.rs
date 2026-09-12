@@ -1,3 +1,5 @@
+use crate::nodes::BindingId;
+
 use super::scope::ScopeId;
 use super::symbol::{SymbolId, TokenKey};
 
@@ -10,6 +12,12 @@ impl LabelId {
     #[inline]
     pub const fn index(self) -> usize {
         self.0 as usize
+    }
+
+    /// Returns the structural binding corresponding to this label.
+    #[inline]
+    pub const fn as_binding(self) -> BindingId {
+        BindingId::label(self.0)
     }
 }
 

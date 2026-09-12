@@ -6,6 +6,7 @@ use crate::semantic::{GotoBinding, LabelId, ScopeId, SemanticModel};
 
 use super::block::{BasicBlock, BlockId, Terminator};
 use super::graph::ControlFlowGraph;
+use super::provenance::{ConditionKind, ConditionOrigin, StatementOrigin};
 
 /// An error produced while lowering an AST into a control flow graph.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +46,9 @@ pub enum CfgErrorKind {
         /// The name of the unresolved goto.
         name: String,
     },
+    /// A block in the AST has no structural identity, so the semantic model
+    /// does not match the tree that is being lowered.
+    MissingBlockIdentity,
 }
 
 impl fmt::Display for CfgError {
@@ -72,6 +76,10 @@ impl fmt::Display for CfgError {
             CfgErrorKind::UnresolvedGoto { name } => {
                 write!(f, "unresolved goto `{}`", name)
             }
+            CfgErrorKind::MissingBlockIdentity => write!(
+                f,
+                "a block has no structural identity; the semantic model does not match the AST"
+            ),
         }
     }
 }
@@ -217,11 +225,17 @@ impl<'a> CfgBuilder<'a> {
             .current
             .take()
             .expect("cannot terminate when no block is active");
-        self.set_terminator(current, terminator);
+        self.set_terminator(current, terminator, None);
     }
 
-    fn set_terminator(&mut self, block: BlockId, terminator: Terminator) {
+    fn set_terminator(
+        &mut self,
+        block: BlockId,
+        terminator: Terminator,
+        branch_origin: Option<ConditionOrigin>,
+    ) {
         let graph_exit = self.exit;
+        self.blocks[block.index()].branch_origin = branch_origin;
         self.blocks[block.index()].terminator = terminator.clone();
         for target in terminator.targets(graph_exit) {
             let successors = &mut self.blocks[block.index()].successors;
@@ -232,9 +246,10 @@ impl<'a> CfgBuilder<'a> {
         }
     }
 
-    fn emit_statement(&mut self, statement: Statement) {
+    fn emit_statement(&mut self, statement: Statement, origin: StatementOrigin) {
         let block = self.current_block();
         self.blocks[block.index()].statements.push(statement);
+        self.blocks[block.index()].statement_origins.push(origin);
     }
 
     // ------------------------------------------------------------------
@@ -242,8 +257,16 @@ impl<'a> CfgBuilder<'a> {
     // ------------------------------------------------------------------
 
     fn lower_block_contents(&mut self, block: &Block) -> Result<(), CfgError> {
-        for statement in block.iter_statements() {
-            self.lower_statement(statement)?;
+        let identity = block.get_identity().ok_or(CfgError {
+            kind: CfgErrorKind::MissingBlockIdentity,
+            line: None,
+        })?;
+        for (index, statement) in block.iter_statements().enumerate() {
+            let origin = StatementOrigin {
+                block: identity,
+                index: index as u32,
+            };
+            self.lower_statement(statement, origin)?;
         }
         if let Some(last_statement) = block.get_last_statement() {
             self.lower_last_statement(last_statement)?;
@@ -251,7 +274,11 @@ impl<'a> CfgBuilder<'a> {
         Ok(())
     }
 
-    fn lower_statement(&mut self, statement: &Statement) -> Result<(), CfgError> {
+    fn lower_statement(
+        &mut self,
+        statement: &Statement,
+        origin: StatementOrigin,
+    ) -> Result<(), CfgError> {
         match statement {
             Statement::Assign(_)
             | Statement::CompoundAssign(_)
@@ -261,7 +288,7 @@ impl<'a> CfgBuilder<'a> {
             | Statement::LocalFunction(_)
             | Statement::TypeDeclaration(_)
             | Statement::TypeFunction(_) => {
-                self.emit_statement(statement.clone());
+                self.emit_statement(statement.clone(), origin);
                 Ok(())
             }
             Statement::Do(do_statement) => self.lower_block_contents(do_statement.get_block()),
@@ -270,7 +297,7 @@ impl<'a> CfgBuilder<'a> {
                 generic_for.get_block(),
             ),
             Statement::Goto(goto_statement) => self.lower_goto(goto_statement),
-            Statement::If(if_statement) => self.lower_if(if_statement),
+            Statement::If(if_statement) => self.lower_if(if_statement, origin),
             Statement::Label(label_statement) => self.lower_label(label_statement),
             Statement::NumericFor(numeric_for) => {
                 let mut expressions = vec![
@@ -282,8 +309,8 @@ impl<'a> CfgBuilder<'a> {
                 }
                 self.lower_for(expressions, numeric_for.get_block())
             }
-            Statement::Repeat(repeat) => self.lower_repeat(repeat),
-            Statement::While(while_statement) => self.lower_while(while_statement),
+            Statement::Repeat(repeat) => self.lower_repeat(repeat, origin),
+            Statement::While(while_statement) => self.lower_while(while_statement, origin),
         }
     }
 
@@ -312,7 +339,11 @@ impl<'a> CfgBuilder<'a> {
         }
     }
 
-    fn lower_if(&mut self, if_statement: &IfStatement) -> Result<(), CfgError> {
+    fn lower_if(
+        &mut self,
+        if_statement: &IfStatement,
+        origin: StatementOrigin,
+    ) -> Result<(), CfgError> {
         let branches = if_statement.get_branches();
 
         if branches.is_empty() {
@@ -349,6 +380,10 @@ impl<'a> CfgBuilder<'a> {
                     then_block: body_blocks[index],
                     else_block: next,
                 },
+                Some(ConditionOrigin::new(
+                    origin,
+                    ConditionKind::IfBranch(index as u32),
+                )),
             );
 
             self.current = Some(body_blocks[index]);
@@ -373,6 +408,7 @@ impl<'a> CfgBuilder<'a> {
     fn lower_while(
         &mut self,
         while_statement: &crate::nodes::WhileStatement,
+        origin: StatementOrigin,
     ) -> Result<(), CfgError> {
         let header = self.create_block();
         let body = self.create_block();
@@ -389,6 +425,7 @@ impl<'a> CfgBuilder<'a> {
                 then_block: body,
                 else_block: exit,
             },
+            Some(ConditionOrigin::new(origin, ConditionKind::While)),
         );
 
         self.loops.push(LoopContext {
@@ -406,7 +443,11 @@ impl<'a> CfgBuilder<'a> {
         Ok(())
     }
 
-    fn lower_repeat(&mut self, repeat: &crate::nodes::RepeatStatement) -> Result<(), CfgError> {
+    fn lower_repeat(
+        &mut self,
+        repeat: &crate::nodes::RepeatStatement,
+        origin: StatementOrigin,
+    ) -> Result<(), CfgError> {
         let body = self.create_block();
         let condition = self.create_block();
         let exit = self.create_block();
@@ -433,6 +474,7 @@ impl<'a> CfgBuilder<'a> {
                 then_block: exit,
                 else_block: body,
             },
+            Some(ConditionOrigin::new(origin, ConditionKind::Repeat)),
         );
 
         self.current = Some(exit);
@@ -454,7 +496,7 @@ impl<'a> CfgBuilder<'a> {
         }
         self.terminate(Terminator::Jump(header));
 
-        self.set_terminator(header, Terminator::ForLoop { body, exit });
+        self.set_terminator(header, Terminator::ForLoop { body, exit }, None);
 
         self.loops.push(LoopContext {
             break_target: exit,
@@ -477,7 +519,7 @@ impl<'a> CfgBuilder<'a> {
         self.terminate(Terminator::Unreachable);
 
         if let Some(&target) = self.label_blocks.get(&label) {
-            self.set_terminator(current, Terminator::Jump(target));
+            self.set_terminator(current, Terminator::Jump(target), None);
         } else {
             self.pending_gotos.entry(label).or_default().push(current);
         }
@@ -510,7 +552,7 @@ impl<'a> CfgBuilder<'a> {
 
         if let Some(pending) = self.pending_gotos.remove(&label) {
             for pending_block in pending {
-                self.set_terminator(pending_block, Terminator::Jump(block));
+                self.set_terminator(pending_block, Terminator::Jump(block), None);
             }
         }
 

@@ -78,6 +78,7 @@ impl AnalyzerState {
 
         let token = token_key(label.get_label());
         let id = LabelId(self.labels.len() as u32);
+        label.get_label().set_binding(id.as_binding());
         self.labels.push(GotoLabel {
             id,
             name: name.clone(),

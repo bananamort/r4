@@ -4,21 +4,35 @@ use std::fmt;
 use crate::cfg::analysis::{
     fold_constant_branches_with, ConstantPropagation, ConstantPropagationError, Reachability,
 };
-use crate::cfg::{build_chunk, expression_token_key, statement_token_key, CfgError, Terminator};
-use crate::nodes::{
-    Block, DoStatement, Expression, Identifier, IfStatement, Statement, WhileStatement,
+use crate::cfg::{
+    build_chunk, validate_block_identities, BlockId, CfgError, ConditionKind, ConditionOrigin,
+    StatementOrigin, Terminator, UnidentifiedBlock,
 };
+use crate::nodes::{Block, DoStatement, Identifier, IfStatement, Statement};
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
-use crate::semantic::{SemanticModel, TokenKey};
+use crate::semantic::SemanticModel;
 
 /// An error produced while removing unreachable code.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UnreachableCodeError {
     /// The control flow graph could not be built.
     Cfg(CfgError),
-    /// Constant propagation could not resolve declarations (usually because
-    /// the AST has no token data).
+    /// Constant propagation could not resolve an identifier.
     ConstantPropagation(ConstantPropagationError),
+    /// The AST and the semantic model do not match.
+    Provenance(UnidentifiedBlock),
+    /// A statement in the graph has no structural origin.
+    MissingStatementOrigin {
+        /// The graph block containing the statement.
+        block: BlockId,
+        /// The index of the statement inside the block.
+        statement: usize,
+    },
+    /// A branch terminator has no condition origin.
+    MissingConditionOrigin {
+        /// The graph block ending in the branch.
+        block: BlockId,
+    },
 }
 
 impl From<CfgError> for UnreachableCodeError {
@@ -33,11 +47,28 @@ impl From<ConstantPropagationError> for UnreachableCodeError {
     }
 }
 
+impl From<UnidentifiedBlock> for UnreachableCodeError {
+    fn from(error: UnidentifiedBlock) -> Self {
+        Self::Provenance(error)
+    }
+}
+
 impl fmt::Display for UnreachableCodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UnreachableCodeError::Cfg(error) => write!(f, "{}", error),
             UnreachableCodeError::ConstantPropagation(error) => write!(f, "{}", error),
+            UnreachableCodeError::Provenance(error) => write!(f, "{}", error),
+            UnreachableCodeError::MissingStatementOrigin { block, statement } => write!(
+                f,
+                "statement {} of graph block {:?} has no structural origin",
+                statement, block
+            ),
+            UnreachableCodeError::MissingConditionOrigin { block } => write!(
+                f,
+                "branch of graph block {:?} has no structural origin",
+                block
+            ),
         }
     }
 }
@@ -54,20 +85,22 @@ impl std::error::Error for UnreachableCodeError {}
 ///   containing only that branch,
 /// * removes `while` loops whose condition is a known false constant.
 ///
-/// Unknown conditions are left untouched. Like the other semantic passes, it
-/// resolves declarations through source tokens, so the AST must be parsed with
-/// token preservation.
+/// Unknown conditions are left untouched. Statements and conditions are
+/// matched to the AST through structural origins, so the pass works on
+/// token-less trees.
 pub fn remove_unreachable_code(
     block: &mut Block,
     model: &SemanticModel,
 ) -> Result<usize, UnreachableCodeError> {
+    validate_block_identities(block)?;
+
     let mut cfg = build_chunk(block, model)?;
     let analysis = ConstantPropagation::analyze(&cfg, model)?;
     let evaluator = Evaluator::default();
     let reachability_before_folding = Reachability::analyze(&cfg);
 
     let mut block_decisions: Vec<Option<bool>> = vec![None; cfg.block_count()];
-    let mut condition_decisions: HashMap<TokenKey, bool> = HashMap::new();
+    let mut condition_decisions: HashMap<ConditionOrigin, bool> = HashMap::new();
 
     for block_id in cfg.iter_block_ids() {
         if !reachability_before_folding.is_reachable(block_id) {
@@ -86,9 +119,10 @@ pub fn remove_unreachable_code(
 
             if let Some(truthy) = value {
                 block_decisions[block_id.index()] = Some(truthy);
-                if let Some(key) = expression_token_key(condition) {
-                    condition_decisions.insert(key, truthy);
-                }
+                let origin = cfg.blocks[block_id.index()]
+                    .branch_origin
+                    .ok_or(UnreachableCodeError::MissingConditionOrigin { block: block_id })?;
+                condition_decisions.insert(origin, truthy);
             }
         }
     }
@@ -96,16 +130,21 @@ pub fn remove_unreachable_code(
     fold_constant_branches_with(&mut cfg, |block_id, _| block_decisions[block_id.index()]);
 
     let reachability = Reachability::analyze(&cfg);
-    let mut unreachable_statements: HashSet<TokenKey> = HashSet::new();
+    let mut unreachable_statements: HashSet<StatementOrigin> = HashSet::new();
 
     for block_id in cfg.iter_block_ids() {
         if reachability.is_reachable(block_id) {
             continue;
         }
-        for statement in &cfg.blocks[block_id.index()].statements {
-            if let Some(key) = statement_token_key(statement) {
-                unreachable_statements.insert(key);
-            }
+        let index = block_id.index();
+        for statement_index in 0..cfg.blocks[index].statements.len() {
+            let origin = cfg.blocks[index].statement_origin(statement_index).ok_or(
+                UnreachableCodeError::MissingStatementOrigin {
+                    block: block_id,
+                    statement: statement_index,
+                },
+            )?;
+            unreachable_statements.insert(origin);
         }
     }
 
@@ -124,8 +163,8 @@ pub fn remove_unreachable_code(
 }
 
 struct Rewriter {
-    unreachable_statements: HashSet<TokenKey>,
-    condition_decisions: HashMap<TokenKey, bool>,
+    unreachable_statements: HashSet<StatementOrigin>,
+    condition_decisions: HashMap<ConditionOrigin, bool>,
     removed: usize,
 }
 
@@ -136,20 +175,18 @@ enum IfRewrite {
 }
 
 impl Rewriter {
-    fn condition_decision(&self, condition: &Expression) -> Option<bool> {
-        expression_token_key(condition).and_then(|key| self.condition_decisions.get(&key).copied())
+    fn condition_decision(&self, origin: ConditionOrigin) -> Option<bool> {
+        self.condition_decisions.get(&origin).copied()
     }
 
-    fn keep_statement(&mut self, statement: &mut Statement) -> bool {
-        if let Some(key) = statement_token_key(statement) {
-            if self.unreachable_statements.contains(&key) {
-                self.removed += 1;
-                return false;
-            }
+    fn keep_statement(&mut self, statement: &mut Statement, origin: StatementOrigin) -> bool {
+        if self.unreachable_statements.contains(&origin) {
+            self.removed += 1;
+            return false;
         }
 
         match statement {
-            Statement::If(if_statement) => match self.simplify_if(if_statement) {
+            Statement::If(if_statement) => match self.simplify_if(if_statement, origin) {
                 IfRewrite::Unchanged => true,
                 IfRewrite::Remove => {
                     self.removed += 1;
@@ -161,13 +198,14 @@ impl Rewriter {
                     true
                 }
             },
-            Statement::While(while_statement) => self.simplify_while(while_statement),
+            Statement::While(_) => self.simplify_while(origin),
             _ => true,
         }
     }
 
-    fn simplify_while(&mut self, while_statement: &WhileStatement) -> bool {
-        if self.condition_decision(while_statement.get_condition()) == Some(false) {
+    fn simplify_while(&mut self, origin: StatementOrigin) -> bool {
+        let condition = ConditionOrigin::new(origin, ConditionKind::While);
+        if self.condition_decision(condition) == Some(false) {
             self.removed += 1;
             false
         } else {
@@ -175,11 +213,12 @@ impl Rewriter {
         }
     }
 
-    fn simplify_if(&self, if_statement: &IfStatement) -> IfRewrite {
+    fn simplify_if(&self, if_statement: &IfStatement, origin: StatementOrigin) -> IfRewrite {
         let mut skipped_false_branch = false;
 
-        for branch in if_statement.iter_branches() {
-            match self.condition_decision(branch.get_condition()) {
+        for (index, branch) in if_statement.iter_branches().enumerate() {
+            let condition = ConditionOrigin::new(origin, ConditionKind::IfBranch(index as u32));
+            match self.condition_decision(condition) {
                 Some(true) => {
                     return IfRewrite::Replace(Box::new(
                         DoStatement::new(branch.get_block().clone()).into(),
@@ -211,8 +250,19 @@ impl Rewriter {
 
 impl NodeProcessor for Rewriter {
     fn process_block(&mut self, block: &mut Block) {
+        let identity = block
+            .get_identity()
+            .expect("block identities were validated before the rewrite");
         let mut statements = block.take_statements();
-        statements.retain_mut(|statement| self.keep_statement(statement));
+        let mut index = 0;
+        statements.retain_mut(|statement| {
+            let origin = StatementOrigin {
+                block: identity,
+                index,
+            };
+            index += 1;
+            self.keep_statement(statement, origin)
+        });
         block.set_statements(statements);
     }
 }
