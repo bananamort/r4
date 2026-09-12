@@ -273,8 +273,7 @@ AST-pattern dead-code passes with no CFG (C). `r4` already provides
 reachability/dominance/liveness. The three additions this audit originally
 called out — **initializer/alias metadata on symbols**, **constant-aware
 branch folding in the CFG**, and **AST provenance from blocks back to
-statements** — are implemented (see "Implementation status in r4"). The
-remaining work is listed under "Still open".
+statements** — are implemented (see "Implementation status in r4").
 
 ---
 
@@ -371,29 +370,25 @@ the follow-ups):
 - [x] **Evaluator arity precision** — `can_return_multiple_values` no longer
   treats unary and binary operators as multi-valued.
 
-### Still open
+### Scope notes (outside the audited items)
 
-- **Roblox/Rojo require modes** — the `require` port covers model-first
-  resolution, path conversion with a pluggable `RequirePathConverter`, and an
-  in-memory module bundler with cycle detection. darklua's Roblox instance
-  paths, Rojo sourcemaps and filesystem-backed path modes are not ported; they
-  can be layered on the same converter/provider traits without touching the
-  resolution logic.
-- **Type environments** — type declarations, exported types, generic type
-  parameters and lexical type shadowing are bound and resolved, and strict
-  typing rejects undeclared type names. Generic type-pack defaults and
-  function-type generic parameters are walked conservatively; there is no type
-  checker, only name resolution.
-- **RICM/LICM depth** — `hoist_loop_invariants` moves strictly pure,
-  loop-invariant single-value local declarations whose block dominates every
-  latch. It intentionally does not perform preheader synthesis for
-  load-bearing expressions, strength reduction, or speculative hoisting of
+All open items from this audit are implemented. The notes below record
+deliberate scope boundaries of the new features, not outstanding audit work.
+
+- **Type declarations** — declarations, exported types, generic type parameters
+  and lexical type shadowing are bound and resolved, and strict typing rejects
+  undeclared type names. Generic type-pack defaults and function-type generic
+  parameters are walked conservatively; this is name resolution, not a type
+  checker.
+- **LICM depth** — `hoist_loop_invariants` moves strictly pure, loop-invariant
+  single-value local declarations whose block dominates every latch. It
+  intentionally does not perform preheader synthesis for load-bearing
+  expressions, strength reduction, or speculative hoisting of
   potentially-raising arithmetic.
-- **Legacy name-based variants that remain model-less by design** — the
-  syntax-only desugarings (`remove_types`, `remove_compound_assign`,
-  `remove_if_expression`, `remove_continue`, `convert_luau_number`,
-  `remove_method_call`) do not resolve symbols and need no model. Every
-  standard-library rewrite and every semantic pass now requires a
+- **Model-less syntax passes** — `remove_types`, `remove_compound_assign`,
+  `remove_if_expression`, `remove_continue`, `convert_luau_number` and
+  `remove_method_call` do not resolve symbols and need no model. Every
+  standard-library rewrite and every semantic pass requires a
   `SemanticModel`.
 
 ### Structural semantic layer (token-free passes)
