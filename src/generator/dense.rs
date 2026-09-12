@@ -376,6 +376,17 @@ impl LuaGenerator for DenseLuaGenerator {
         self.push_str("end");
     }
 
+    fn write_goto_statement(&mut self, statement: &nodes::GotoStatement) {
+        self.push_str("goto ");
+        self.write_identifier(statement.get_label());
+    }
+
+    fn write_label_statement(&mut self, statement: &nodes::LabelStatement) {
+        self.push_str("::");
+        self.write_identifier(statement.get_label());
+        self.push_str("::");
+    }
+
     fn write_generic_for(&mut self, generic_for: &nodes::GenericForStatement) {
         self.push_str("for");
 

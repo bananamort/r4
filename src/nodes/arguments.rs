@@ -267,6 +267,7 @@ impl Arguments {
     }
 
     /// Replaces referenced tokens with the actual content from the source code.
+    #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
             Arguments::Tuple(tuple) => tuple.replace_referenced_tokens(code),
@@ -275,6 +276,7 @@ impl Arguments {
     }
 
     /// Shifts token line numbers by the specified amount.
+    #[allow(dead_code)]
     pub(crate) fn shift_token_line(&mut self, amount: isize) {
         match self {
             Arguments::Tuple(tuple) => tuple.shift_token_line(amount),
@@ -283,6 +285,7 @@ impl Arguments {
     }
 
     /// Filters comments using the provided predicate.
+    #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&super::Trivia) -> bool) {
         match self {
             Arguments::Tuple(tuple) => tuple.filter_comments(filter),

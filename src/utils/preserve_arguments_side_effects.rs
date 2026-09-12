@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::{
     nodes::{Arguments, Expression, TableEntry},
     process::Evaluator,

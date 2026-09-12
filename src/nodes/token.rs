@@ -29,6 +29,24 @@ impl Position {
             line_number,
         }
     }
+
+    /// Returns the start byte offset of this position in the original source code,
+    /// if it references a range of the source code.
+    pub fn get_start(&self) -> Option<usize> {
+        match self {
+            Position::LineNumberReference { start, .. } => Some(*start),
+            Position::LineNumber { .. } | Position::Any { .. } => None,
+        }
+    }
+
+    /// Returns the end byte offset of this position in the original source code,
+    /// if it references a range of the source code.
+    pub fn get_end(&self) -> Option<usize> {
+        match self {
+            Position::LineNumberReference { end, .. } => Some(*end),
+            Position::LineNumber { .. } | Position::Any { .. } => None,
+        }
+    }
 }
 
 /// An enum to represent source code text.
@@ -240,6 +258,26 @@ impl Token {
         }
     }
 
+    /// Returns the source position of this token.
+    #[inline]
+    pub fn get_position(&self) -> &Position {
+        &self.position
+    }
+
+    /// Returns the start byte offset of this token in the original source code,
+    /// if it references a range of the source code.
+    #[inline]
+    pub fn get_start(&self) -> Option<usize> {
+        self.position.get_start()
+    }
+
+    /// Returns the end byte offset of this token in the original source code,
+    /// if it references a range of the source code.
+    #[inline]
+    pub fn get_end(&self) -> Option<usize> {
+        self.position.get_end()
+    }
+
     /// Replaces the token's content with new content while preserving line number information.
     pub fn replace_with_content<IntoCowStr: Into<Cow<'static, str>>>(
         &mut self,
@@ -274,6 +312,7 @@ impl Token {
             .retain(|trivia| trivia.kind() != TriviaKind::Whitespace);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         self.leading_trivia
             .retain(|trivia| trivia.kind() != TriviaKind::Comment || filter(trivia));
@@ -281,6 +320,7 @@ impl Token {
             .retain(|trivia| trivia.kind() != TriviaKind::Comment || filter(trivia));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         if let Position::LineNumberReference {
             start,
@@ -320,6 +360,7 @@ impl Token {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn shift_token_line(&mut self, amount: isize) {
         match &mut self.position {
             Position::LineNumberReference { line_number, .. }

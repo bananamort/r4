@@ -400,6 +400,7 @@ impl TableEntryType {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
             TableEntryType::Property(property) => property.replace_referenced_tokens(code),
@@ -408,6 +409,7 @@ impl TableEntryType {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn shift_token_line(&mut self, amount: isize) {
         match self {
             TableEntryType::Property(property) => property.shift_token_line(amount),
@@ -416,6 +418,7 @@ impl TableEntryType {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         match self {
             TableEntryType::Property(property) => property.filter_comments(filter),

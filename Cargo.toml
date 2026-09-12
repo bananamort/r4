@@ -10,7 +10,7 @@ default = []
 tracing = ["dep:tracing"]
 
 [dependencies]
-full_moon = { version = "2.2.0", features = ["roblox"] }
+full_moon = { version = "2.2.0", features = ["roblox", "lua52"] }
 num-traits = "0.2.19"
 bstr = "1.12.1"
 indexmap = "2.14.0"
@@ -24,6 +24,14 @@ env_logger = "0.11.10"
 pretty_assertions = "1.4.1"
 insta = { version = "1.47.2", features = ["json", "filters"] }
 paste = "1.0.15"
+rand = "0.10.1"
+rand_distr = "0.6.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+
+[lints.clippy]
+uninlined_format_args = "allow"
 
 # full_moon can stack overflow on complex grammar if compiled with opt-level 0
 [profile.dev.package.full_moon]

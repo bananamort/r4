@@ -8,17 +8,27 @@ use crate::{
     utils::Timer,
 };
 
-/// A parser for Luau code that converts it into an abstract syntax tree.
+/// A parser for Lua code that converts it into an abstract syntax tree.
+///
+/// By default the parser accepts Luau syntax. Enable [`Parser::lua52`] to parse
+/// Lua 5.2, which adds `goto`/`::label::` statements. The two dialects cannot be
+/// combined because `::` is also Luau's type assertion operator.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parser {
     hold_token_data: bool,
+    lua52: bool,
 }
 
 impl Parser {
     /// Parses Lua code into a [`Block`].
     pub fn parse(&self, code: &str) -> Result<Block, ParserError> {
         let full_moon_parse_timer = Timer::now();
-        let parse_result = full_moon::parse_fallible(code, LuaVersion::luau()).into_result();
+        let lua_version = if self.lua52 {
+            LuaVersion::lua52()
+        } else {
+            LuaVersion::luau()
+        };
+        let parse_result = full_moon::parse_fallible(code, lua_version).into_result();
         log::trace!(
             "full-moon parsing done in {}",
             full_moon_parse_timer.duration_label()
@@ -41,8 +51,17 @@ impl Parser {
         self
     }
 
-    pub(crate) fn is_preserving_tokens(&self) -> bool {
-        self.hold_token_data
+    /// Configures the parser to accept Lua 5.2 syntax, which includes
+    /// `goto`/`::label::` statements.
+    pub fn lua52(mut self) -> Self {
+        self.lua52 = true;
+        self
+    }
+
+    /// Returns whether the parser accepts Lua 5.2 syntax.
+    #[inline]
+    pub fn is_lua52(&self) -> bool {
+        self.lua52
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]

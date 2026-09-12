@@ -9,7 +9,9 @@ enum StatementType {
     CompoundAssign,
     Function,
     GenericFor,
+    Goto,
     If,
+    Label,
     LocalAssign,
     LocalFunction,
     NumericFor,
@@ -32,7 +34,9 @@ impl From<&nodes::Statement> for StatementType {
             CompoundAssign(_) => Self::CompoundAssign,
             Function(_) => Self::Function,
             GenericFor(_) => Self::GenericFor,
+            Goto(_) => Self::Goto,
             If(_) => Self::If,
+            Label(_) => Self::Label,
             LocalAssign(_) => Self::LocalAssign,
             LocalFunction(_) => Self::LocalFunction,
             NumericFor(_) => Self::NumericFor,
@@ -850,6 +854,17 @@ impl LuaGenerator for ReadableLuaGenerator {
             self.indent_and_write_block(block);
             self.push_str("end");
         }
+    }
+
+    fn write_goto_statement(&mut self, statement: &nodes::GotoStatement) {
+        self.push_str("goto ");
+        self.write_identifier(statement.get_label());
+    }
+
+    fn write_label_statement(&mut self, statement: &nodes::LabelStatement) {
+        self.push_str("::");
+        self.write_identifier(statement.get_label());
+        self.push_str("::");
     }
 
     fn write_repeat_statement(&mut self, repeat: &nodes::RepeatStatement) {

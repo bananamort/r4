@@ -3,7 +3,9 @@ mod compound_assign;
 mod do_statement;
 mod function;
 mod generic_for;
+mod goto;
 mod if_statement;
+mod label;
 mod last_statement;
 mod local_assign;
 mod local_function;
@@ -18,7 +20,9 @@ pub use compound_assign::*;
 pub use do_statement::*;
 pub use function::*;
 pub use generic_for::*;
+pub use goto::*;
 pub use if_statement::*;
+pub use label::*;
 pub use last_statement::*;
 pub use local_assign::*;
 pub use local_function::*;
@@ -45,10 +49,14 @@ pub enum Statement {
     CompoundAssign(CompoundAssignStatement),
     /// A function declaration statement (e.g., `function name() ... end`)
     Function(Box<FunctionStatement>),
+    /// A goto statement (e.g., `goto label`)
+    Goto(GotoStatement),
     /// A generic for loop (e.g., `for k, v in pairs(t) do ... end`)
     GenericFor(GenericForStatement),
     /// An if statement (e.g., `if condition then ... elseif ... else ... end`)
     If(IfStatement),
+    /// A label statement (e.g., `::label::`)
+    Label(LabelStatement),
     /// A local variable assignment (e.g., `local a, b = 1, 2`)
     LocalAssign(VariableAssignment),
     /// A local function declaration (e.g., `local function name() ... end`)
@@ -74,8 +82,10 @@ impl Statement {
             Self::Call(call) => call.mutate_first_token(),
             Self::CompoundAssign(compound) => compound.mutate_first_token(),
             Self::Function(function) => function.mutate_first_token(),
+            Self::Goto(goto_stmt) => goto_stmt.mutate_first_token(),
             Self::GenericFor(generic_for) => generic_for.mutate_first_token(),
             Self::If(if_stmt) => if_stmt.mutate_first_token(),
+            Self::Label(label_stmt) => label_stmt.mutate_first_token(),
             Self::LocalAssign(local_assign) => local_assign.mutate_first_token(),
             Self::LocalFunction(local_function) => local_function.mutate_first_token(),
             Self::NumericFor(numeric_for) => numeric_for.mutate_first_token(),
@@ -95,8 +105,10 @@ impl Statement {
             Self::Call(call) => call.mutate_last_token(),
             Self::CompoundAssign(compound) => compound.mutate_last_token(),
             Self::Function(function) => function.mutate_last_token(),
+            Self::Goto(goto_stmt) => goto_stmt.mutate_last_token(),
             Self::GenericFor(generic_for) => generic_for.mutate_last_token(),
             Self::If(if_stmt) => if_stmt.mutate_last_token(),
+            Self::Label(label_stmt) => label_stmt.mutate_last_token(),
             Self::LocalAssign(local_assign) => local_assign.mutate_last_token(),
             Self::LocalFunction(local_function) => local_function.mutate_last_token(),
             Self::NumericFor(numeric_for) => numeric_for.mutate_last_token(),
@@ -138,6 +150,12 @@ impl From<FunctionStatement> for Statement {
     }
 }
 
+impl From<GotoStatement> for Statement {
+    fn from(goto_statement: GotoStatement) -> Statement {
+        Statement::Goto(goto_statement)
+    }
+}
+
 impl From<GenericForStatement> for Statement {
     fn from(generic_for: GenericForStatement) -> Statement {
         Statement::GenericFor(generic_for)
@@ -147,6 +165,12 @@ impl From<GenericForStatement> for Statement {
 impl From<IfStatement> for Statement {
     fn from(if_statement: IfStatement) -> Statement {
         Statement::If(if_statement)
+    }
+}
+
+impl From<LabelStatement> for Statement {
+    fn from(label_statement: LabelStatement) -> Statement {
+        Statement::Label(label_statement)
     }
 }
 

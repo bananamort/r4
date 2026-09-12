@@ -350,6 +350,7 @@ impl NumberExpression {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
             NumberExpression::Decimal(number) => number.replace_referenced_tokens(code),
@@ -358,6 +359,7 @@ impl NumberExpression {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn shift_token_line(&mut self, amount: isize) {
         match self {
             NumberExpression::Decimal(number) => number.shift_token_line(amount),
@@ -366,6 +368,7 @@ impl NumberExpression {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         match self {
             NumberExpression::Decimal(number) => number.filter_comments(filter),

@@ -1,3 +1,7 @@
+// Identifier permutation utilities are kept for future renaming passes; they
+// are not wired into the current transformation pipeline yet.
+#![allow(dead_code)]
+
 mod permutator;
 
 pub(crate) use permutator::Permutator;

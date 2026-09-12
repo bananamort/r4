@@ -612,6 +612,32 @@ impl<'a> AstConverter<'a> {
                     self.statements
                         .push(builder.into_function_statement(name).into());
                 }
+                ConvertWork::MakeGotoStatement { statement } => {
+                    let mut goto_statement = GotoStatement::new(
+                        self.convert_token_to_identifier(statement.label_name())?,
+                    );
+
+                    if self.hold_token_data {
+                        goto_statement.set_tokens(GotoTokens {
+                            r#goto: self.convert_token(statement.goto_token())?,
+                        });
+                    }
+
+                    self.statements.push(goto_statement.into());
+                }
+                ConvertWork::MakeLabelStatement { statement } => {
+                    let mut label_statement =
+                        LabelStatement::new(self.convert_token_to_identifier(statement.name())?);
+
+                    if self.hold_token_data {
+                        label_statement.set_tokens(LabelTokens {
+                            left_colons: self.convert_token(statement.left_colons())?,
+                            right_colons: self.convert_token(statement.right_colons())?,
+                        });
+                    }
+
+                    self.statements.push(label_statement.into());
+                }
                 ConvertWork::MakeFunctionCallStatement { call } => {
                     let call = self.make_function_call(call)?;
                     self.statements.push(call.into());
@@ -1591,6 +1617,15 @@ impl<'a> AstConverter<'a> {
                     statement: function,
                 });
                 self.push_function_body_work(function.body());
+            }
+            ast::Stmt::Goto(goto_statement) => {
+                self.work_stack.push(ConvertWork::MakeGotoStatement {
+                    statement: goto_statement,
+                });
+            }
+            ast::Stmt::Label(label) => {
+                self.work_stack
+                    .push(ConvertWork::MakeLabelStatement { statement: label });
             }
             ast::Stmt::GenericFor(generic_for) => {
                 self.work_stack.push(ConvertWork::MakeGenericForStatement {
@@ -3055,6 +3090,12 @@ enum ConvertWork<'a> {
     },
     MakeFunctionDeclaration {
         statement: &'a ast::FunctionDeclaration,
+    },
+    MakeGotoStatement {
+        statement: &'a ast::lua52::Goto,
+    },
+    MakeLabelStatement {
+        statement: &'a ast::lua52::Label,
     },
     MakeFunctionCallExpression {
         call: &'a ast::FunctionCall,

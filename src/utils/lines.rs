@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::nodes::{
     Arguments, Block, Expression, FunctionCall, FunctionReturnType, LastStatement, Prefix,
     Statement, Token, Type, Variable,
@@ -63,7 +65,11 @@ fn last_statement_token(statement: &Statement) -> Option<&Token> {
         Statement::CompoundAssign(assign) => last_expression_token(assign.get_value()),
         Statement::Function(function) => function.get_tokens().map(|tokens| &tokens.end),
         Statement::GenericFor(generic_for) => generic_for.get_tokens().map(|tokens| &tokens.end),
+        Statement::Goto(goto_statement) => goto_statement.get_label().get_token(),
         Statement::If(if_statement) => if_statement.get_tokens().map(|tokens| &tokens.end),
+        Statement::Label(label_statement) => label_statement
+            .get_tokens()
+            .map(|tokens| &tokens.right_colons),
         Statement::LocalAssign(local_assign) => local_assign
             .iter_values()
             .last()
@@ -191,7 +197,11 @@ fn first_statement_token(statement: &Statement) -> Option<&Token> {
         Statement::CompoundAssign(assign) => first_variable_token(assign.get_variable()),
         Statement::Function(function) => function.get_tokens().map(|tokens| &tokens.function),
         Statement::GenericFor(generic_for) => generic_for.get_tokens().map(|tokens| &tokens.r#for),
+        Statement::Goto(goto_statement) => goto_statement.get_tokens().map(|tokens| &tokens.r#goto),
         Statement::If(if_statement) => if_statement.get_tokens().map(|tokens| &tokens.r#if),
+        Statement::Label(label_statement) => label_statement
+            .get_tokens()
+            .map(|tokens| &tokens.left_colons),
         Statement::LocalAssign(local_assign) => {
             local_assign.get_tokens().map(|tokens| &tokens.keyword)
         }
@@ -255,5 +265,3 @@ fn first_prefix_token(prefix: &Prefix) -> Option<&Token> {
         }
     }
 }
-
-

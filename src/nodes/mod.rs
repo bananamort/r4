@@ -68,6 +68,7 @@ macro_rules! impl_token_fns {
             )*)?
         }
 
+        #[allow(dead_code)]
         pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
             $(
                 self.$field.replace_referenced_tokens(code);
@@ -84,6 +85,7 @@ macro_rules! impl_token_fns {
             )*)?
         }
 
+        #[allow(dead_code)]
         pub(crate) fn shift_token_line(&mut self, amount: isize) {
             $(
                 self.$field.shift_token_line(amount);
@@ -100,6 +102,7 @@ macro_rules! impl_token_fns {
             )*)?
         }
 
+        #[allow(dead_code)]
         pub(crate) fn filter_comments(&mut self, filter: impl Fn(&crate::nodes::Trivia) -> bool) {
             $(
                 self.$field.filter_comments(&filter);

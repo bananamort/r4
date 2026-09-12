@@ -1,0 +1,464 @@
+//! AST traversal for the semantic analysis pass.
+//!
+//! This module is an extension of [`AnalyzerState`]: the walker drives the
+//! coordinator while visiting statement, expression, variable and type nodes. It
+//! pushes and pops lexical scopes, declares symbols, records reads/writes and
+//! delegates labels/gotos to [`super::goto`].
+
+use crate::nodes::*;
+
+use super::analyzer::AnalyzerState;
+use super::error::SemanticResult;
+use super::goto::is_block_end_label;
+use super::scope::{ScopeId, ScopeKind};
+use super::symbol::{AccessKind, SymbolKind};
+
+impl AnalyzerState {
+    /// Walks every statement of a block (including its optional last statement).
+    ///
+    /// Labels are recorded before being resolved so that forward gotos work;
+    /// everything else is dispatched to [`Self::walk_statement`].
+    pub(super) fn walk_block_statements(&mut self, block: &Block) -> SemanticResult<()> {
+        for (index, statement) in block.iter_statements().enumerate() {
+            match statement {
+                Statement::Label(label) => {
+                    let is_block_end = is_block_end_label(block, index);
+                    self.record_label(label, is_block_end)?;
+                }
+                statement => self.walk_statement(statement)?,
+            }
+        }
+
+        if let Some(last_statement) = block.get_last_statement() {
+            self.walk_last_statement(last_statement)?;
+        }
+
+        Ok(())
+    }
+
+    fn enter_block(&mut self) -> ScopeId {
+        self.push_scope(ScopeKind::Block)
+    }
+
+    fn enter_function(&mut self) -> ScopeId {
+        let id = self.push_scope(ScopeKind::Function);
+        self.function_stack.push(id);
+        id
+    }
+
+    fn exit_function(&mut self) {
+        let function = self
+            .function_stack
+            .pop()
+            .expect("a function scope is always active while analyzing");
+        debug_assert_eq!(function, self.current_scope());
+        self.pop_scope();
+    }
+
+    fn walk_scoped_block(&mut self, block: &Block) -> SemanticResult<()> {
+        self.enter_block();
+        let result = self.walk_block_statements(block);
+        self.pop_scope();
+        result
+    }
+
+    fn walk_statement(&mut self, statement: &Statement) -> SemanticResult<()> {
+        match statement {
+            Statement::Assign(assign) => {
+                for value in assign.iter_values() {
+                    self.walk_expression(value)?;
+                }
+                for variable in assign.iter_variables() {
+                    self.walk_variable_write(variable)?;
+                }
+            }
+            Statement::Call(call) => self.walk_call(call)?,
+            Statement::CompoundAssign(assign) => {
+                self.walk_variable_read(assign.get_variable())?;
+                self.walk_expression(assign.get_value())?;
+                if let Variable::Identifier(identifier) = assign.get_variable() {
+                    let name = identifier.get_name().clone();
+                    let symbol = self.resolve_name(&name, Some(identifier))?;
+                    self.record_access(symbol, AccessKind::Write, Some(identifier));
+                }
+            }
+            Statement::Do(do_statement) => {
+                self.walk_scoped_block(do_statement.get_block())?;
+            }
+            Statement::Function(function) => self.walk_function_statement(function)?,
+            Statement::GenericFor(generic_for) => {
+                for expression in generic_for.iter_expressions() {
+                    self.walk_expression(expression)?;
+                }
+                self.enter_block();
+                for identifier in generic_for.iter_identifiers() {
+                    self.declare_symbol(
+                        identifier.get_name(),
+                        SymbolKind::Iteration,
+                        Some(identifier.get_identifier()),
+                    );
+                }
+                let result = self.walk_block_statements(generic_for.get_block());
+                self.pop_scope();
+                result?;
+            }
+            Statement::Goto(goto_statement) => self.record_goto(goto_statement),
+            Statement::If(if_statement) => {
+                for branch in if_statement.iter_branches() {
+                    self.walk_expression(branch.get_condition())?;
+                    self.walk_scoped_block(branch.get_block())?;
+                }
+                if let Some(else_block) = if_statement.get_else_block() {
+                    self.walk_scoped_block(else_block)?;
+                }
+            }
+            Statement::Label(_) => {
+                unreachable!("labels are recorded by `walk_block_statements`")
+            }
+            Statement::LocalAssign(assign) => {
+                for value in assign.iter_values() {
+                    self.walk_expression(value)?;
+                }
+                for variable in assign.iter_variables() {
+                    self.declare_symbol(
+                        variable.get_name(),
+                        SymbolKind::Local,
+                        Some(variable.get_identifier()),
+                    );
+                }
+            }
+            Statement::LocalFunction(function) => {
+                self.declare_symbol(
+                    function.get_name(),
+                    SymbolKind::Local,
+                    Some(function.get_identifier()),
+                );
+                self.enter_function();
+                for parameter in function.iter_parameters() {
+                    self.declare_symbol(
+                        parameter.get_name(),
+                        SymbolKind::Parameter,
+                        Some(parameter.get_identifier()),
+                    );
+                }
+                let result = self.walk_block_statements(function.get_block());
+                self.exit_function();
+                result?;
+            }
+            Statement::NumericFor(numeric_for) => {
+                self.walk_expression(numeric_for.get_start())?;
+                self.walk_expression(numeric_for.get_end())?;
+                if let Some(step) = numeric_for.get_step() {
+                    self.walk_expression(step)?;
+                }
+                self.enter_block();
+                let identifier = numeric_for.get_identifier();
+                self.declare_symbol(
+                    identifier.get_name(),
+                    SymbolKind::Iteration,
+                    Some(identifier.get_identifier()),
+                );
+                let result = self.walk_block_statements(numeric_for.get_block());
+                self.pop_scope();
+                result?;
+            }
+            Statement::Repeat(repeat) => {
+                self.enter_block();
+                let result = (|| {
+                    self.walk_block_statements(repeat.get_block())?;
+                    self.walk_expression(repeat.get_condition())
+                })();
+                self.pop_scope();
+                result?;
+            }
+            Statement::While(while_statement) => {
+                self.walk_expression(while_statement.get_condition())?;
+                self.walk_scoped_block(while_statement.get_block())?;
+            }
+            Statement::TypeDeclaration(declaration) => {
+                self.walk_type(declaration.get_type())?;
+            }
+            Statement::TypeFunction(function) => {
+                self.enter_function();
+                for parameter in function.iter_parameters() {
+                    self.declare_symbol(
+                        parameter.get_name(),
+                        SymbolKind::Parameter,
+                        Some(parameter.get_identifier()),
+                    );
+                }
+                let result = self.walk_block_statements(function.get_block());
+                self.exit_function();
+                result?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn walk_last_statement(&mut self, statement: &LastStatement) -> SemanticResult<()> {
+        if let LastStatement::Return(return_statement) = statement {
+            for expression in return_statement.iter_expressions() {
+                self.walk_expression(expression)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn walk_function_statement(&mut self, function: &FunctionStatement) -> SemanticResult<()> {
+        let name = function.get_name();
+
+        if name.get_field_names().is_empty() && name.get_method().is_none() {
+            self.write_identifier(name.get_name())?;
+        } else {
+            self.read_identifier(name.get_name())?;
+        }
+
+        self.enter_function();
+        if name.get_method().is_some() {
+            self.declare_symbol("self", SymbolKind::Parameter, None);
+        }
+        for parameter in function.iter_parameters() {
+            self.declare_symbol(
+                parameter.get_name(),
+                SymbolKind::Parameter,
+                Some(parameter.get_identifier()),
+            );
+        }
+        let result = self.walk_block_statements(function.get_block());
+        self.exit_function();
+        result
+    }
+
+    fn walk_function_expression(&mut self, function: &FunctionExpression) -> SemanticResult<()> {
+        self.enter_function();
+        for parameter in function.iter_parameters() {
+            self.declare_symbol(
+                parameter.get_name(),
+                SymbolKind::Parameter,
+                Some(parameter.get_identifier()),
+            );
+        }
+        let result = self.walk_block_statements(function.get_block());
+        self.exit_function();
+        result
+    }
+
+    fn walk_variable_read(&mut self, variable: &Variable) -> SemanticResult<()> {
+        match variable {
+            Variable::Identifier(identifier) => {
+                self.read_identifier(identifier)?;
+                Ok(())
+            }
+            Variable::Field(field) => self.walk_prefix(field.get_prefix()),
+            Variable::Index(index) => {
+                self.walk_prefix(index.get_prefix())?;
+                self.walk_expression(index.get_index())
+            }
+        }
+    }
+
+    fn walk_variable_write(&mut self, variable: &Variable) -> SemanticResult<()> {
+        match variable {
+            Variable::Identifier(identifier) => {
+                self.write_identifier(identifier)?;
+                Ok(())
+            }
+            Variable::Field(field) => self.walk_prefix(field.get_prefix()),
+            Variable::Index(index) => {
+                self.walk_prefix(index.get_prefix())?;
+                self.walk_expression(index.get_index())
+            }
+        }
+    }
+
+    fn walk_prefix(&mut self, prefix: &Prefix) -> SemanticResult<()> {
+        match prefix {
+            Prefix::Call(call) => self.walk_call(call),
+            Prefix::Field(field) => self.walk_prefix(field.get_prefix()),
+            Prefix::Identifier(identifier) => self.read_identifier(identifier).map(|_| ()),
+            Prefix::Index(index) => {
+                self.walk_prefix(index.get_prefix())?;
+                self.walk_expression(index.get_index())
+            }
+            Prefix::Parenthese(parenthese) => self.walk_expression(parenthese.inner_expression()),
+            Prefix::TypeInstantiation(type_instantiation) => {
+                self.walk_prefix(type_instantiation.get_prefix())?;
+                for r#type in type_instantiation.iter_types() {
+                    self.walk_type(r#type)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn walk_call(&mut self, call: &FunctionCall) -> SemanticResult<()> {
+        self.walk_prefix(call.get_prefix())?;
+
+        match call.get_arguments() {
+            Arguments::String(_) => Ok(()),
+            Arguments::Table(table) => self.walk_table_expression(table),
+            Arguments::Tuple(tuple) => {
+                for expression in tuple.iter_values() {
+                    self.walk_expression(expression)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn walk_expression(&mut self, expression: &Expression) -> SemanticResult<()> {
+        match expression {
+            Expression::Binary(binary) => {
+                self.walk_expression(binary.left())?;
+                self.walk_expression(binary.right())
+            }
+            Expression::Call(call) => self.walk_call(call),
+            Expression::Field(field) => self.walk_prefix(field.get_prefix()),
+            Expression::Function(function) => self.walk_function_expression(function),
+            Expression::Identifier(identifier) => self.read_identifier(identifier).map(|_| ()),
+            Expression::If(if_expression) => {
+                self.walk_expression(if_expression.get_condition())?;
+                self.walk_expression(if_expression.get_result())?;
+                for branch in if_expression.iter_branches() {
+                    self.walk_expression(branch.get_condition())?;
+                    self.walk_expression(branch.get_result())?;
+                }
+                self.walk_expression(if_expression.get_else_result())
+            }
+            Expression::Index(index) => {
+                self.walk_prefix(index.get_prefix())?;
+                self.walk_expression(index.get_index())
+            }
+            Expression::InterpolatedString(string) => {
+                for segment in string.iter_segments() {
+                    if let InterpolationSegment::Value(value) = segment {
+                        self.walk_expression(value.get_expression())?;
+                    }
+                }
+                Ok(())
+            }
+            Expression::Parenthese(parenthese) => {
+                self.walk_expression(parenthese.inner_expression())
+            }
+            Expression::Table(table) => self.walk_table_expression(table),
+            Expression::Unary(unary) => self.walk_expression(unary.get_expression()),
+            Expression::TypeCast(type_cast) => {
+                self.walk_expression(type_cast.get_expression())?;
+                self.walk_type(type_cast.get_type())
+            }
+            Expression::TypeInstantiation(type_instantiation) => {
+                self.walk_prefix(type_instantiation.get_prefix())?;
+                for r#type in type_instantiation.iter_types() {
+                    self.walk_type(r#type)?;
+                }
+                Ok(())
+            }
+            Expression::False(_)
+            | Expression::Nil(_)
+            | Expression::Number(_)
+            | Expression::String(_)
+            | Expression::True(_)
+            | Expression::VariableArguments(_) => Ok(()),
+        }
+    }
+
+    fn walk_table_expression(&mut self, table: &TableExpression) -> SemanticResult<()> {
+        for entry in table.iter_entries() {
+            match entry {
+                TableEntry::Field(field) => self.walk_expression(field.get_value())?,
+                TableEntry::Index(index) => {
+                    self.walk_expression(index.get_key())?;
+                    self.walk_expression(index.get_value())?;
+                }
+                TableEntry::Value(value) => self.walk_expression(value)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Walks the runtime expressions that can be embedded inside Luau types
+    /// (`typeof(expr)`).
+    fn walk_type(&mut self, r#type: &Type) -> SemanticResult<()> {
+        match r#type {
+            Type::TypeOf(expression_type) => self.walk_expression(expression_type.get_expression()),
+            Type::Name(type_name) => self.walk_type_name(type_name),
+            Type::Field(field) => self.walk_type_name(field.get_type_name()),
+            Type::Array(array) => self.walk_type(array.get_element_type()),
+            Type::Table(table) => {
+                for entry in table.iter_entries() {
+                    match entry {
+                        TableEntryType::Property(property) => {
+                            self.walk_type(property.get_type())?
+                        }
+                        TableEntryType::Literal(property) => self.walk_type(property.get_type())?,
+                        TableEntryType::Indexer(indexer) => {
+                            self.walk_type(indexer.get_key_type())?;
+                            self.walk_type(indexer.get_value_type())?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Type::Parenthese(parenthese) => self.walk_type(parenthese.get_inner_type()),
+            Type::Function(function) => {
+                for argument in function.iter_arguments() {
+                    self.walk_type(argument.get_type())?;
+                }
+                if let Some(variadic) = function.get_variadic_argument_type() {
+                    self.walk_variadic_argument_type(variadic)?;
+                }
+                self.walk_function_return_type(function.get_return_type())
+            }
+            Type::Optional(optional) => self.walk_type(optional.get_inner_type()),
+            Type::Intersection(intersection) => {
+                for next_type in intersection.iter_types() {
+                    self.walk_type(next_type)?;
+                }
+                Ok(())
+            }
+            Type::Union(union) => {
+                for next_type in union.iter_types() {
+                    self.walk_type(next_type)?;
+                }
+                Ok(())
+            }
+            Type::True(_) | Type::False(_) | Type::Nil(_) | Type::String(_) => Ok(()),
+        }
+    }
+
+    fn walk_type_name(&mut self, type_name: &TypeName) -> SemanticResult<()> {
+        if let Some(parameters) = type_name.get_type_parameters() {
+            for parameter in parameters.iter() {
+                match parameter {
+                    TypeParameter::Type(next_type) => self.walk_type(next_type)?,
+                    TypeParameter::TypePack(_)
+                    | TypeParameter::VariadicTypePack(_)
+                    | TypeParameter::GenericTypePack(_) => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn walk_variadic_argument_type(
+        &mut self,
+        variadic: &VariadicArgumentType,
+    ) -> SemanticResult<()> {
+        match variadic {
+            VariadicArgumentType::VariadicTypePack(pack) => self.walk_type(pack.get_type()),
+            VariadicArgumentType::GenericTypePack(_) => Ok(()),
+        }
+    }
+
+    fn walk_function_return_type(
+        &mut self,
+        return_type: &FunctionReturnType,
+    ) -> SemanticResult<()> {
+        match return_type {
+            FunctionReturnType::Type(r#type) => self.walk_type(r#type),
+            FunctionReturnType::VariadicTypePack(pack) => self.walk_type(pack.get_type()),
+            FunctionReturnType::TypePack(_) | FunctionReturnType::GenericTypePack(_) => Ok(()),
+        }
+    }
+}

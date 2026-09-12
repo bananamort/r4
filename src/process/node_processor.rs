@@ -14,7 +14,9 @@ pub trait NodeProcessor {
     fn process_do_statement(&mut self, _: &mut DoStatement) {}
     fn process_function_statement(&mut self, _: &mut FunctionStatement) {}
     fn process_generic_for_statement(&mut self, _: &mut GenericForStatement) {}
+    fn process_goto_statement(&mut self, _: &mut GotoStatement) {}
     fn process_if_statement(&mut self, _: &mut IfStatement) {}
+    fn process_label_statement(&mut self, _: &mut LabelStatement) {}
     fn process_last_statement(&mut self, _: &mut LastStatement) {}
     fn process_local_assign_statement(&mut self, _: &mut VariableAssignment) {}
     fn process_local_function_statement(&mut self, _: &mut FunctionAssignment) {}
@@ -79,7 +81,9 @@ pub trait NodePostProcessor {
     fn process_after_do_statement(&mut self, _: &mut DoStatement) {}
     fn process_after_function_statement(&mut self, _: &mut FunctionStatement) {}
     fn process_after_generic_for_statement(&mut self, _: &mut GenericForStatement) {}
+    fn process_after_goto_statement(&mut self, _: &mut GotoStatement) {}
     fn process_after_if_statement(&mut self, _: &mut IfStatement) {}
+    fn process_after_label_statement(&mut self, _: &mut LabelStatement) {}
     fn process_after_last_statement(&mut self, _: &mut LastStatement) {}
     fn process_after_local_assign_statement(&mut self, _: &mut VariableAssignment) {}
     fn process_after_local_function_statement(&mut self, _: &mut FunctionAssignment) {}

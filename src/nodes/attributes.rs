@@ -124,6 +124,7 @@ impl Attribute {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
             Self::Name(name) => name.replace_referenced_tokens(code),
@@ -131,6 +132,7 @@ impl Attribute {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn shift_token_line(&mut self, amount: isize) {
         match self {
             Self::Name(name) => name.shift_token_line(amount),
@@ -138,6 +140,7 @@ impl Attribute {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         match self {
             Self::Name(name) => name.filter_comments(filter),
@@ -452,6 +455,7 @@ impl AttributeArguments {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
             Self::Tuple(tuple) => tuple.replace_referenced_tokens(code),
@@ -460,6 +464,7 @@ impl AttributeArguments {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn shift_token_line(&mut self, amount: isize) {
         match self {
             Self::Tuple(tuple) => tuple.shift_token_line(amount),
@@ -468,6 +473,7 @@ impl AttributeArguments {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         match self {
             Self::Tuple(tuple) => tuple.filter_comments(filter),

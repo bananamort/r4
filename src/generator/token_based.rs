@@ -2047,6 +2047,28 @@ impl LuaGenerator for TokenBasedLuaGenerator<'_> {
         }
     }
 
+    fn write_goto_statement(&mut self, statement: &GotoStatement) {
+        if let Some(tokens) = statement.get_tokens() {
+            self.write_token(&tokens.r#goto);
+        } else {
+            self.write_symbol_without_space_check("goto");
+            self.push_str(" ");
+        }
+        self.write_identifier(statement.get_label());
+    }
+
+    fn write_label_statement(&mut self, statement: &LabelStatement) {
+        if let Some(tokens) = statement.get_tokens() {
+            self.write_token(&tokens.left_colons);
+            self.write_identifier(statement.get_label());
+            self.write_token(&tokens.right_colons);
+        } else {
+            self.push_str("::");
+            self.write_identifier(statement.get_label());
+            self.push_str("::");
+        }
+    }
+
     fn write_compound_assign(&mut self, assign: &CompoundAssignStatement) {
         if let Some(tokens) = assign.get_tokens() {
             self.write_compound_assign_with_tokens(assign, tokens);
@@ -2827,7 +2849,7 @@ mod test {
 
         crate::Parser::default()
             .parse(&output)
-            .unwrap_or_else(|_| panic!("failed to parse generated code `{}`", &output));
+            .unwrap_or_else(|_| panic!("failed to parse generated code `{}`", output));
     }
 
     #[test]
@@ -2872,7 +2894,7 @@ mod test {
 
         crate::Parser::default()
             .parse(&output)
-            .unwrap_or_else(|_| panic!("failed to parse generated code `{}`", &output));
+            .unwrap_or_else(|_| panic!("failed to parse generated code `{}`", output));
 
         insta::assert_snapshot!("inserts_a_new_line_after_custom_added_comments", output);
     }

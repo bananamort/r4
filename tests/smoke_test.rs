@@ -1,4 +1,4 @@
-use r4::generator::{LuaGenerator, ReadableLuaGenerator};
+use r4::generator::{LuaGenerator, ReadableLuaGenerator, TokenBasedLuaGenerator};
 use r4::nodes::*;
 use r4::process::{Evaluator, LuaValue};
 use r4::Parser;
@@ -29,6 +29,35 @@ fn test_parse_and_generate() {
     assert!(output.contains("local x = 10 + 20"));
     assert!(output.contains("local function add(a, b)"));
     assert!(output.contains("if x > 25 then"));
+}
+
+#[test]
+fn test_goto_and_label_roundtrip() {
+    let source = "goto done\n::done::\nreturn";
+
+    let parser = Parser::default().lua52();
+    let block = parser
+        .parse(source)
+        .expect("Failed to parse Lua 5.2 source");
+
+    let mut generator = ReadableLuaGenerator::default();
+    generator.write_block(&block);
+    let output = generator.into_string();
+
+    assert!(output.contains("goto done"), "generated: {output}");
+    assert!(output.contains("::done::"), "generated: {output}");
+    parser
+        .parse(&output)
+        .expect("generated Lua 5.2 code must parse again");
+
+    let block_with_tokens = Parser::default()
+        .lua52()
+        .preserve_tokens()
+        .parse(source)
+        .expect("Failed to parse with tokens");
+    let mut token_generator = TokenBasedLuaGenerator::new(source);
+    token_generator.write_block(&block_with_tokens);
+    assert_eq!(token_generator.into_string(), source);
 }
 
 #[test]

@@ -32,7 +32,9 @@ pub trait NodePostVisitor<T: NodeProcessor + NodePostProcessor> {
             }
             Statement::Function(statement) => Self::visit_function_statement(statement, processor),
             Statement::GenericFor(statement) => Self::visit_generic_for(statement, processor),
+            Statement::Goto(statement) => Self::visit_goto_statement(statement, processor),
             Statement::If(statement) => Self::visit_if_statement(statement, processor),
+            Statement::Label(statement) => Self::visit_label_statement(statement, processor),
             Statement::LocalAssign(statement) => Self::visit_local_assign(statement, processor),
             Statement::LocalFunction(statement) => Self::visit_local_function(statement, processor),
             Statement::NumericFor(statement) => Self::visit_numeric_for(statement, processor),
@@ -265,6 +267,16 @@ pub trait NodePostVisitor<T: NodeProcessor + NodePostProcessor> {
             Self::visit_type(r#type, processor);
         }
         processor.process_after_generic_for_statement(statement);
+    }
+
+    fn visit_goto_statement(statement: &mut GotoStatement, processor: &mut T) {
+        processor.process_goto_statement(statement);
+        processor.process_after_goto_statement(statement);
+    }
+
+    fn visit_label_statement(statement: &mut LabelStatement, processor: &mut T) {
+        processor.process_label_statement(statement);
+        processor.process_after_label_statement(statement);
     }
 
     fn visit_if_statement(statement: &mut IfStatement, processor: &mut T) {

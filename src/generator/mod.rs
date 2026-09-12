@@ -30,7 +30,9 @@ pub trait LuaGenerator {
             CompoundAssign(statement) => self.write_compound_assign(statement),
             Function(statement) => self.write_function_statement(statement),
             GenericFor(statement) => self.write_generic_for(statement),
+            Goto(statement) => self.write_goto_statement(statement),
             If(statement) => self.write_if_statement(statement),
+            Label(statement) => self.write_label_statement(statement),
             LocalAssign(statement) => self.write_local_assign(statement),
             LocalFunction(statement) => self.write_local_function(statement),
             NumericFor(statement) => self.write_numeric_for(statement),
@@ -47,6 +49,8 @@ pub trait LuaGenerator {
     fn write_generic_for(&mut self, generic_for: &nodes::GenericForStatement);
     fn write_if_statement(&mut self, if_statement: &nodes::IfStatement);
     fn write_function_statement(&mut self, function: &nodes::FunctionStatement);
+    fn write_goto_statement(&mut self, statement: &nodes::GotoStatement);
+    fn write_label_statement(&mut self, statement: &nodes::LabelStatement);
     fn write_last_statement(&mut self, statement: &nodes::LastStatement);
     fn write_local_assign(&mut self, assign: &nodes::VariableAssignment);
     fn write_local_function(&mut self, function: &nodes::FunctionAssignment);
