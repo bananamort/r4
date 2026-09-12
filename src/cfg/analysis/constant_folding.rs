@@ -16,6 +16,22 @@ use crate::cfg::{BlockId, ControlFlowGraph, Terminator};
 /// after folding (see [`ControlFlowGraph::verify_invariants`]).
 pub fn fold_constant_branches(cfg: &mut ControlFlowGraph) -> usize {
     let evaluator = Evaluator::default();
+    fold_constant_branches_with(cfg, move |_, condition| {
+        evaluator.evaluate(condition).is_truthy()
+    })
+}
+
+/// Like [`fold_constant_branches`], but lets the caller decide the value of each
+/// branch condition. `condition_value` receives the branch block and its
+/// condition, and returns `Some(bool)` when the condition is known.
+///
+/// This is the entry point for constant propagation: callers can resolve
+/// identifiers through a reaching-definition environment (see
+/// [`Super::fold_constant_branches_with_propagation`]).
+pub fn fold_constant_branches_with<F>(cfg: &mut ControlFlowGraph, mut condition_value: F) -> usize
+where
+    F: FnMut(BlockId, &Expression) -> Option<bool>,
+{
     let mut folded = 0;
 
     for index in 0..cfg.blocks.len() {
@@ -26,7 +42,7 @@ pub fn fold_constant_branches(cfg: &mut ControlFlowGraph) -> usize {
                 condition,
                 then_block,
                 else_block,
-            } => match evaluate_condition(&evaluator, condition) {
+            } => match condition_value(block, condition) {
                 Some(true) => Some(*then_block),
                 Some(false) => Some(*else_block),
                 None => None,
@@ -41,8 +57,4 @@ pub fn fold_constant_branches(cfg: &mut ControlFlowGraph) -> usize {
     }
 
     folded
-}
-
-fn evaluate_condition(evaluator: &Evaluator, condition: &Expression) -> Option<bool> {
-    evaluator.evaluate(condition).is_truthy()
 }

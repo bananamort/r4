@@ -262,3 +262,32 @@ reachability/dominance/liveness. To eliminate the audited failure modes it
 still needs three additions: **initializer/alias metadata on symbols**,
 **constant-aware branch folding in the CFG**, and **AST provenance from blocks
 back to statements**.
+
+---
+
+## Implementation status in r4
+
+Tracked against the recommendations above (commits `b9c09ef`, this change, and
+the follow-ups):
+
+- [x] **3. Alias/immutability metadata** — `Symbol::initializer`,
+  `SemanticModel::{is_unused, is_immutable, immutable_global_alias}`
+  (`b9c09ef`).
+- [x] **4. Constant-aware branch folding** —
+  `ControlFlowGraph::set_terminator`,
+  `cfg::analysis::{fold_constant_branches, fold_constant_branches_with}`
+  (`b9c09ef`, generalized here).
+- [x] **5. Reaching-definition constant propagation** —
+  `cfg::analysis::ConstantPropagation`,
+  `fold_constant_branches_with_propagation`, `evaluate_with_environment`
+  (this change). Captured locals, parameters and iteration variables are
+  conservatively excluded.
+- [x] **6. One-pass unused-variable elimination** —
+  `rules::canonicalize::remove_unused_variables` using O(1) symbol counts
+  (`b9c09ef`).
+- [ ] **4b. AST provenance from CFG blocks to statements**, needed to delete
+  unreachable AST statements directly from reachability.
+- [ ] **2. Symbol-keyed rename pass** with scope-precise collision checks.
+- [ ] **7. Resolution-based `require` handling.**
+- [ ] **8. Freshened synthetic names** for `remove_call_match` and the bundler.
+- [ ] **9. Adversarial semantic-oracle tests** for the rule pipeline.

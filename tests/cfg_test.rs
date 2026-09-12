@@ -1,6 +1,10 @@
-use r4::cfg::analysis::{fold_constant_branches, DominatorTree, Liveness, Reachability};
+use r4::cfg::analysis::{
+    fold_constant_branches, fold_constant_branches_with_propagation, ConstantPropagation,
+    DominatorTree, Liveness, Reachability,
+};
 use r4::cfg::{build_chunk, build_function, BlockId, ControlFlowGraph, Terminator};
 use r4::nodes::{Prefix, Statement};
+use r4::process::LuaValue;
 use r4::semantic::{ScopeKind, SemanticAnalyzer, SemanticModel, SymbolId};
 use r4::Parser;
 
@@ -632,6 +636,180 @@ fn infinite_loops_expose_unreachable_successors() {
     let reachability = Reachability::analyze(&cfg);
     assert!(reachability.is_reachable(block_with_call(&cfg, "work")));
     assert!(reachability.is_unreachable(block_with_call(&cfg, "after")));
+}
+
+#[test]
+fn constant_conditions_through_locals_are_folded() {
+    let (mut cfg, model) = build_with_tokens(
+        r#"
+        local enabled = false
+        if enabled then
+            a()
+        else
+            b()
+        end
+        "#,
+    );
+
+    let folded = fold_constant_branches_with_propagation(&mut cfg, &model)
+        .expect("constant propagation must succeed with tokens");
+
+    assert_eq!(folded, 1);
+    assert_invariants(&cfg);
+
+    let reachability = Reachability::analyze(&cfg);
+    assert!(reachability.is_unreachable(block_with_call(&cfg, "a")));
+    assert!(reachability.is_reachable(block_with_call(&cfg, "b")));
+}
+
+#[test]
+fn constants_from_arithmetic_are_folded() {
+    let (mut cfg, model) = build_with_tokens(
+        r#"
+        local x = 1
+        local y = x + 1
+        if x + y == 3 then
+            a()
+        else
+            b()
+        end
+        "#,
+    );
+
+    let folded = fold_constant_branches_with_propagation(&mut cfg, &model)
+        .expect("constant propagation must succeed with tokens");
+
+    assert_eq!(folded, 1);
+
+    let reachability = Reachability::analyze(&cfg);
+    assert!(reachability.is_reachable(block_with_call(&cfg, "a")));
+    assert!(reachability.is_unreachable(block_with_call(&cfg, "b")));
+}
+
+#[test]
+fn loop_conditions_through_locals_are_folded() {
+    let (mut cfg, model) = build_with_tokens(
+        r#"
+        local running = false
+        while running do
+            work()
+        end
+        after()
+        "#,
+    );
+
+    let folded = fold_constant_branches_with_propagation(&mut cfg, &model)
+        .expect("constant propagation must succeed with tokens");
+
+    assert_eq!(folded, 1);
+    assert_invariants(&cfg);
+
+    let reachability = Reachability::analyze(&cfg);
+    assert!(reachability.is_unreachable(block_with_call(&cfg, "work")));
+    assert!(reachability.is_reachable(block_with_call(&cfg, "after")));
+}
+
+#[test]
+fn identical_constants_across_branches_are_folded() {
+    let (mut cfg, model) = build_with_tokens(
+        r#"
+        local flag = false
+        if condition then
+            flag = false
+        else
+            flag = false
+        end
+        if flag then
+            a()
+        end
+        "#,
+    );
+
+    let folded = fold_constant_branches_with_propagation(&mut cfg, &model)
+        .expect("constant propagation must succeed with tokens");
+
+    assert_eq!(folded, 1, "only the second condition is constant");
+    assert_invariants(&cfg);
+
+    let reachability = Reachability::analyze(&cfg);
+    assert!(reachability.is_unreachable(block_with_call(&cfg, "a")));
+}
+
+#[test]
+fn conflicting_constants_do_not_fold() {
+    let (mut cfg, model) = build_with_tokens(
+        r#"
+        local flag = true
+        if condition then
+            flag = false
+        end
+        if flag then
+            a()
+        end
+        "#,
+    );
+
+    let folded = fold_constant_branches_with_propagation(&mut cfg, &model)
+        .expect("constant propagation must succeed with tokens");
+
+    assert_eq!(folded, 0);
+    assert_invariants(&cfg);
+}
+
+#[test]
+fn captured_locals_are_not_propagated() {
+    let (mut cfg, model) = build_with_tokens(
+        r#"
+        local flag = false
+        local function toggle()
+            flag = true
+        end
+        if flag then
+            a()
+        end
+        "#,
+    );
+
+    let folded = fold_constant_branches_with_propagation(&mut cfg, &model)
+        .expect("constant propagation must succeed with tokens");
+
+    assert_eq!(folded, 0, "captured locals can change at any call");
+}
+
+#[test]
+fn constant_propagation_exposes_entry_and_exit_constants() {
+    let (cfg, model) = build_with_tokens("local x = 1\nlocal y = x");
+
+    let analysis = ConstantPropagation::analyze(&cfg, &model)
+        .expect("constant propagation must succeed with tokens");
+    let x = symbol_named(&model, "x");
+    let y = symbol_named(&model, "y");
+
+    assert_eq!(
+        analysis.block_exit_constants(cfg.entry).get(&x),
+        Some(&LuaValue::Number(1.0))
+    );
+    assert_eq!(
+        analysis.block_exit_constants(cfg.entry).get(&y),
+        Some(&LuaValue::Number(1.0)),
+        "initializers are evaluated against the current constants"
+    );
+}
+
+#[test]
+fn constant_propagation_requires_token_data() {
+    let block = Parser::default()
+        .parse("local x = 1\nreturn x")
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+    let cfg = build_chunk(&block, &model).expect("cfg");
+
+    let error = ConstantPropagation::analyze(&cfg, &model)
+        .expect_err("analysis without tokens must fail explicitly");
+    assert!(matches!(
+        error,
+        r4::cfg::analysis::ConstantPropagationError::MissingTokenData { .. }
+    ));
 }
 
 #[test]
