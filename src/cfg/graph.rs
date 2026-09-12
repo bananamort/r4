@@ -71,6 +71,31 @@ impl ControlFlowGraph {
         (0..self.blocks.len() as u32).map(BlockId)
     }
 
+    /// Replaces the terminator of a block and rebuilds its edges, keeping the
+    /// predecessor and successor lists consistent.
+    ///
+    /// This is the supported way for analysis passes to rewrite control flow:
+    /// the old edges are detached before the new terminator targets are
+    /// connected, so [`Self::verify_invariants`] continues to hold.
+    pub fn set_terminator(&mut self, block: BlockId, terminator: Terminator) {
+        let old_successors = std::mem::take(&mut self.blocks[block.index()].successors);
+        for successor in old_successors {
+            self.blocks[successor.index()]
+                .predecessors
+                .retain(|predecessor| *predecessor != block);
+        }
+
+        let targets = terminator.targets(self.exit);
+        self.blocks[block.index()].terminator = terminator;
+
+        for target in targets {
+            if !self.blocks[block.index()].successors.contains(&target) {
+                self.blocks[block.index()].successors.push(target);
+                self.blocks[target.index()].predecessors.push(block);
+            }
+        }
+    }
+
     /// Verifies the structural invariants of the graph:
     ///
     /// * every successor/predecessor reference points to an existing block,

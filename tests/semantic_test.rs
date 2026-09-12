@@ -62,6 +62,13 @@ fn symbols_named<'a>(model: &'a SemanticModel, name: &str) -> Vec<&'a Symbol> {
         .collect()
 }
 
+fn local_symbols_named<'a>(model: &'a SemanticModel, name: &str) -> Vec<&'a Symbol> {
+    symbols_named(model, name)
+        .into_iter()
+        .filter(|symbol| symbol.kind == SymbolKind::Local)
+        .collect()
+}
+
 #[test]
 fn shadowing_resolves_to_nearest_declaration() {
     let model = analyze(
@@ -323,6 +330,88 @@ fn goto_binding_is_available_through_token_data() {
         .expect("the goto token must resolve to a binding");
 
     assert_eq!(model.label(binding.label).name, "target");
+}
+
+#[test]
+fn declaration_initializers_record_global_aliases() {
+    let model = analyze(
+        r#"
+        local math = math
+        return math.sqrt(4)
+        "#,
+    );
+
+    let local = local_symbols_named(&model, "math")[0];
+    let global = model
+        .global_symbol("math")
+        .expect("the initializer read must create a global symbol");
+
+    assert_eq!(local.initializer, Some(global));
+    assert!(model.is_immutable(local.id));
+    assert_eq!(model.immutable_global_alias(local.id), Some(global));
+    assert!(!model.is_unused(local.id));
+}
+
+#[test]
+fn reassigned_aliases_are_not_immutable() {
+    let model = analyze(
+        r#"
+        local math = math
+        math = {}
+        return math
+        "#,
+    );
+
+    let local = local_symbols_named(&model, "math")[0];
+    assert_eq!(
+        local.initializer,
+        Some(model.global_symbol("math").unwrap())
+    );
+    assert!(!model.is_immutable(local.id));
+    assert_eq!(model.immutable_global_alias(local.id), None);
+}
+
+#[test]
+fn initializers_bind_before_declaring_the_local() {
+    let model = analyze(
+        r#"
+        local x = 1
+        local x = x
+        "#,
+    );
+
+    let locals = symbols_named(&model, "x");
+    assert_eq!(locals.len(), 2);
+    assert_eq!(locals[0].initializer, None);
+    assert_eq!(locals[1].initializer, Some(locals[0].id));
+    assert!(model.is_immutable(locals[1].id));
+    assert_eq!(
+        model.immutable_global_alias(locals[1].id),
+        None,
+        "an alias of a local is not a global alias"
+    );
+}
+
+#[test]
+fn non_identifier_initializers_are_not_aliases() {
+    let model = analyze("local x = 1");
+
+    let symbol = symbols_named(&model, "x")[0];
+    assert_eq!(symbol.initializer, None);
+    assert_eq!(model.immutable_global_alias(symbol.id), None);
+}
+
+#[test]
+fn unused_symbols_are_reported() {
+    let model = analyze(
+        r#"
+        local unused = compute()
+        return 1
+        "#,
+    );
+
+    let unused = symbols_named(&model, "unused")[0];
+    assert!(model.is_unused(unused.id));
 }
 
 #[test]

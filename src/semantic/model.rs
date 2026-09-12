@@ -4,7 +4,7 @@ use crate::nodes::{Identifier, Token};
 
 use super::label::{GotoBinding, GotoLabel, LabelId};
 use super::scope::{Scope, ScopeId, ScopeKind};
-use super::symbol::{Symbol, SymbolId, SymbolUse, TokenKey};
+use super::symbol::{Symbol, SymbolId, SymbolKind, SymbolUse, TokenKey};
 
 /// The result of a semantic analysis pass over a parsed [`Block`](crate::nodes::Block).
 ///
@@ -153,6 +153,39 @@ impl SemanticModel {
     #[inline]
     pub fn uses_of(&self, symbol: SymbolId) -> &[SymbolUse] {
         &self.uses[symbol.index()]
+    }
+
+    /// Returns whether a symbol is never read.
+    ///
+    /// An unread local can be removed when its initializer has no side effects
+    /// (see [`Evaluator::has_side_effects`](crate::process::Evaluator::has_side_effects)).
+    #[inline]
+    pub fn is_unused(&self, symbol: SymbolId) -> bool {
+        self.symbols[symbol.index()].read_count == 0
+    }
+
+    /// Returns whether a symbol is only written at its declaration, so its
+    /// value never changes after initialization.
+    #[inline]
+    pub fn is_immutable(&self, symbol: SymbolId) -> bool {
+        self.symbols[symbol.index()].write_count <= 1
+    }
+
+    /// If `symbol` is a read-only local initialized from a global symbol
+    /// (for example `local math = math`), returns that global symbol.
+    ///
+    /// Rules that rewrite standard-library calls can use this to optimize
+    /// through an immutable alias while remaining correct when the name is
+    /// shadowed. Returns `None` for globals themselves, mutable locals, and
+    /// locals initialized from anything other than a global symbol.
+    pub fn immutable_global_alias(&self, symbol: SymbolId) -> Option<SymbolId> {
+        let local = &self.symbols[symbol.index()];
+        if local.kind == SymbolKind::Global || !self.is_immutable(symbol) {
+            return None;
+        }
+        let target = local.initializer?;
+        let global = &self.symbols[target.index()];
+        (global.kind == SymbolKind::Global).then_some(target)
     }
 
     /// Iterates over all symbols captured as upvalues by nested functions.

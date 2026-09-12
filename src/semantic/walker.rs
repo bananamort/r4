@@ -116,15 +116,28 @@ impl AnalyzerState {
                 unreachable!("labels are recorded by `walk_block_statements`")
             }
             Statement::LocalAssign(assign) => {
+                // Values are resolved before the locals are declared, so that
+                // `local x = x` binds the value to the outer/global `x`. Plain
+                // identifier initializers are remembered so that passes can
+                // reason about read-only aliases.
+                let mut initializers = Vec::with_capacity(assign.values_len());
                 for value in assign.iter_values() {
-                    self.walk_expression(value)?;
+                    if let Expression::Identifier(identifier) = value {
+                        initializers.push(Some(self.read_identifier(identifier)?));
+                    } else {
+                        self.walk_expression(value)?;
+                        initializers.push(None);
+                    }
                 }
-                for variable in assign.iter_variables() {
-                    self.declare_symbol(
+                for (index, variable) in assign.iter_variables().enumerate() {
+                    let symbol = self.declare_symbol(
                         variable.get_name(),
                         SymbolKind::Local,
                         Some(variable.get_identifier()),
                     );
+                    if let Some(Some(target)) = initializers.get(index) {
+                        self.set_symbol_initializer(symbol, *target);
+                    }
                 }
             }
             Statement::LocalFunction(function) => {

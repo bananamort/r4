@@ -1,4 +1,4 @@
-use r4::cfg::analysis::{DominatorTree, Liveness, Reachability};
+use r4::cfg::analysis::{fold_constant_branches, DominatorTree, Liveness, Reachability};
 use r4::cfg::{build_chunk, build_function, BlockId, ControlFlowGraph, Terminator};
 use r4::nodes::{Prefix, Statement};
 use r4::semantic::{ScopeKind, SemanticAnalyzer, SemanticModel, SymbolId};
@@ -588,6 +588,58 @@ fn continue_outside_a_loop_is_rejected() {
         error.kind,
         r4::cfg::CfgErrorKind::ContinueOutsideLoop
     ));
+}
+
+#[test]
+fn constant_branches_are_folded() {
+    let (mut cfg, _) = build(
+        r#"
+        while false do
+            work()
+        end
+        after()
+        "#,
+    );
+
+    let folded = fold_constant_branches(&mut cfg);
+    assert_eq!(folded, 1);
+    assert_invariants(&cfg);
+
+    let reachability = Reachability::analyze(&cfg);
+    assert!(reachability.is_unreachable(block_with_call(&cfg, "work")));
+    assert!(reachability.is_reachable(block_with_call(&cfg, "after")));
+}
+
+#[test]
+fn constant_if_folds_the_taken_branch_only() {
+    let (mut cfg, _) = build("if false then a() else b() end");
+
+    assert_eq!(fold_constant_branches(&mut cfg), 1);
+    assert_invariants(&cfg);
+
+    let reachability = Reachability::analyze(&cfg);
+    assert!(reachability.is_unreachable(block_with_call(&cfg, "a")));
+    assert!(reachability.is_reachable(block_with_call(&cfg, "b")));
+}
+
+#[test]
+fn infinite_loops_expose_unreachable_successors() {
+    let (mut cfg, _) = build("while true do work() end\nafter()");
+
+    assert_eq!(fold_constant_branches(&mut cfg), 1);
+    assert_invariants(&cfg);
+
+    let reachability = Reachability::analyze(&cfg);
+    assert!(reachability.is_reachable(block_with_call(&cfg, "work")));
+    assert!(reachability.is_unreachable(block_with_call(&cfg, "after")));
+}
+
+#[test]
+fn non_constant_branches_are_kept() {
+    let (mut cfg, _) = build("if condition then a() else b() end");
+
+    assert_eq!(fold_constant_branches(&mut cfg), 0);
+    assert_invariants(&cfg);
 }
 
 #[test]

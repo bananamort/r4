@@ -2,12 +2,24 @@ use r4::generator::{LuaGenerator, ReadableLuaGenerator};
 use r4::nodes::{Block, Statement};
 use r4::process::{Evaluator, LuaValue};
 use r4::rules::{self, canonicalize, desugar, rename_variables};
+use r4::semantic::{SemanticAnalyzer, SemanticModel};
 use r4::Parser;
 
 fn parse(code: &str) -> Block {
     Parser::default()
         .parse(code)
         .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"))
+}
+
+fn analyze_with_tokens(code: &str) -> (Block, SemanticModel) {
+    let block = Parser::default()
+        .preserve_tokens()
+        .parse(code)
+        .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .unwrap_or_else(|error| panic!("semantic analysis failed for `{code}`: {error}"));
+    (block, model)
 }
 
 fn generate(block: &Block) -> String {
@@ -219,6 +231,78 @@ fn desugar_pipeline_lowers_a_luau_function() {
     assert!(output.contains("math.floor"), "unexpected: {output}");
 
     parse(&output);
+}
+
+#[test]
+fn removes_unused_local_assignments() {
+    let (mut block, model) = analyze_with_tokens("local unused = 1\nreturn 2");
+
+    let removed = canonicalize::remove_unused_variables(&mut block, &model)
+        .expect("unused variable removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    assert_eq!(generate(&block).trim(), "return 2");
+}
+
+#[test]
+fn preserves_side_effects_of_unused_initializers() {
+    let (mut block, model) = analyze_with_tokens("local unused = compute()\nreturn 2");
+
+    let removed = canonicalize::remove_unused_variables(&mut block, &model)
+        .expect("unused variable removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    assert_eq!(generate(&block).trim(), "compute()\n\nreturn 2");
+}
+
+#[test]
+fn keeps_used_locals() {
+    let (mut block, model) = analyze_with_tokens("local used = 1\nreturn used");
+
+    let removed = canonicalize::remove_unused_variables(&mut block, &model)
+        .expect("unused variable removal must succeed with tokens");
+
+    assert_eq!(removed, 0);
+    assert_eq!(generate(&block).trim(), "local used = 1\n\nreturn used");
+}
+
+#[test]
+fn removes_unused_local_functions() {
+    let (mut block, model) = analyze_with_tokens("local function unused() return 1 end\nreturn 2");
+
+    let removed = canonicalize::remove_unused_variables(&mut block, &model)
+        .expect("unused variable removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    assert_eq!(generate(&block).trim(), "return 2");
+}
+
+#[test]
+fn partially_used_multi_assignments_are_kept() {
+    let (mut block, model) = analyze_with_tokens("local a, b = 1, 2\nreturn b");
+
+    let removed = canonicalize::remove_unused_variables(&mut block, &model)
+        .expect("unused variable removal must succeed with tokens");
+
+    assert_eq!(removed, 0);
+}
+
+#[test]
+fn unused_variable_pass_requires_token_data() {
+    let mut block = parse("local unused = 1\nreturn 2");
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("semantic analysis must succeed");
+
+    let error = canonicalize::remove_unused_variables(&mut block, &model)
+        .expect_err("token-less declarations must be rejected explicitly");
+    assert!(matches!(
+        error,
+        canonicalize::UnusedVariableError::MissingTokenData { .. }
+    ));
+
+    // The block must be left untouched when validation fails.
+    assert_eq!(generate(&block).trim(), "local unused = 1\n\nreturn 2");
 }
 
 #[test]

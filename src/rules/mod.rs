@@ -29,6 +29,10 @@ pub fn desugar_to_lua51(block: &mut Block) {
 }
 
 /// Applies clean syntax canonicalization passes.
+///
+/// Semantic passes that need symbol information, such as
+/// [`canonicalize::remove_unused_variables`], are not part of this pipeline;
+/// call them with a [`crate::semantic::SemanticModel`].
 pub fn canonicalize(block: &mut Block) {
     canonicalize::convert_index_to_field(block);
     canonicalize::remove_nil_declarations(block);

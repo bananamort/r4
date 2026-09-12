@@ -211,6 +211,7 @@ impl AnalyzerState {
             capturing_scopes: Vec::new(),
             read_count: 0,
             write_count: 0,
+            initializer: None,
         });
         self.uses.push(Vec::new());
         self.scopes[scope.index()].symbols.push(id);
@@ -222,6 +223,12 @@ impl AnalyzerState {
         self.record_access(id, AccessKind::Declaration, identifier);
 
         id
+    }
+
+    /// Records that `symbol` is initialized from `target` (for example
+    /// `local math = math`).
+    pub(super) fn set_symbol_initializer(&mut self, symbol: SymbolId, target: SymbolId) {
+        self.symbols[symbol.index()].initializer = Some(target);
     }
 
     fn declare_global(&mut self, name: &str) -> SymbolId {
@@ -236,6 +243,7 @@ impl AnalyzerState {
             capturing_scopes: Vec::new(),
             read_count: 0,
             write_count: 0,
+            initializer: None,
         });
         self.uses.push(Vec::new());
         self.scopes[scope.index()].symbols.push(id);

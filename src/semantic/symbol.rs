@@ -47,6 +47,11 @@ pub struct Symbol {
     pub read_count: usize,
     /// Number of write accesses to this symbol (including its declaration).
     pub write_count: usize,
+    /// When the declaration initializes this symbol directly from another
+    /// symbol (for example `local math = math`), the symbol that the
+    /// initializer resolves to. Declarations with any other expression (or no
+    /// value) leave this `None`.
+    pub initializer: Option<SymbolId>,
 }
 
 impl Symbol {
