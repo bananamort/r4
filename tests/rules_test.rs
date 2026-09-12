@@ -1240,3 +1240,21 @@ fn bundle_ignores_shadowed_require() {
     assert_eq!(bundled, 0);
     assert!(generate(&block).contains("require("));
 }
+
+#[test]
+fn convert_local_function_reports_a_foreign_model() {
+    let block = parse("local function f() end");
+    let other = parse("local function g() end");
+    let model = SemanticAnalyzer::new()
+        .analyze(&other)
+        .expect("the other block must analyze");
+
+    let mut block = block;
+    let error = desugar::convert_local_function_to_assignment(&mut block, &model)
+        .expect_err("a function that is not bound in the model must be reported");
+
+    assert!(matches!(
+        error,
+        desugar::ConvertLocalFunctionError::UnresolvedFunction { ref name } if name == "f"
+    ));
+}

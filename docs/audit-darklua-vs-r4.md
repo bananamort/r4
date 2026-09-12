@@ -372,6 +372,42 @@ the follow-ups):
 - [x] **Evaluator arity precision** — `can_return_multiple_values` no longer
   treats unary and binary operators as multi-valued.
 
+### Remaining darklua rules ported
+
+The differential suite exposed the darklua rules that had no r4 counterpart
+yet. They are now ported with strict semantics:
+
+- **Assignment localization** — `desugar::make_assignment_local` converts
+  Luau `const` declarations to `local` (the darklua rule only changes the
+  assigned kind; it does not relocalize `x = 1`).
+- **Expression folding** — `canonicalize::compute_expression` folds strictly
+  pure constants and short-circuits `and`/`or`. Non-finite results (`2 ^
+  10000` to infinity), oversized strings and any impure operand are left
+  untouched; darklua rewrites `2 ^ 10000` into a synthetic `1 / 0`.
+- **Function syntax lowerings** — `desugar::remove_method_definition`
+  (`function a:b()` to `function a.b(self)`),
+  `desugar::convert_function_to_assignment`, and
+  `desugar::convert_local_function_to_assignment`. The local-function
+  conversion resolves references through the semantic model, so an inner local
+  shadowing the function name is not mistaken for recursion (darklua's name
+  scan refuses to convert).
+- **Attribute removal** — `desugar::remove_attribute` drops every `@attribute`
+  from function statements, local functions and function expressions.
+- **Debug profiling removal** — `canonicalize::remove_debug_profiling` removes
+  `debug.profilebegin`/`debug.profileend` calls through the model-first
+  `remove_call_matches` framework, preserving argument side effects and never
+  matching a shadowed `debug`.
+
+Every one of these is verified in `tests/differential_test.rs` against the
+published `darklua` crate, with byte-identical parity on clean inputs and
+explicit better-output assertions for the folding and shadowing hazards. The
+remaining darklua rules are intentionally out of scope: the token/formatting
+rules (`remove_comments`, `remove_spaces`, `append_text_comment`), the
+configuration-driven `InjectGlobalValue`, and `ConvertRequire`/`Bundle` (r4
+exposes different model-first APIs). The dead-code rules
+`FilterAfterEarlyReturn`/`RemoveUnusedIfBranch`/`RemoveUnusedWhile` are
+superseded by `remove_unreachable_code`.
+
 ### Scope notes (outside the audited items)
 
 All open items from this audit are implemented. The notes below record

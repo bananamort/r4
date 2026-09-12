@@ -26,12 +26,26 @@
 //! | `convert_index_to_field` | `ConvertIndexToField` |
 //! | `convert_luau_number` | `ConvertLuauNumber` |
 //! | `remove_unreachable_code` (`while false`) | `RemoveUnusedWhile` |
+//! | `make_assignment_local` | `MakeAssignmentLocal` |
+//! | `compute_expression` | `ComputeExpression` |
+//! | `remove_attribute` | `RemoveAttribute` |
+//! | `remove_method_definition` | `RemoveMethodDefinition` |
+//! | `convert_function_to_assignment` | `ConvertFunctionToAssign` |
+//! | `convert_local_function_to_assignment` | `ConvertLocalFunctionToAssign` |
+//! | `remove_debug_profiling` | `RemoveDebugProfiling` |
 //!
 //! Rules with no darklua equivalent (`remove_dead_stores`,
 //! `remove_unreachable_code` at large, `remove_unused_labels`,
-//! `hoist_loop_invariants`) and the require/bundle surface (r4 exposes a
+//! `hoist_loop_invariants`), the require/bundle surface (r4 exposes a
 //! different, model-first API that is not a structural port of darklua's
-//! configuration-driven `ConvertRequire`/`Bundle`) are intentionally excluded.
+//! configuration-driven `ConvertRequire`/`Bundle`), and the token/formatting
+//! rules (`remove_comments`, `remove_spaces`, `append_text_comment`) are
+//! intentionally excluded.
+//!
+//! The dead-code rules `FilterAfterEarlyReturn`, `RemoveUnusedIfBranch` and
+//! `RemoveUnusedWhile` are superseded by r4's `remove_unreachable_code`
+//! (`RemoveUnusedWhile` is compared directly; the other two are contrasted in
+//! the better-output test below).
 
 use darklua_core::generator::{LuaGenerator as DarkluaGenerator, ReadableLuaGenerator};
 use darklua_core::rules::{ContextBuilder, Rule};
@@ -491,4 +505,171 @@ fn evaluate_first_return(output: &str) -> f64 {
         LuaValue::Number(value) => value,
         other => panic!("expected a number, got {other:?}"),
     }
+}
+
+#[test]
+fn parity_make_assignment_local() {
+    use darklua_core::rules::MakeAssignmentLocal;
+    for code in ["const x = 1\nreturn x", "const function f() end"] {
+        assert_parity(
+            code,
+            &MakeAssignmentLocal::default(),
+            r4::rules::desugar::make_assignment_local,
+        );
+    }
+}
+
+#[test]
+fn parity_remove_attribute() {
+    use darklua_core::rules::RemoveAttribute;
+    for code in [
+        "@native function f() end",
+        "@native local function f() end",
+        "local f = @native function() end",
+    ] {
+        assert_parity(
+            code,
+            &RemoveAttribute::default(),
+            r4::rules::desugar::remove_attribute,
+        );
+    }
+}
+
+#[test]
+fn parity_remove_method_definition() {
+    use darklua_core::rules::RemoveMethodDefinition;
+    for code in [
+        "function a:b(x) return self end",
+        "function a.b:c() return self end",
+    ] {
+        assert_parity(
+            code,
+            &RemoveMethodDefinition::default(),
+            r4::rules::desugar::remove_method_definition,
+        );
+    }
+}
+
+#[test]
+fn parity_convert_function_to_assignment() {
+    use darklua_core::rules::ConvertFunctionToAssign;
+    for code in [
+        "function f(a) return a end",
+        "function a.b.c(x) end",
+        "function a:b(x) return self, x end",
+    ] {
+        assert_parity(
+            code,
+            &ConvertFunctionToAssign::default(),
+            r4::rules::desugar::convert_function_to_assignment,
+        );
+    }
+}
+
+#[test]
+fn parity_convert_local_function_to_assignment() {
+    use darklua_core::rules::ConvertLocalFunctionToAssign;
+    for code in [
+        "local function f(a) return a end",
+        "local function f() return f() end",
+        "local function f(f) return f() end",
+        "local function f() end\nf()",
+        "local function f() return (function() return f end)() end",
+    ] {
+        assert_parity(
+            code,
+            &ConvertLocalFunctionToAssign::default(),
+            |block, model| {
+                r4::rules::desugar::convert_local_function_to_assignment(block, model)
+                    .expect("r4 local-function conversion must succeed");
+            },
+        );
+    }
+}
+
+#[test]
+fn parity_compute_expression() {
+    use darklua_core::rules::ComputeExpression;
+    for code in [
+        "return 1 + 2",
+        "return 2 * 3 - 4",
+        "return 'a' .. 'b'",
+        "return true and false",
+        "return true and f()",
+        "return false or f()",
+        "return 1 / 0",
+        "return 0 / 0",
+        "return if true then 1 else 2",
+        "return not true",
+        "return 1.5 + 1.5",
+    ] {
+        assert_parity(
+            code,
+            &ComputeExpression::default(),
+            r4::rules::canonicalize::compute_expression,
+        );
+    }
+}
+
+#[test]
+fn parity_remove_debug_profiling() {
+    use darklua_core::rules::RemoveDebugProfiling;
+    for code in [
+        "debug.profilebegin('x')",
+        "debug.profileend()",
+        "local debug = {}\ndebug.profilebegin('x')",
+        "debug.profilebegin(side_effect())",
+    ] {
+        assert_parity(code, &RemoveDebugProfiling::default(), |block, model| {
+            r4::rules::canonicalize::remove_debug_profiling(block, model);
+        });
+    }
+}
+
+/// Audit claim on constant-folding hazards: darklua folds `2 ^ 10000` (which
+/// overflows to infinity) into a synthetic `1 / 0`. r4 refuses to materialize
+/// a non-finite value and leaves the expression untouched.
+#[test]
+fn compute_expression_leaves_non_finite_results_alone() {
+    use darklua_core::rules::ComputeExpression;
+    let code = "return 2 ^ 10000";
+
+    let darklua = darklua_apply(&ComputeExpression::default(), code);
+    assert_eq!(
+        darklua, "return 1 / 0\n",
+        "darklua rewrites an overflow into a synthetic division"
+    );
+
+    let r4 = r4_apply(r4::rules::canonicalize::compute_expression, code);
+    assert_eq!(
+        r4, "return 2 ^ 10000\n",
+        "r4 must not synthesize a non-finite literal"
+    );
+}
+
+/// Darklua's recursion check is name-based, so an inner `local f` makes it
+/// refuse to convert a non-recursive local function. r4 resolves the inner
+/// reference to its own symbol and proves the conversion safe.
+#[test]
+fn local_function_recursion_check_resolves_shadows() {
+    use darklua_core::rules::ConvertLocalFunctionToAssign;
+    let code = "local function f() local f = 1 return f end";
+
+    let darklua = darklua_apply(&ConvertLocalFunctionToAssign::default(), code);
+    assert_eq!(
+        darklua, "local function f()\n    local f = 1\n\n    return f\nend\n",
+        "darklua's name scan sees the inner local as a self-reference"
+    );
+
+    let r4 = r4_apply(
+        |block, model| {
+            r4::rules::desugar::convert_local_function_to_assignment(block, model)
+                .expect("r4 local-function conversion must succeed");
+        },
+        code,
+    );
+    assert_eq!(
+        r4, "local f = function()\n    local f = 1\n\n    return f\nend\n",
+        "r4 resolves the shadow and proves there is no recursion"
+    );
 }
