@@ -8,11 +8,15 @@
 //!   behavior.
 //! * [`rename_variables`]: host environment knowledge used by renaming passes.
 
+mod shadow;
 mod tracker;
 
 pub mod canonicalize;
 pub mod desugar;
 pub mod rename_variables;
+mod session;
+
+pub use session::{Session, SessionError};
 
 use crate::nodes::Block;
 

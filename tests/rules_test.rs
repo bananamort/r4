@@ -22,6 +22,18 @@ fn analyze_with_tokens(code: &str) -> (Block, SemanticModel) {
     (block, model)
 }
 
+fn analyze_lua52_with_tokens(code: &str) -> (Block, SemanticModel) {
+    let block = Parser::default()
+        .lua52()
+        .preserve_tokens()
+        .parse(code)
+        .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .unwrap_or_else(|error| panic!("semantic analysis failed for `{code}`: {error}"));
+    (block, model)
+}
+
 fn generate(block: &Block) -> String {
     let mut generator = ReadableLuaGenerator::default();
     generator.write_block(block);
@@ -260,6 +272,136 @@ fn desugar_pipeline_lowers_a_luau_function() {
     assert!(output.contains("math.floor"), "unexpected: {output}");
 
     parse(&output);
+}
+
+#[test]
+fn removes_unused_labels() {
+    let (mut block, model) = analyze_lua52_with_tokens("::unused::\nreturn 1");
+
+    let removed = canonicalize::remove_unused_labels(&mut block, &model)
+        .expect("unused label removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(!output.contains("::unused::"), "unexpected: {output}");
+}
+
+#[test]
+fn keeps_targeted_labels() {
+    let (mut block, model) = analyze_lua52_with_tokens("::again::\ngoto again");
+
+    let removed = canonicalize::remove_unused_labels(&mut block, &model)
+        .expect("unused label removal must succeed with tokens");
+
+    assert_eq!(removed, 0);
+    assert!(generate(&block).contains("::again::"));
+}
+
+#[test]
+fn removes_unused_labels_in_nested_functions() {
+    let (mut block, model) = analyze_lua52_with_tokens(
+        r#"
+        local function f()
+            ::inner::
+            return 1
+        end
+        return f
+        "#,
+    );
+
+    let removed = canonicalize::remove_unused_labels(&mut block, &model)
+        .expect("unused label removal must succeed with tokens");
+    assert_eq!(removed, 1);
+}
+
+#[test]
+fn unused_label_pass_requires_token_data() {
+    let mut block = Parser::default()
+        .lua52()
+        .parse("::unused::\nreturn 1")
+        .expect("parse");
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("semantic analysis must succeed");
+
+    let error = canonicalize::remove_unused_labels(&mut block, &model)
+        .expect_err("token-less labels must be rejected explicitly");
+    assert!(matches!(
+        error,
+        canonicalize::UnusedLabelError::MissingTokenData { .. }
+    ));
+}
+
+#[test]
+fn removes_dead_stores() {
+    let (mut block, model) = analyze_with_tokens("local x\nx = 1\nx = 2\nreturn x");
+
+    let removed = canonicalize::remove_dead_stores(&mut block, &model)
+        .expect("dead store removal must succeed with tokens");
+
+    assert_eq!(removed, 1);
+    let output = generate(&block);
+    assert!(!output.contains("x = 1"), "unexpected: {output}");
+    assert!(output.contains("x = 2"), "unexpected: {output}");
+    parse(&output);
+}
+
+#[test]
+fn keeps_conditional_stores() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local x
+        if condition then
+            x = 1
+        else
+            x = 2
+        end
+        return x
+        "#,
+    );
+
+    let removed = canonicalize::remove_dead_stores(&mut block, &model)
+        .expect("dead store removal must succeed with tokens");
+    assert_eq!(removed, 0, "both stores reach the return");
+}
+
+#[test]
+fn keeps_stores_to_captured_locals() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local x
+        local function observe()
+            return x
+        end
+        x = 1
+        return observe
+        "#,
+    );
+
+    let removed = canonicalize::remove_dead_stores(&mut block, &model)
+        .expect("dead store removal must succeed with tokens");
+    assert_eq!(removed, 0, "a nested function can observe the store");
+}
+
+#[test]
+fn keeps_side_effecting_stores() {
+    let (mut block, model) = analyze_with_tokens("local x\nx = compute()\nx = 2\nreturn x");
+
+    let removed = canonicalize::remove_dead_stores(&mut block, &model)
+        .expect("dead store removal must succeed with tokens");
+    assert_eq!(removed, 0, "the call must keep running");
+}
+
+#[test]
+fn dead_store_pass_requires_token_data() {
+    let mut block = parse("local x\nx = 1\nx = 2\nreturn x");
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("semantic analysis must succeed");
+
+    let error = canonicalize::remove_dead_stores(&mut block, &model)
+        .expect_err("token-less stores must be rejected explicitly");
+    assert!(matches!(error, canonicalize::DeadStoreError::Liveness(_)));
 }
 
 #[test]

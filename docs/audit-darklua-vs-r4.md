@@ -307,4 +307,41 @@ the follow-ups):
   `tests/rules_semantics_test.rs` re-parses and re-analyzes transformed output
   and checks def-use counts, shadowed-global identity, capture relationships,
   generated-name avoidance of host globals, composed dead-code removal, and
-  strict-mode binding of renamed programs (this change).
+  strict-mode binding of renamed programs. `tests/rules_parity_test.rs` adds
+  legacy-vs-model output parity plus explicit improvement cases.
+
+### Follow-up upgrades (semantic-first pass migration)
+
+- [x] **Model-aware standard library passes** —
+  `remove_floor_division_with_model`, `remove_interpolated_string_with_model`,
+  `convert_square_root_call_with_model`. They use
+  `SemanticModel::name_is_transparent_global`: read-only aliases such as
+  `local math = math` are optimized through, while mutable or non-alias
+  shadowing keeps the legacy conservative behavior. Output parity is verified
+  by `tests/rules_parity_test.rs`.
+- [x] **Transformation session + front-end convenience** —
+  `rules::Session` caches the model, re-analyzes lazily after model-less passes
+  and always hands semantic passes a fresh model; `Parser::parse_analyzed`
+  returns a parsed block together with its model.
+- [x] **Liveness consumer** — `canonicalize::remove_dead_stores` uses the
+  per-statement access data added to `Liveness`, removing stores that are never
+  live while keeping captured and side-effecting stores.
+- [x] **Label consumer** — `canonicalize::remove_unused_labels` uses the
+  model's goto bindings to delete labels that no `goto` targets.
+- [x] **Symbol-level local grouping** — `canonicalize::group_local_with_model`
+  merges consecutive local assignments when the second one reads no symbol
+  declared by the first, ignoring unrelated same-name locals.
+- [x] **Evaluator arity precision** — `can_return_multiple_values` no longer
+  treats unary and binary operators as multi-valued.
+
+### Still open
+
+- **Dominator tree consumer** (loop-invariant motion) — implemented but no
+  behavior-preserving rule needs it yet.
+- **`resolve_in_scope` for token-less ASTs** — semantic passes still require
+  token preservation to map occurrences; a scope-range API would lift that.
+- **Evaluator environment layering** — `evaluate_with_environment` lives in
+  `cfg` because it needs token→symbol resolution; an environment trait in
+  `process::Evaluator` would invert the dependency.
+- **Bundler/`remove_call_match`** do not exist in `r4`, so their name-collision
+  fixes remain design guidance.

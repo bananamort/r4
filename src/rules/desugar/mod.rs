@@ -12,10 +12,11 @@ pub mod remove_types;
 pub use convert_luau_number::{convert_luau_number, convert_luau_number_with_code};
 pub use remove_compound_assign::remove_compound_assign;
 pub use remove_continue::remove_continue;
-pub use remove_floor_division::remove_floor_division;
+pub use remove_floor_division::{remove_floor_division, remove_floor_division_with_model};
 pub use remove_if_expression::remove_if_expression;
 pub use remove_interpolated_string::{
-    remove_interpolated_string, remove_interpolated_string_with_tostring,
+    remove_interpolated_string, remove_interpolated_string_with_model,
+    remove_interpolated_string_with_tostring, remove_interpolated_string_with_tostring_and_model,
 };
 pub use remove_method_call::remove_method_call;
 pub use remove_types::remove_types;

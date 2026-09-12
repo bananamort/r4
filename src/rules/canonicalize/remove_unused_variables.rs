@@ -149,11 +149,15 @@ struct Processor<'a> {
 }
 
 impl Processor<'_> {
-    /// Returns the symbol of an unused declaration, or `None` when the
-    /// declaration is used or could not be resolved.
-    fn unused_symbol(&self, identifier: &Identifier) -> Option<SymbolId> {
+    /// Returns the symbol of a removable declaration, or `None` when the
+    /// declaration is read, written again later, or could not be resolved.
+    ///
+    /// A declaration may only be removed when it is the symbol's *only* write:
+    /// if a later `x = ...` exists, removing `local x` would turn that write
+    /// into an assignment to a global.
+    fn removable_symbol(&self, identifier: &Identifier) -> Option<SymbolId> {
         let symbol = resolve_declaration(self.model, identifier).ok()?;
-        self.model.is_unused(symbol).then_some(symbol)
+        (self.model.is_unused(symbol) && self.model.is_immutable(symbol)).then_some(symbol)
     }
 
     fn side_effects<'a>(&self, values: impl Iterator<Item = &'a Expression>) -> Vec<Expression> {
@@ -190,7 +194,7 @@ impl Processor<'_> {
                         .next()
                         .expect("a local assignment has at least one variable")
                         .get_identifier();
-                    self.unused_symbol(identifier).is_some()
+                    self.removable_symbol(identifier).is_some()
                 };
 
                 if !is_unused {
@@ -208,7 +212,7 @@ impl Processor<'_> {
                 }
             }
             Statement::LocalFunction(function)
-                if self.unused_symbol(function.get_identifier()).is_some() =>
+                if self.removable_symbol(function.get_identifier()).is_some() =>
             {
                 self.removed += 1;
                 false

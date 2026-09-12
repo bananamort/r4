@@ -8,7 +8,8 @@ use crate::nodes::{
     VariableAssignment,
 };
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
-use crate::rules::tracker::IdentifierTracker;
+use crate::rules::shadow::ShadowPolicy;
+use crate::semantic::SemanticModel;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum ReplacementStrategy {
@@ -17,12 +18,12 @@ enum ReplacementStrategy {
     ToStringSpecifier,
 }
 
-struct RemoveInterpolatedStringProcessor {
+struct RemoveInterpolatedStringProcessor<'a> {
     string_format_identifier: String,
     tostring_identifier: String,
     define_string_format: bool,
     define_tostring: bool,
-    tracker: IdentifierTracker,
+    shadows: ShadowPolicy<'a>,
     strategy: ReplacementStrategy,
 }
 
@@ -30,28 +31,7 @@ const DEFAULT_TOSTRING_IDENTIFIER: &str = "tostring";
 const DEFAULT_STRING_LIBRARY: &str = "string";
 const DEFAULT_STRING_FORMAT_NAME: &str = "format";
 
-impl RemoveInterpolatedStringProcessor {
-    fn new(
-        strategy: ReplacementStrategy,
-        string_format_identifier: impl Into<String>,
-        tostring_identifier: impl Into<String>,
-        block: &mut Block,
-    ) -> Self {
-        Self {
-            string_format_identifier: string_format_identifier.into(),
-            tostring_identifier: tostring_identifier.into(),
-            define_string_format: false,
-            define_tostring: false,
-            tracker: IdentifierTracker::collect_block(block),
-            strategy,
-        }
-    }
-
-    #[inline]
-    fn is_identifier_declared(&self, identifier: &str) -> bool {
-        self.tracker.is_declared(identifier)
-    }
-
+impl RemoveInterpolatedStringProcessor<'_> {
     fn replace_with(&mut self, string: &InterpolatedStringExpression) -> Expression {
         if string.is_empty() {
             StringExpression::from_value("").into()
@@ -61,11 +41,11 @@ impl RemoveInterpolatedStringProcessor {
                     StringExpression::from_value(string_segment.get_value()).into()
                 }
                 InterpolationSegment::Value(value_segment) => FunctionCall::from_name(
-                    if self.is_identifier_declared(DEFAULT_TOSTRING_IDENTIFIER) {
+                    if self.shadows.is_transparent(DEFAULT_TOSTRING_IDENTIFIER) {
+                        DEFAULT_TOSTRING_IDENTIFIER
+                    } else {
                         self.define_tostring = true;
                         &self.tostring_identifier
-                    } else {
-                        DEFAULT_TOSTRING_IDENTIFIER
                     },
                 )
                 .with_argument(value_segment.get_expression().clone())
@@ -106,11 +86,11 @@ impl RemoveInterpolatedStringProcessor {
                     .map(|value| match self.strategy {
                         ReplacementStrategy::ToStringSpecifier => value,
                         ReplacementStrategy::StringSpecifier => FunctionCall::from_name(
-                            if self.is_identifier_declared(DEFAULT_TOSTRING_IDENTIFIER) {
+                            if self.shadows.is_transparent(DEFAULT_TOSTRING_IDENTIFIER) {
+                                DEFAULT_TOSTRING_IDENTIFIER
+                            } else {
                                 self.define_tostring = true;
                                 &self.tostring_identifier
-                            } else {
-                                DEFAULT_TOSTRING_IDENTIFIER
                             },
                         )
                         .with_argument(value)
@@ -119,15 +99,15 @@ impl RemoveInterpolatedStringProcessor {
             )
             .collect::<TupleArguments>();
 
-            FunctionCall::from_prefix(if self.is_identifier_declared(DEFAULT_STRING_LIBRARY) {
-                self.define_string_format = true;
-                Prefix::from_name(&self.string_format_identifier)
-            } else {
+            FunctionCall::from_prefix(if self.shadows.is_transparent(DEFAULT_STRING_LIBRARY) {
                 FieldExpression::new(
                     Prefix::from_name(DEFAULT_STRING_LIBRARY),
                     DEFAULT_STRING_FORMAT_NAME,
                 )
                 .into()
+            } else {
+                self.define_string_format = true;
+                Prefix::from_name(&self.string_format_identifier)
             })
             .with_arguments(arguments)
             .into()
@@ -135,7 +115,7 @@ impl RemoveInterpolatedStringProcessor {
     }
 }
 
-impl NodeProcessor for RemoveInterpolatedStringProcessor {
+impl NodeProcessor for RemoveInterpolatedStringProcessor<'_> {
     fn process_expression(&mut self, expression: &mut Expression) {
         if let Expression::InterpolatedString(string) = expression {
             *expression = self.replace_with(string);
@@ -145,26 +125,68 @@ impl NodeProcessor for RemoveInterpolatedStringProcessor {
 
 /// Removes Luau backtick interpolated strings, replacing them with
 /// `string.format` calls (using the `%s` specifier).
+///
+/// `tostring` and `string` are treated as shadowed when they are declared
+/// anywhere in the block; in that case aliases are introduced at the top of the
+/// block.
 pub fn remove_interpolated_string(block: &mut Block) {
-    remove_interpolated_string_with_strategy(block, ReplacementStrategy::StringSpecifier);
+    let shadows = ShadowPolicy::from_block(block);
+    remove_interpolated_string_with_strategy(block, ReplacementStrategy::StringSpecifier, shadows);
 }
 
 /// Removes interpolated strings using the `%*` format specifier, which relies
 /// on `string.format` converting its arguments with `tostring`.
 pub fn remove_interpolated_string_with_tostring(block: &mut Block) {
-    remove_interpolated_string_with_strategy(block, ReplacementStrategy::ToStringSpecifier);
+    let shadows = ShadowPolicy::from_block(block);
+    remove_interpolated_string_with_strategy(
+        block,
+        ReplacementStrategy::ToStringSpecifier,
+        shadows,
+    );
 }
 
-fn remove_interpolated_string_with_strategy(block: &mut Block, strategy: ReplacementStrategy) {
+/// Like [`remove_interpolated_string`], but resolves `string` and `tostring`
+/// through the semantic model.
+///
+/// Read-only aliases such as `local tostring = tostring` are transparent, so
+/// no alias definitions are introduced for them.
+pub fn remove_interpolated_string_with_model(block: &mut Block, model: &SemanticModel) {
+    remove_interpolated_string_with_strategy(
+        block,
+        ReplacementStrategy::StringSpecifier,
+        ShadowPolicy::from_model(model),
+    );
+}
+
+/// Like [`remove_interpolated_string_with_tostring`], but resolves `string` and
+/// `tostring` through the semantic model.
+pub fn remove_interpolated_string_with_tostring_and_model(
+    block: &mut Block,
+    model: &SemanticModel,
+) {
+    remove_interpolated_string_with_strategy(
+        block,
+        ReplacementStrategy::ToStringSpecifier,
+        ShadowPolicy::from_model(model),
+    );
+}
+
+fn remove_interpolated_string_with_strategy<'a>(
+    block: &mut Block,
+    strategy: ReplacementStrategy,
+    shadows: ShadowPolicy<'a>,
+) {
     const STRING_FORMAT_IDENTIFIER: &str = "__R4_STR_FMT";
     const TOSTRING_IDENTIFIER: &str = "__R4_TO_STR";
 
-    let mut processor = RemoveInterpolatedStringProcessor::new(
+    let mut processor = RemoveInterpolatedStringProcessor {
+        string_format_identifier: STRING_FORMAT_IDENTIFIER.to_owned(),
+        tostring_identifier: TOSTRING_IDENTIFIER.to_owned(),
+        define_string_format: false,
+        define_tostring: false,
+        shadows,
         strategy,
-        STRING_FORMAT_IDENTIFIER,
-        TOSTRING_IDENTIFIER,
-        block,
-    );
+    };
     DefaultVisitor::visit_block(block, &mut processor);
 
     if processor.define_string_format || processor.define_tostring {

@@ -1,5 +1,6 @@
 use crate::nodes::{Block, Expression, Identifier, Statement, VariableAssignment};
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
+use crate::semantic::{SemanticModel, SymbolId};
 
 use std::collections::HashSet;
 use std::iter;
@@ -34,10 +35,33 @@ impl NodeProcessor for FindVariables {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct GroupLocalProcessor {}
+/// Finds whether an expression reads any of the tracked symbols.
+struct SymbolReads<'a> {
+    model: &'a SemanticModel,
+    symbols: HashSet<SymbolId>,
+    found: bool,
+}
 
-impl GroupLocalProcessor {
+impl NodeProcessor for SymbolReads<'_> {
+    fn process_variable_expression(&mut self, identifier: &mut Identifier) {
+        if self.found {
+            return;
+        }
+        match self.model.resolve_identifier(identifier) {
+            Some(symbol) if self.symbols.contains(&symbol) => self.found = true,
+            // An unresolvable identifier cannot be proven unrelated.
+            None => self.found = true,
+            Some(_) => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct GroupLocalProcessor<'a> {
+    model: Option<&'a SemanticModel>,
+}
+
+impl GroupLocalProcessor<'_> {
     fn filter_statements(&self, block: &mut Block) -> Vec<Statement> {
         let mut statements = block.take_statements();
         let mut filter_statements = Vec::new();
@@ -86,15 +110,41 @@ impl GroupLocalProcessor {
             return false;
         }
 
-        let mut find_variables: FindVariables = first
-            .iter_variables()
-            .map(|variable| variable.get_name().as_str())
-            .collect();
+        match self.model {
+            Some(model) => {
+                let mut symbols = HashSet::new();
+                for variable in first.iter_variables() {
+                    match model.resolve_identifier(variable.get_identifier()) {
+                        Some(symbol) => {
+                            symbols.insert(symbol);
+                        }
+                        // Without a binding we cannot prove the merge safe.
+                        None => return false,
+                    }
+                }
 
-        next.iter_mut_values().all(|expression| {
-            DefaultVisitor::visit_expression(expression, &mut find_variables);
-            !find_variables.has_found_usage()
-        })
+                let mut reads = SymbolReads {
+                    model,
+                    symbols,
+                    found: false,
+                };
+                next.iter_mut_values().all(|expression| {
+                    DefaultVisitor::visit_expression(expression, &mut reads);
+                    !reads.found
+                })
+            }
+            None => {
+                let mut find_variables: FindVariables = first
+                    .iter_variables()
+                    .map(|variable| variable.get_name().as_str())
+                    .collect();
+
+                next.iter_mut_values().all(|expression| {
+                    DefaultVisitor::visit_expression(expression, &mut find_variables);
+                    !find_variables.has_found_usage()
+                })
+            }
+        }
     }
 
     fn merge(&self, first: &mut VariableAssignment, mut other: VariableAssignment) {
@@ -114,7 +164,7 @@ impl GroupLocalProcessor {
     }
 }
 
-impl NodeProcessor for GroupLocalProcessor {
+impl NodeProcessor for GroupLocalProcessor<'_> {
     fn process_block(&mut self, block: &mut Block) {
         let filter_statements = self.filter_statements(block);
 
@@ -126,5 +176,16 @@ impl NodeProcessor for GroupLocalProcessor {
 /// second statement does not read the variables of the first one.
 pub fn group_local(block: &mut Block) {
     let mut processor = GroupLocalProcessor::default();
+    DefaultVisitor::visit_block(block, &mut processor);
+}
+
+/// Like [`group_local`], but checks reads at the symbol level.
+///
+/// The name-based variant refuses to merge when a nested scope reads a
+/// *different* local with the same name. The model variant resolves every read
+/// to its [`SymbolId`], so unrelated same-name locals no longer block the
+/// merge.
+pub fn group_local_with_model(block: &mut Block, model: &SemanticModel) {
+    let mut processor = GroupLocalProcessor { model: Some(model) };
     DefaultVisitor::visit_block(block, &mut processor);
 }

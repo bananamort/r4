@@ -10,4 +10,4 @@ pub mod rules;
 pub mod semantic;
 pub mod utils;
 
-pub use parser::{Parser, ParserError};
+pub use parser::{AnalyzedParseError, Parser, ParserError};

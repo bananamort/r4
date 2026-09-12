@@ -1,0 +1,133 @@
+//! A transformation session owning a block and its semantic model.
+//!
+//! Semantic passes require a [`SemanticModel`] that matches the current AST.
+//! Mutating the block with a model-less pass invalidates the model; using a
+//! stale model silently produces wrong queries. [`Session`] removes that
+//! footgun: it caches the model and re-analyzes lazily whenever the block was
+//! changed, and [`Session::apply_semantic`] always hands passes a fresh model.
+
+use std::convert::Infallible;
+use std::fmt;
+
+use crate::nodes::Block;
+use crate::parser::{Parser, ParserError};
+use crate::semantic::{SemanticAnalyzer, SemanticError, SemanticModel};
+
+/// An error produced by a [`Session`].
+#[derive(Debug)]
+pub enum SessionError<E = Infallible> {
+    /// The source code could not be parsed.
+    Parse(ParserError),
+    /// The block could not be analyzed.
+    Semantic(SemanticError),
+    /// A transformation pass failed.
+    Pass(E),
+}
+
+impl<E: fmt::Display> fmt::Display for SessionError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SessionError::Parse(error) => write!(f, "parse error: {}", error),
+            SessionError::Semantic(error) => write!(f, "semantic error: {}", error),
+            SessionError::Pass(error) => write!(f, "pass error: {}", error),
+        }
+    }
+}
+
+impl<E: fmt::Debug + fmt::Display> std::error::Error for SessionError<E> {}
+
+impl<E> From<ParserError> for SessionError<E> {
+    fn from(error: ParserError) -> Self {
+        SessionError::Parse(error)
+    }
+}
+
+impl<E> From<SemanticError> for SessionError<E> {
+    fn from(error: SemanticError) -> Self {
+        SessionError::Semantic(error)
+    }
+}
+
+/// Owns a block together with a lazily refreshed semantic model.
+#[derive(Debug)]
+pub struct Session {
+    block: Block,
+    model: Option<SemanticModel>,
+}
+
+impl Session {
+    /// Parses the source with token preservation and analyzes it.
+    pub fn parse(code: &str) -> Result<Self, SessionError> {
+        let block = Parser::default().preserve_tokens().parse(code)?;
+        Self::from_block(block)
+    }
+
+    /// Analyzes an existing block.
+    pub fn from_block(block: Block) -> Result<Self, SessionError> {
+        let model = SemanticAnalyzer::new().analyze(&block)?;
+        Ok(Self {
+            block,
+            model: Some(model),
+        })
+    }
+
+    /// Returns the current block.
+    #[inline]
+    pub fn block(&self) -> &Block {
+        &self.block
+    }
+
+    /// Consumes the session and returns the block.
+    #[inline]
+    pub fn into_block(self) -> Block {
+        self.block
+    }
+
+    /// Applies a pass that does not need semantic information and invalidates
+    /// the cached model.
+    pub fn apply(&mut self, pass: impl FnOnce(&mut Block)) {
+        pass(&mut self.block);
+        self.model = None;
+    }
+
+    /// Returns a model for the current block, re-analyzing it first when it
+    /// changed since the last analysis.
+    pub fn model(&mut self) -> Result<&SemanticModel, SessionError> {
+        self.refresh()?;
+        Ok(self
+            .model
+            .as_ref()
+            .expect("the model was built by the refresh"))
+    }
+
+    /// Applies a pass that needs semantic information, refreshing the model
+    /// first.
+    pub fn apply_semantic<R>(
+        &mut self,
+        pass: impl FnOnce(&mut Block, &SemanticModel) -> R,
+    ) -> Result<R, SessionError> {
+        self.refresh()?;
+        let Self { block, model } = self;
+        let model = model.as_ref().expect("the model was built by the refresh");
+        Ok(pass(block, model))
+    }
+
+    /// Applies a fallible pass that needs semantic information, refreshing the
+    /// model first. The pass error is preserved in [`SessionError::Pass`].
+    pub fn apply_semantic_result<R, E>(
+        &mut self,
+        pass: impl FnOnce(&mut Block, &SemanticModel) -> Result<R, E>,
+    ) -> Result<R, SessionError<E>> {
+        self.refresh().map_err(SessionError::Semantic)?;
+        let Self { block, model } = self;
+        let model = model.as_ref().expect("the model was built by the refresh");
+        pass(block, model).map_err(SessionError::Pass)
+    }
+
+    fn refresh(&mut self) -> Result<(), SemanticError> {
+        if self.model.is_none() {
+            self.model = Some(SemanticAnalyzer::new().analyze(&self.block)?);
+        }
+        Ok(())
+    }
+}

@@ -5,6 +5,7 @@ use full_moon::{ast::Ast, LuaVersion};
 use crate::{
     ast_converter::{AstConverter, ConvertError},
     nodes::*,
+    semantic::{SemanticAnalyzer, SemanticError, SemanticModel},
     utils::Timer,
 };
 
@@ -64,9 +65,51 @@ impl Parser {
         self.lua52
     }
 
+    /// Parses the source and runs the semantic analysis in one step.
+    ///
+    /// Semantic model queries and transformation passes that depend on them
+    /// are token based, so combine this with [`Parser::preserve_tokens`].
+    pub fn parse_analyzed(&self, code: &str) -> Result<(Block, SemanticModel), AnalyzedParseError> {
+        let block = self.parse(code)?;
+        let model = SemanticAnalyzer::new().analyze(&block)?;
+        Ok((block, model))
+    }
+
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
     fn convert_ast(&self, ast: Ast) -> Result<Block, ConvertError> {
         AstConverter::new(self.hold_token_data).convert(&ast)
+    }
+}
+
+/// An error produced by [`Parser::parse_analyzed`].
+#[derive(Clone, Debug)]
+pub enum AnalyzedParseError {
+    /// The source code could not be parsed.
+    Parse(ParserError),
+    /// The parsed block could not be analyzed.
+    Semantic(SemanticError),
+}
+
+impl fmt::Display for AnalyzedParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AnalyzedParseError::Parse(error) => write!(f, "{}", error),
+            AnalyzedParseError::Semantic(error) => write!(f, "{}", error),
+        }
+    }
+}
+
+impl std::error::Error for AnalyzedParseError {}
+
+impl From<ParserError> for AnalyzedParseError {
+    fn from(error: ParserError) -> Self {
+        AnalyzedParseError::Parse(error)
+    }
+}
+
+impl From<SemanticError> for AnalyzedParseError {
+    fn from(error: SemanticError) -> Self {
+        AnalyzedParseError::Semantic(error)
     }
 }
 

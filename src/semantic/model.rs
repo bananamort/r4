@@ -188,6 +188,23 @@ impl SemanticModel {
         (global.kind == SymbolKind::Global).then_some(target)
     }
 
+    /// Returns whether every non-global symbol with this name is an immutable
+    /// alias of the same-named global symbol.
+    ///
+    /// When this holds, a reference to `name` can be treated as a reference to
+    /// the global even if a local with that name exists: the local is only ever
+    /// initialized from the global and never written again. Returns `true` when
+    /// no non-global symbol has the name.
+    ///
+    /// This is what lets standard-library rewrites optimize through
+    /// `local math = math` instead of conservatively refusing or aliasing.
+    pub fn name_is_transparent_global(&self, name: &str) -> bool {
+        self.symbols
+            .iter()
+            .filter(|symbol| symbol.kind != SymbolKind::Global && symbol.name == name)
+            .all(|symbol| self.immutable_global_alias(symbol.id).is_some())
+    }
+
     /// Iterates over all symbols captured as upvalues by nested functions.
     pub fn captured_symbols(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols.iter().filter(|symbol| symbol.is_captured())

@@ -68,6 +68,16 @@ pub struct Liveness {
     pub uses: Vec<BitVec>,
     /// Definitions per block.
     pub defs: Vec<BitVec>,
+    /// Reads performed by each statement, indexed by block and statement.
+    /// Unlike `uses`, this includes reads of symbols defined earlier in the
+    /// same block.
+    pub statement_uses: Vec<Vec<BitVec>>,
+    /// Definitions introduced by each statement, indexed by block and
+    /// statement.
+    pub statement_defs: Vec<Vec<BitVec>>,
+    /// Reads performed by the block expressions and terminator (everything
+    /// read after the last statement).
+    pub terminator_uses: Vec<BitVec>,
 }
 
 impl Liveness {
@@ -82,19 +92,35 @@ impl Liveness {
 
         let mut uses = Vec::with_capacity(block_count);
         let mut defs = Vec::with_capacity(block_count);
+        let mut statement_uses = Vec::with_capacity(block_count);
+        let mut statement_defs = Vec::with_capacity(block_count);
+        let mut terminator_uses = Vec::with_capacity(block_count);
 
         for block in &cfg.blocks {
             let mut analyzer = BlockAnalyzer::new(model, symbol_count);
+            let mut block_statement_uses = Vec::with_capacity(block.statements.len());
+            let mut block_statement_defs = Vec::with_capacity(block.statements.len());
+
             for statement in &block.statements {
+                analyzer.current_reads.fill(false);
+                analyzer.current_defs.fill(false);
                 analyzer.read_statement(statement)?;
+                block_statement_uses.push(analyzer.current_reads.clone());
+                block_statement_defs.push(analyzer.current_defs.clone());
             }
+
+            analyzer.current_reads.fill(false);
             for expression in &block.expressions {
                 analyzer.read_expression(expression)?;
             }
             analyzer.read_terminator(&block.terminator)?;
+            let tail_uses = analyzer.current_reads.clone();
 
             uses.push(analyzer.uses);
             defs.push(analyzer.defs);
+            statement_uses.push(block_statement_uses);
+            statement_defs.push(block_statement_defs);
+            terminator_uses.push(tail_uses);
         }
 
         let mut live_in = vec![BitVec::repeat(false, symbol_count); block_count];
@@ -136,6 +162,9 @@ impl Liveness {
             live_out,
             uses,
             defs,
+            statement_uses,
+            statement_defs,
+            terminator_uses,
         })
     }
 
@@ -171,6 +200,13 @@ struct BlockAnalyzer<'a> {
     uses: BitVec,
     defs: BitVec,
     defined: BitVec,
+    /// Every read, including reads of symbols that were already defined in the
+    /// block. Used for statement-level data-flow queries such as dead stores.
+    reads: BitVec,
+    /// Reads recorded by the statement currently being processed.
+    current_reads: BitVec,
+    /// Definitions recorded by the statement currently being processed.
+    current_defs: BitVec,
 }
 
 impl<'a> BlockAnalyzer<'a> {
@@ -180,6 +216,9 @@ impl<'a> BlockAnalyzer<'a> {
             uses: BitVec::repeat(false, symbol_count),
             defs: BitVec::repeat(false, symbol_count),
             defined: BitVec::repeat(false, symbol_count),
+            reads: BitVec::repeat(false, symbol_count),
+            current_reads: BitVec::repeat(false, symbol_count),
+            current_defs: BitVec::repeat(false, symbol_count),
         }
     }
 
@@ -200,6 +239,8 @@ impl<'a> BlockAnalyzer<'a> {
 
     fn read_identifier(&mut self, identifier: &Identifier) -> Result<(), LivenessError> {
         let symbol = self.resolve(identifier)?;
+        self.reads.set(symbol.index(), true);
+        self.current_reads.set(symbol.index(), true);
         if !self.defined[symbol.index()] {
             self.uses.set(symbol.index(), true);
         }
@@ -209,6 +250,7 @@ impl<'a> BlockAnalyzer<'a> {
     fn define_identifier(&mut self, identifier: &Identifier) -> Result<(), LivenessError> {
         let symbol = self.resolve(identifier)?;
         self.defs.set(symbol.index(), true);
+        self.current_defs.set(symbol.index(), true);
         self.defined.set(symbol.index(), true);
         Ok(())
     }

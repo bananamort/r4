@@ -104,17 +104,18 @@ impl Evaluator {
     }
 
     pub fn can_return_multiple_values(&self, expression: &Expression) -> bool {
+        // In Lua, only calls and `...` can produce more than one value. Every
+        // other expression form, including unary and binary operators (which
+        // adjust their operands to a single value), yields exactly one value.
         match expression {
-            Expression::Call(_) | Expression::Unary(_) | Expression::VariableArguments(_) => true,
-            Expression::Binary(binary) => {
-                !matches!(binary.operator(), BinaryOperator::And | BinaryOperator::Or)
-            }
-            Expression::False(_)
+            Expression::Call(_) | Expression::VariableArguments(_) => true,
+            Expression::Binary(_)
+            | Expression::False(_)
             | Expression::Field(_)
-            | Expression::Index(_)
             | Expression::Function(_)
             | Expression::Identifier(_)
             | Expression::If(_)
+            | Expression::Index(_)
             | Expression::Nil(_)
             | Expression::Number(_)
             | Expression::Parenthese(_)
@@ -123,7 +124,8 @@ impl Evaluator {
             | Expression::Table(_)
             | Expression::True(_)
             | Expression::TypeCast(_)
-            | Expression::TypeInstantiation(_) => false,
+            | Expression::TypeInstantiation(_)
+            | Expression::Unary(_) => false,
         }
     }
 
@@ -505,6 +507,32 @@ mod test {
                 }
             )*
         };
+    }
+
+    #[test]
+    fn only_calls_and_variable_arguments_return_multiple_values() {
+        let evaluator = Evaluator::default();
+
+        assert!(evaluator.can_return_multiple_values(&FunctionCall::from_name("f").into()));
+        assert!(evaluator.can_return_multiple_values(&Expression::variable_arguments()));
+
+        let unary = UnaryExpression::new(UnaryOperator::Not, Expression::variable_arguments());
+        assert!(
+            !evaluator.can_return_multiple_values(&unary.into()),
+            "unary operators adjust their operand to a single value"
+        );
+
+        for operator in [BinaryOperator::Plus, BinaryOperator::And] {
+            let binary = BinaryExpression::new(
+                operator,
+                Expression::variable_arguments(),
+                Expression::from(1),
+            );
+            assert!(
+                !evaluator.can_return_multiple_values(&binary.into()),
+                "binary operators always return a single value"
+            );
+        }
     }
 
     evaluate_expressions!(
