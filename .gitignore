@@ -1,0 +1,16 @@
+# Rust build artifacts
+/target
+
+# References (external benchmark & upstream source trees)
+references/
+
+# OS and Editor metadata
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Insta snapshot temporary diffs
+*.snap.new

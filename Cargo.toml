@@ -1,0 +1,30 @@
+[package]
+name = "r4"
+version = "0.1.0"
+edition = "2021"
+description = "A semantically-aware and control-flow tracking Lua analysis and transformation engine"
+license = "MIT"
+
+[features]
+default = []
+tracing = ["dep:tracing"]
+
+[dependencies]
+full_moon = { version = "2.2.0", features = ["roblox"] }
+num-traits = "0.2.19"
+bstr = "1.12.1"
+indexmap = "2.14.0"
+log = "0.4.29"
+petgraph = "0.8.3"
+bitvec = "1.0"
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+env_logger = "0.11.10"
+pretty_assertions = "1.4.1"
+insta = { version = "1.47.2", features = ["json", "filters"] }
+paste = "1.0.15"
+
+# full_moon can stack overflow on complex grammar if compiled with opt-level 0
+[profile.dev.package.full_moon]
+opt-level = 3
