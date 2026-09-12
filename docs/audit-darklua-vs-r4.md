@@ -303,6 +303,8 @@ the follow-ups):
   `remove_continue` now generates its loop flags through the shared
   `IdentifierTracker` instead of a fixed `__R4_CONTINUE_{n}` counter (this
   change). The bundler/`remove_call_match` do not exist in `r4`.
-- [ ] **9. Adversarial semantic-oracle tests** for the rule pipeline
-  (partially covered by the rename/remove-invalid/remove-unreachable tests,
-  which re-analyze their generated output).
+- [x] **9. Adversarial semantic-oracle tests** —
+  `tests/rules_semantics_test.rs` re-parses and re-analyzes transformed output
+  and checks def-use counts, shadowed-global identity, capture relationships,
+  generated-name avoidance of host globals, composed dead-code removal, and
+  strict-mode binding of renamed programs (this change).
