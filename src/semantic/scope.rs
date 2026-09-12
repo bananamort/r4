@@ -1,5 +1,6 @@
 use super::label::LabelId;
 use super::symbol::SymbolId;
+use super::type_alias::TypeId;
 
 /// Identifies a scope in the [`SemanticModel`](super::SemanticModel).
 ///
@@ -53,6 +54,8 @@ pub struct Scope {
     pub symbols: Vec<SymbolId>,
     /// Labels declared directly in this scope, in declaration order.
     pub labels: Vec<LabelId>,
+    /// Type aliases declared directly in this scope, in declaration order.
+    pub types: Vec<TypeId>,
 }
 
 impl Scope {

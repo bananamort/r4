@@ -1,7 +1,8 @@
 # Architectural Audit — `darklua-0.19.0` vs `r4`
 
 Date: 2026-09-12
-Last updated: commit `8cb5a1b` (structural bindings; token lookup tables removed).
+Last updated: remaining-open-items mission (mandatory models, type-name
+resolution, LICM, and model-first `require` conversion/bundling).
 Scope: `references/darklua-0.19.0/src/` versus `r4`'s read-only analysis layers
 (`src/semantic/`, `src/cfg/`).
 
@@ -312,32 +313,49 @@ the follow-ups):
   names that avoid host globals, original names and keywords. Fails before
   mutation when any identifier is unbound in the model (originated with token
   validation, migrated to structural binding validation).
-- [ ] **7. Resolution-based `require` handling.** — *blocked on the missing
-  port*: `r4` has no bundler or `convert_require` (verified: no `bundle` or
-  `convert_require` module). The audit's Claim D only exists in darklua; when
-  require conversion is ported it must resolve `require` through the model
-  (`identifier_resolves_to_global`) so a shadowing local is never rewritten.
+- [x] **7. Resolution-based `require` handling** —
+  `rules::require::convert_require` only rewrites `require` calls whose prefix
+  resolves to the global `require` symbol or an immutable alias
+  (`identifier_resolves_to_global`), so a shadowing local or parameter is
+  never rewritten. `rules::require::bundle_modules` inlines statically
+  resolvable modules with cycle detection, and every synthesized identifier is
+  allocated by `NameGenerator` against the root model and every bundled module.
 - [x] **8. Freshened synthetic names** —
   `remove_continue` generates its loop flags through the shared
-  `IdentifierTracker` (not a fixed `__R4_CONTINUE_{n}` counter), and
-  `remove_call_match` allocates reserved-global aliases with the model-first
-  `NameGenerator`. The bundler does not exist in `r4` yet (see "Still open").
+  `IdentifierTracker`, `remove_call_match` allocates reserved-global aliases
+  with the model-first `NameGenerator`, the standard-library rewrites
+  (`remove_floor_division`, `remove_interpolated_string`) allocate their
+  aliases through `NameGenerator` instead of fixed `__R4_*` names, and the
+  bundler allocates its loader and module-definition names the same way.
 - [x] **9. Adversarial semantic-oracle tests** —
   `tests/rules_semantics_test.rs` re-parses and re-analyzes transformed output
   and checks def-use counts, shadowed-global identity, capture relationships,
   generated-name avoidance of host globals, composed dead-code removal, and
-  strict-mode binding of renamed programs. `tests/rules_parity_test.rs` adds
-  legacy-vs-model output parity plus explicit improvement cases.
+  strict-mode binding of renamed programs. `tests/rules_model_test.rs` checks
+  the model-mandatory standard-library rewrites, and `tests/rules_test.rs`
+  covers require shadowing/conversion/bundling and the LICM preconditions.
 
 ### Follow-up upgrades (semantic-first pass migration)
 
-- [x] **Model-aware standard library passes** —
-  `remove_floor_division_with_model`, `remove_interpolated_string_with_model`,
-  `convert_square_root_call_with_model`. They use
-  `SemanticModel::name_is_transparent_global`: read-only aliases such as
-  `local math = math` are optimized through, while mutable or non-alias
-  shadowing keeps the legacy conservative behavior. Output parity is verified
-  by `tests/rules_parity_test.rs`.
+- [x] **Model-mandatory standard library passes** —
+  `convert_square_root_call`, `group_local`, `remove_floor_division` and
+  `remove_interpolated_string` take a required `&SemanticModel`; their legacy
+  name-based entry points and the `ShadowPolicy` name scan are removed. They
+  resolve through `SemanticModel::name_is_transparent_global`, so read-only
+  aliases such as `local math = math` are optimized through, while mutable or
+  non-alias shadowing stays conservative. `tests/rules_model_test.rs` verifies
+  the behavior and the collision-free aliases.
+- [x] **First-class type-name resolution** — `SemanticModel` owns a
+  `TypeId`/`TypeSymbol` arena, `Scope` records declared types, `BindingId` has
+  a distinct type domain, and the analyzer binds type declarations, resolves
+  type-name occurrences lexically (same-scope redeclarations included) and
+  reports `SemanticErrorKind::UnresolvedType` under
+  `SemanticAnalyzer::strict_types()`.
+- [x] **Sound LICM** — `cfg::analysis::LoopInvariantAnalysis` consumes
+  `DominatorTree` natural loops and proves strict purity, loop invariance
+  (including `ForLoop` iteration-variable definitions in liveness) and
+  non-captured assignment before `rules::canonicalize::hoist_loop_invariants`
+  moves the statement behind a fresh `NameGenerator` name.
 - [x] **Transformation session + front-end convenience** —
   `rules::Session` caches the model, re-analyzes lazily after model-less passes
   and always hands semantic passes a fresh model; `Parser::parse_analyzed`
@@ -347,7 +365,7 @@ the follow-ups):
   live while keeping captured and side-effecting stores.
 - [x] **Label consumer** — `canonicalize::remove_unused_labels` uses the
   model's goto bindings to delete labels that no `goto` targets.
-- [x] **Symbol-level local grouping** — `canonicalize::group_local_with_model`
+- [x] **Symbol-level local grouping** — `canonicalize::group_local`
   merges consecutive local assignments when the second one reads no symbol
   declared by the first, ignoring unrelated same-name locals.
 - [x] **Evaluator arity precision** — `can_return_multiple_values` no longer
@@ -355,36 +373,28 @@ the follow-ups):
 
 ### Still open
 
-- **Loop optimizations (LICM)** — the exact natural-loop and dominance
-  primitives exist (`DominatorTree::{back_edges, is_loop_header,
-  natural_loop_blocks, try_natural_loop_blocks}`), but no behavior-preserving
-  pass consumes them yet. Hoisting requires loop preheaders for insertion
-  points, an alias/escape argument before moving reads, and scope-safe
-  movement (hoisting a declaration out of a loop changes capture and
-  visibility). There is no legacy oracle for this optimization, so it needs
-  its own semantic-oracle tests rather than output parity.
-- **Bundler / require port** — `r4` has no `convert_require` and no bundler
-  (verified: neither module exists). `remove_call_match` and
-  `remove_assertions` are already ported model-first with the strict
-  `NameGenerator`. The port order should be: (1) `require` resolution that
-  accepts only `SymbolKind::Global` or an immutable alias
-  (`identifier_resolves_to_global`), eliminating darklua's Claim D by
-  construction; (2) bundler module emission and identifier synthesis through
-  `NameGenerator`, never hard-coded `__DARKLUA_*` names.
-- **Legacy name-based standard-library variants** —
-  `convert_square_root_call`, `group_local`, `remove_floor_division` and
-  `remove_interpolated_string` still expose their original name-based entry
-  points next to `*_with_model`. Recommendation 1 (the model is a required
-  rule input) is only fully realized once every caller passes a
-  `SemanticModel`; the legacy variants should be deprecated or become thin
-  wrappers over the model-aware implementations.
-- **Type-name resolution** — Luau type names are `Identifier`s inside
-  `TypeName`, but analysis only walks their type parameters
-  (`walker.rs::walk_type_name`); no type names are declared or bound. Only
-  runtime identifiers and goto labels carry structural bindings today. A type
-  environment needs type declaration binding plus a third binding domain (or a
-  separate type arena) in the `BindingId` scheme, and would unlock
-  type-aware/`remove_types`-adjacent passes.
+- **Roblox/Rojo require modes** — the `require` port covers model-first
+  resolution, path conversion with a pluggable `RequirePathConverter`, and an
+  in-memory module bundler with cycle detection. darklua's Roblox instance
+  paths, Rojo sourcemaps and filesystem-backed path modes are not ported; they
+  can be layered on the same converter/provider traits without touching the
+  resolution logic.
+- **Type environments** — type declarations, exported types, generic type
+  parameters and lexical type shadowing are bound and resolved, and strict
+  typing rejects undeclared type names. Generic type-pack defaults and
+  function-type generic parameters are walked conservatively; there is no type
+  checker, only name resolution.
+- **RICM/LICM depth** — `hoist_loop_invariants` moves strictly pure,
+  loop-invariant single-value local declarations whose block dominates every
+  latch. It intentionally does not perform preheader synthesis for
+  load-bearing expressions, strength reduction, or speculative hoisting of
+  potentially-raising arithmetic.
+- **Legacy name-based variants that remain model-less by design** — the
+  syntax-only desugarings (`remove_types`, `remove_compound_assign`,
+  `remove_if_expression`, `remove_continue`, `convert_luau_number`,
+  `remove_method_call`) do not resolve symbols and need no model. Every
+  standard-library rewrite and every semantic pass now requires a
+  `SemanticModel`.
 
 ### Structural semantic layer (token-free passes)
 

@@ -1,9 +1,8 @@
 //! Shared identifier bookkeeping for transformation passes.
 //!
 //! The tracker is collected before a pass mutates the AST. It records every
-//! identifier occurrence so that generated temporaries can avoid collisions,
-//! and every local declaration so that passes can detect when a standard
-//! library name (like `math` or `tostring`) is shadowed and must be aliased.
+//! identifier occurrence so that generated temporaries can avoid collisions
+//! with any name that already appears in the tree.
 
 use std::collections::HashSet;
 
@@ -17,7 +16,6 @@ use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 #[derive(Debug, Default, Clone)]
 pub(crate) struct IdentifierTracker {
     used: HashSet<String>,
-    declared: HashSet<String>,
 }
 
 impl IdentifierTracker {
@@ -36,17 +34,6 @@ impl IdentifierTracker {
         let mut collector = IdentifierCollector::default();
         DefaultVisitor::visit_statement(statement, &mut collector);
         collector.tracker
-    }
-
-    /// Returns whether a local variable with this name is declared anywhere in
-    /// the tracked AST.
-    ///
-    /// The check is intentionally conservative: it returns `true` even when the
-    /// declaration is in a different scope than a specific use site, which
-    /// makes passes alias standard library functions more often but never
-    /// changes their semantics.
-    pub fn is_declared(&self, name: &str) -> bool {
-        self.declared.contains(name)
     }
 
     /// Generates an identifier starting with `prefix` that does not collide with
@@ -71,7 +58,6 @@ impl IdentifierTracker {
 
     fn insert_declaration(&mut self, name: &str) {
         self.used.insert(name.to_string());
-        self.declared.insert(name.to_string());
     }
 }
 

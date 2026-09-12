@@ -3,6 +3,7 @@
 mod constant_folding;
 mod constant_propagation;
 mod dominators;
+mod licm;
 mod liveness;
 mod reachability;
 
@@ -11,5 +12,6 @@ pub use constant_propagation::{
     fold_constant_branches_with_propagation, ConstantPropagation, ConstantPropagationError,
 };
 pub use dominators::{BackEdge, DominatorTree};
+pub use licm::{HoistedStatement, LicmError, LoopHoist, LoopInvariantAnalysis};
 pub use liveness::{Liveness, LivenessError};
 pub use reachability::Reachability;

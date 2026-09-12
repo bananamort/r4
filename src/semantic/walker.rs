@@ -100,6 +100,11 @@ impl AnalyzerState {
                         Some(identifier.get_identifier()),
                     );
                 }
+                for identifier in generic_for.iter_identifiers() {
+                    if let Some(r#type) = identifier.get_type() {
+                        self.walk_type(r#type)?;
+                    }
+                }
                 let result = self.walk_block_statements(generic_for.get_block());
                 self.pop_scope();
                 result?;
@@ -141,6 +146,11 @@ impl AnalyzerState {
                         self.set_symbol_initializer(symbol, *target);
                     }
                 }
+                for variable in assign.iter_variables() {
+                    if let Some(r#type) = variable.get_type() {
+                        self.walk_type(r#type)?;
+                    }
+                }
             }
             Statement::LocalFunction(function) => {
                 self.declare_symbol(
@@ -156,7 +166,16 @@ impl AnalyzerState {
                         Some(parameter.get_identifier()),
                     );
                 }
-                let result = self.walk_block_statements(function.get_block());
+                self.push_type_parameters(generic_type_names(function.get_generic_parameters()));
+                let result = (|| {
+                    self.walk_signature_types(
+                        function.iter_parameters().collect(),
+                        function.get_variadic_type(),
+                        function.get_return_type(),
+                    )?;
+                    self.walk_block_statements(function.get_block())
+                })();
+                self.pop_type_parameters();
                 self.exit_function();
                 result?;
             }
@@ -173,6 +192,9 @@ impl AnalyzerState {
                     SymbolKind::Iteration,
                     Some(identifier.get_identifier()),
                 );
+                if let Some(r#type) = identifier.get_type() {
+                    self.walk_type(r#type)?;
+                }
                 let result = self.walk_block_statements(numeric_for.get_block());
                 self.pop_scope();
                 result?;
@@ -191,7 +213,7 @@ impl AnalyzerState {
                 self.walk_scoped_block(while_statement.get_block())?;
             }
             Statement::TypeDeclaration(declaration) => {
-                self.walk_type(declaration.get_type())?;
+                self.walk_type_declaration(declaration)?;
             }
             Statement::TypeFunction(function) => {
                 self.enter_function();
@@ -202,7 +224,16 @@ impl AnalyzerState {
                         Some(parameter.get_identifier()),
                     );
                 }
-                let result = self.walk_block_statements(function.get_block());
+                self.push_type_parameters(generic_type_names(function.get_generic_parameters()));
+                let result = (|| {
+                    self.walk_signature_types(
+                        function.iter_parameters().collect(),
+                        function.get_variadic_type(),
+                        function.get_return_type(),
+                    )?;
+                    self.walk_block_statements(function.get_block())
+                })();
+                self.pop_type_parameters();
                 self.exit_function();
                 result?;
             }
@@ -240,7 +271,16 @@ impl AnalyzerState {
                 Some(parameter.get_identifier()),
             );
         }
-        let result = self.walk_block_statements(function.get_block());
+        self.push_type_parameters(generic_type_names(function.get_generic_parameters()));
+        let result = (|| {
+            self.walk_signature_types(
+                function.iter_parameters().collect(),
+                function.get_variadic_type(),
+                function.get_return_type(),
+            )?;
+            self.walk_block_statements(function.get_block())
+        })();
+        self.pop_type_parameters();
         self.exit_function();
         result
     }
@@ -254,7 +294,16 @@ impl AnalyzerState {
                 Some(parameter.get_identifier()),
             );
         }
-        let result = self.walk_block_statements(function.get_block());
+        self.push_type_parameters(generic_type_names(function.get_generic_parameters()));
+        let result = (|| {
+            self.walk_signature_types(
+                function.iter_parameters().collect(),
+                function.get_variadic_type(),
+                function.get_return_type(),
+            )?;
+            self.walk_block_statements(function.get_block())
+        })();
+        self.pop_type_parameters();
         self.exit_function();
         result
     }
@@ -443,15 +492,97 @@ impl AnalyzerState {
     }
 
     fn walk_type_name(&mut self, type_name: &TypeName) -> SemanticResult<()> {
+        self.resolve_type_occurrence(type_name.get_type_name())?;
+
         if let Some(parameters) = type_name.get_type_parameters() {
             for parameter in parameters.iter() {
                 match parameter {
                     TypeParameter::Type(next_type) => self.walk_type(next_type)?,
-                    TypeParameter::TypePack(_)
-                    | TypeParameter::VariadicTypePack(_)
-                    | TypeParameter::GenericTypePack(_) => {}
+                    TypeParameter::TypePack(type_pack) => self.walk_type_pack(type_pack)?,
+                    TypeParameter::VariadicTypePack(variadic) => {
+                        self.walk_type(variadic.get_type())?
+                    }
+                    TypeParameter::GenericTypePack(pack) => {
+                        self.check_type_occurrence(pack.get_name())?;
+                    }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Walks a type declaration: declares the alias, pushes its generic type
+    /// parameters, then walks the generic defaults and the declared type.
+    fn walk_type_declaration(
+        &mut self,
+        declaration: &TypeDeclarationStatement,
+    ) -> SemanticResult<()> {
+        self.declare_type_symbol(
+            declaration.get_name().get_name(),
+            declaration.is_exported(),
+            Some(declaration.get_name()),
+        );
+
+        let mut names = Vec::new();
+        let mut defaults = Vec::new();
+        if let Some(parameters) = declaration.get_generic_parameters() {
+            for parameter in parameters.iter() {
+                match parameter {
+                    GenericParameterRef::TypeVariable(identifier) => {
+                        names.push(identifier.get_name().clone());
+                    }
+                    GenericParameterRef::TypeVariableWithDefault(variable) => {
+                        names.push(variable.get_type_variable().get_name().clone());
+                        defaults.push(variable.get_default_type());
+                    }
+                    GenericParameterRef::GenericTypePack(pack) => {
+                        names.push(pack.get_name().get_name().clone());
+                    }
+                    GenericParameterRef::GenericTypePackWithDefault(pack) => {
+                        names.push(pack.get_generic_type_pack().get_name().get_name().clone());
+                    }
+                }
+            }
+        }
+
+        self.push_type_parameters(names);
+        let result = (|| {
+            for default in defaults {
+                self.walk_type(default)?;
+            }
+            self.walk_type(declaration.get_type())
+        })();
+        self.pop_type_parameters();
+        result
+    }
+
+    fn walk_type_pack(&mut self, type_pack: &TypePack) -> SemanticResult<()> {
+        for r#type in type_pack.iter() {
+            self.walk_type(r#type)?;
+        }
+        Ok(())
+    }
+
+    /// Walks the type annotations of a function signature.
+    ///
+    /// The caller is responsible for pushing the function's generic type
+    /// parameters before calling this (and for the body).
+    fn walk_signature_types<'b>(
+        &mut self,
+        parameters: Vec<&'b TypedIdentifier>,
+        variadic_type: Option<&'b FunctionVariadicType>,
+        return_type: Option<&'b FunctionReturnType>,
+    ) -> SemanticResult<()> {
+        for parameter in parameters {
+            if let Some(r#type) = parameter.get_type() {
+                self.walk_type(r#type)?;
+            }
+        }
+        if let Some(variadic_type) = variadic_type {
+            self.walk_function_variadic_type(variadic_type)?;
+        }
+        if let Some(return_type) = return_type {
+            self.walk_function_return_type(return_type)?;
         }
         Ok(())
     }
@@ -462,7 +593,9 @@ impl AnalyzerState {
     ) -> SemanticResult<()> {
         match variadic {
             VariadicArgumentType::VariadicTypePack(pack) => self.walk_type(pack.get_type()),
-            VariadicArgumentType::GenericTypePack(_) => Ok(()),
+            VariadicArgumentType::GenericTypePack(pack) => {
+                self.check_type_occurrence(pack.get_name())
+            }
         }
     }
 
@@ -473,7 +606,36 @@ impl AnalyzerState {
         match return_type {
             FunctionReturnType::Type(r#type) => self.walk_type(r#type),
             FunctionReturnType::VariadicTypePack(pack) => self.walk_type(pack.get_type()),
-            FunctionReturnType::TypePack(_) | FunctionReturnType::GenericTypePack(_) => Ok(()),
+            FunctionReturnType::TypePack(type_pack) => self.walk_type_pack(type_pack),
+            FunctionReturnType::GenericTypePack(pack) => {
+                self.check_type_occurrence(pack.get_name())
+            }
         }
     }
+
+    fn walk_function_variadic_type(
+        &mut self,
+        variadic: &FunctionVariadicType,
+    ) -> SemanticResult<()> {
+        match variadic {
+            FunctionVariadicType::Type(r#type) => self.walk_type(r#type),
+            FunctionVariadicType::GenericTypePack(pack) => {
+                self.check_type_occurrence(pack.get_name())
+            }
+        }
+    }
+}
+
+/// Returns the names of a function's generic type parameters.
+fn generic_type_names(parameters: Option<&GenericParameters>) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(parameters) = parameters {
+        for identifier in parameters.iter_type_variable() {
+            names.push(identifier.get_name().clone());
+        }
+        for pack in parameters.iter_generic_type_pack() {
+            names.push(pack.get_name().get_name().clone());
+        }
+    }
+    names
 }

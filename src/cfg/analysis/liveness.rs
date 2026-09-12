@@ -248,6 +248,11 @@ impl<'a> BlockAnalyzer<'a> {
         Ok(())
     }
 
+    fn define_symbol(&mut self, symbol: SymbolId) {
+        self.defs.set(symbol.index(), true);
+        self.defined.set(symbol.index(), true);
+    }
+
     fn read_variable(&mut self, variable: &Variable) -> Result<(), LivenessError> {
         match variable {
             Variable::Identifier(identifier) => self.read_identifier(identifier),
@@ -473,9 +478,14 @@ impl<'a> BlockAnalyzer<'a> {
     fn read_terminator(&mut self, terminator: &Terminator) -> Result<(), LivenessError> {
         match terminator {
             Terminator::Branch { condition, .. } => self.read_expression(condition),
+            Terminator::ForLoop { defines, .. } => {
+                for &symbol in defines {
+                    self.define_symbol(symbol);
+                }
+                Ok(())
+            }
             Terminator::Return(Some(statement)) => self.read_last_statement(statement),
             Terminator::Jump(_)
-            | Terminator::ForLoop { .. }
             | Terminator::Return(None)
             | Terminator::Break(_)
             | Terminator::Continue(_)

@@ -17,6 +17,7 @@ mod label;
 mod model;
 mod scope;
 mod symbol;
+mod type_alias;
 mod walker;
 
 pub use analyzer::SemanticAnalyzer;
@@ -25,3 +26,4 @@ pub use label::{GotoBinding, GotoLabel, GotoSite, LabelId};
 pub use model::SemanticModel;
 pub use scope::{Scope, ScopeId, ScopeKind};
 pub use symbol::{AccessKind, Symbol, SymbolId, SymbolKind, SymbolUse, TokenKey};
+pub use type_alias::{TypeId, TypeSymbol};

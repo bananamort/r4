@@ -5,6 +5,7 @@ use crate::nodes::Identifier;
 use super::label::{GotoBinding, GotoLabel, LabelId};
 use super::scope::{Scope, ScopeId, ScopeKind};
 use super::symbol::{Symbol, SymbolId, SymbolKind, SymbolUse};
+use super::type_alias::{TypeId, TypeSymbol};
 
 /// The result of a semantic analysis pass over a parsed [`Block`](crate::nodes::Block).
 ///
@@ -22,6 +23,8 @@ pub struct SemanticModel {
     pub labels: Vec<GotoLabel>,
     /// All resolved goto occurrences, in source order.
     pub goto_bindings: Vec<GotoBinding>,
+    /// All declared type aliases, indexed by [`TypeId`].
+    pub types: Vec<TypeSymbol>,
     root_scope: ScopeId,
     chunk_scope: ScopeId,
     global_symbols: HashMap<String, SymbolId>,
@@ -37,6 +40,7 @@ impl SemanticModel {
         scopes: Vec<Scope>,
         labels: Vec<GotoLabel>,
         goto_bindings: Vec<GotoBinding>,
+        types: Vec<TypeSymbol>,
         root_scope: ScopeId,
         chunk_scope: ScopeId,
         global_symbols: HashMap<String, SymbolId>,
@@ -47,6 +51,7 @@ impl SemanticModel {
             scopes,
             labels,
             goto_bindings,
+            types,
             root_scope,
             chunk_scope,
             global_symbols,
@@ -84,6 +89,12 @@ impl SemanticModel {
         &self.labels[id.index()]
     }
 
+    /// Returns the type symbol with the given identifier.
+    #[inline]
+    pub fn type_symbol(&self, id: TypeId) -> &TypeSymbol {
+        &self.types[id.index()]
+    }
+
     /// Returns the implicit global symbol with the given name, if one was created.
     #[inline]
     pub fn global_symbol(&self, name: &str) -> Option<SymbolId> {
@@ -102,7 +113,7 @@ impl SemanticModel {
     /// were never analyzed or that belong to a stale model.
     pub fn resolve_identifier(&self, identifier: &Identifier) -> Option<SymbolId> {
         let binding = identifier.get_binding()?;
-        if binding.is_label() {
+        if !binding.is_symbol() {
             return None;
         }
         let id = SymbolId(binding.index());
@@ -123,6 +134,43 @@ impl SemanticModel {
         let id = LabelId(binding.index());
         let label = self.labels.get(id.index())?;
         (label.id == id && label.name == *identifier.get_name()).then_some(id)
+    }
+
+    /// Returns the type alias bound to the given type name identifier.
+    ///
+    /// Like [`Self::resolve_identifier`] this reads and validates the
+    /// structural binding, so same-scope type redeclarations resolve exactly
+    /// and no token data is required.
+    pub fn resolve_type(&self, identifier: &Identifier) -> Option<TypeId> {
+        let binding = identifier.get_binding()?;
+        if !binding.is_type() {
+            return None;
+        }
+        let id = TypeId(binding.index());
+        let r#type = self.types.get(id.index())?;
+        (r#type.id == id && r#type.name == *identifier.get_name()).then_some(id)
+    }
+
+    /// Resolves a type name lexically starting from `scope`.
+    ///
+    /// This is the name-level counterpart of [`Self::resolve_type`]: it
+    /// returns the most recent type declaration with this name in the nearest
+    /// scope that declares it.
+    pub fn resolve_type_in_scope(&self, scope: ScopeId, name: &str) -> Option<TypeId> {
+        let mut current = Some(scope);
+        while let Some(id) = current {
+            let scope = &self.scopes[id.index()];
+            if let Some(r#type) = scope
+                .types
+                .iter()
+                .rev()
+                .find(|&&r#type| self.types[r#type.index()].name == name)
+            {
+                return Some(*r#type);
+            }
+            current = scope.parent;
+        }
+        None
     }
 
     /// Resolves a name lexically starting from `scope`, without recording any use.

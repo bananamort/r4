@@ -6,6 +6,9 @@ pub struct SemanticOptions {
     /// When enabled, reading or writing an identifier that does not resolve to a
     /// local variable is an error instead of an implicit global access.
     pub strict_globals: bool,
+    /// When enabled, a type name that resolves neither to a type declaration,
+    /// a generic type parameter, nor a Luau built-in type is an error.
+    pub strict_types: bool,
 }
 
 /// An error produced by semantic analysis.
@@ -44,6 +47,13 @@ pub enum SemanticErrorKind {
         label: String,
         /// The local variable whose scope would be entered.
         symbol: String,
+    },
+    /// A type name resolves neither to a type declaration, a generic type
+    /// parameter, nor a built-in Luau type (only produced with
+    /// [`SemanticOptions::strict_types`]).
+    UnresolvedType {
+        /// The offending type name.
+        name: String,
     },
 }
 
@@ -89,6 +99,15 @@ impl SemanticError {
             line,
         }
     }
+
+    pub(crate) fn unresolved_type(name: &str, line: Option<usize>) -> Self {
+        Self {
+            kind: SemanticErrorKind::UnresolvedType {
+                name: name.to_string(),
+            },
+            line,
+        }
+    }
 }
 
 impl fmt::Display for SemanticError {
@@ -119,6 +138,9 @@ impl fmt::Display for SemanticError {
                 "goto `{}` jumps into the scope of local `{}`",
                 label, symbol
             ),
+            SemanticErrorKind::UnresolvedType { name } => {
+                write!(f, "unresolved type `{}`", name)
+            }
         }
     }
 }

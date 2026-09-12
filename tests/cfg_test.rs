@@ -287,7 +287,7 @@ fn numeric_for_uses_an_implicit_loop_test() {
 
     let header = jump_target(&cfg, cfg.entry);
     let (body, exit) = match cfg.terminator(header) {
-        Terminator::ForLoop { body, exit } => (*body, *exit),
+        Terminator::ForLoop { body, exit, .. } => (*body, *exit),
         other => panic!("expected a for-loop terminator, got {other:?}"),
     };
 
@@ -920,7 +920,7 @@ fn dominator_tree_detects_for_loops() {
 
     let header = jump_target(&cfg, cfg.entry);
     let (body, exit) = match cfg.terminator(header) {
-        Terminator::ForLoop { body, exit } => (*body, *exit),
+        Terminator::ForLoop { body, exit, .. } => (*body, *exit),
         other => panic!("expected a for-loop terminator, got {other:?}"),
     };
 

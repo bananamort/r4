@@ -1,4 +1,5 @@
 use crate::nodes::{Expression, LastStatement, Statement};
+use crate::semantic::SymbolId;
 
 use super::provenance::{ConditionOrigin, StatementOrigin};
 
@@ -32,12 +33,15 @@ pub enum Terminator {
         else_block: BlockId,
     },
     /// Implicit iteration test of a `for` loop. The `body` is executed while the
-    /// loop is not exhausted, otherwise control continues at `exit`.
+    /// loop is not exhausted, otherwise control continues at `exit`. `defines`
+    /// are the iteration variables the header introduces on every iteration.
     ForLoop {
         /// The loop body.
         body: BlockId,
         /// The block reached when the loop ends.
         exit: BlockId,
+        /// Iteration variables defined by the loop header.
+        defines: Vec<SymbolId>,
     },
     /// Return from the current function (or chunk). The return values, if any,
     /// are preserved for data-flow analysis.
@@ -63,7 +67,7 @@ impl Terminator {
                 else_block,
                 ..
             } => vec![*then_block, *else_block],
-            Terminator::ForLoop { body, exit } => vec![*body, *exit],
+            Terminator::ForLoop { body, exit, .. } => vec![*body, *exit],
             Terminator::Return(_) => vec![exit],
             Terminator::Unreachable => Vec::new(),
         }

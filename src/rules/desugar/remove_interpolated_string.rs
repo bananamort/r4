@@ -8,7 +8,7 @@ use crate::nodes::{
     VariableAssignment,
 };
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
-use crate::rules::shadow::ShadowPolicy;
+use crate::rules::NameGenerator;
 use crate::semantic::SemanticModel;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -19,11 +19,10 @@ enum ReplacementStrategy {
 }
 
 struct RemoveInterpolatedStringProcessor<'a> {
-    string_format_identifier: String,
-    tostring_identifier: String,
-    define_string_format: bool,
-    define_tostring: bool,
-    shadows: ShadowPolicy<'a>,
+    model: &'a SemanticModel,
+    names: NameGenerator,
+    string_format_identifier: Option<String>,
+    tostring_identifier: Option<String>,
     strategy: ReplacementStrategy,
 }
 
@@ -32,6 +31,40 @@ const DEFAULT_STRING_LIBRARY: &str = "string";
 const DEFAULT_STRING_FORMAT_NAME: &str = "format";
 
 impl RemoveInterpolatedStringProcessor<'_> {
+    fn tostring_prefix(&mut self) -> Prefix {
+        if self
+            .model
+            .name_is_transparent_global(DEFAULT_TOSTRING_IDENTIFIER)
+        {
+            Prefix::from_name(DEFAULT_TOSTRING_IDENTIFIER)
+        } else {
+            let name = self
+                .tostring_identifier
+                .get_or_insert_with(|| self.names.generate_with_prefix("__R4_TO_STR"))
+                .clone();
+            Prefix::from_name(name)
+        }
+    }
+
+    fn string_format_prefix(&mut self) -> Prefix {
+        if self
+            .model
+            .name_is_transparent_global(DEFAULT_STRING_LIBRARY)
+        {
+            FieldExpression::new(
+                Prefix::from_name(DEFAULT_STRING_LIBRARY),
+                DEFAULT_STRING_FORMAT_NAME,
+            )
+            .into()
+        } else {
+            let name = self
+                .string_format_identifier
+                .get_or_insert_with(|| self.names.generate_with_prefix("__R4_STR_FMT"))
+                .clone();
+            Prefix::from_name(name)
+        }
+    }
+
     fn replace_with(&mut self, string: &InterpolatedStringExpression) -> Expression {
         if string.is_empty() {
             StringExpression::from_value("").into()
@@ -40,16 +73,12 @@ impl RemoveInterpolatedStringProcessor<'_> {
                 InterpolationSegment::String(string_segment) => {
                     StringExpression::from_value(string_segment.get_value()).into()
                 }
-                InterpolationSegment::Value(value_segment) => FunctionCall::from_name(
-                    if self.shadows.is_transparent(DEFAULT_TOSTRING_IDENTIFIER) {
-                        DEFAULT_TOSTRING_IDENTIFIER
-                    } else {
-                        self.define_tostring = true;
-                        &self.tostring_identifier
-                    },
-                )
-                .with_argument(value_segment.get_expression().clone())
-                .into(),
+                InterpolationSegment::Value(value_segment) => {
+                    let prefix = self.tostring_prefix();
+                    FunctionCall::from_prefix(prefix)
+                        .with_argument(value_segment.get_expression().clone())
+                        .into()
+                }
             }
         } else {
             let arguments = iter::once(
@@ -85,32 +114,20 @@ impl RemoveInterpolatedStringProcessor<'_> {
                     })
                     .map(|value| match self.strategy {
                         ReplacementStrategy::ToStringSpecifier => value,
-                        ReplacementStrategy::StringSpecifier => FunctionCall::from_name(
-                            if self.shadows.is_transparent(DEFAULT_TOSTRING_IDENTIFIER) {
-                                DEFAULT_TOSTRING_IDENTIFIER
-                            } else {
-                                self.define_tostring = true;
-                                &self.tostring_identifier
-                            },
-                        )
-                        .with_argument(value)
-                        .into(),
+                        ReplacementStrategy::StringSpecifier => {
+                            let prefix = self.tostring_prefix();
+                            FunctionCall::from_prefix(prefix)
+                                .with_argument(value)
+                                .into()
+                        }
                     }),
             )
             .collect::<TupleArguments>();
 
-            FunctionCall::from_prefix(if self.shadows.is_transparent(DEFAULT_STRING_LIBRARY) {
-                FieldExpression::new(
-                    Prefix::from_name(DEFAULT_STRING_LIBRARY),
-                    DEFAULT_STRING_FORMAT_NAME,
-                )
+            let prefix = self.string_format_prefix();
+            FunctionCall::from_prefix(prefix)
+                .with_arguments(arguments)
                 .into()
-            } else {
-                self.define_string_format = true;
-                Prefix::from_name(&self.string_format_identifier)
-            })
-            .with_arguments(arguments)
-            .into()
         }
     }
 }
@@ -126,75 +143,43 @@ impl NodeProcessor for RemoveInterpolatedStringProcessor<'_> {
 /// Removes Luau backtick interpolated strings, replacing them with
 /// `string.format` calls (using the `%s` specifier).
 ///
-/// `tostring` and `string` are treated as shadowed when they are declared
-/// anywhere in the block; in that case aliases are introduced at the top of the
-/// block.
-pub fn remove_interpolated_string(block: &mut Block) {
-    let shadows = ShadowPolicy::from_block(block);
-    remove_interpolated_string_with_strategy(block, ReplacementStrategy::StringSpecifier, shadows);
+/// `tostring` and `string` resolve through the semantic model. Read-only
+/// aliases such as `local tostring = tostring` are transparent, so no alias is
+/// introduced for them; otherwise a collision-free alias allocated by
+/// [`NameGenerator`] is inserted at the top of the block.
+pub fn remove_interpolated_string(block: &mut Block, model: &SemanticModel) {
+    remove_interpolated_string_with_strategy(block, model, ReplacementStrategy::StringSpecifier);
 }
 
 /// Removes interpolated strings using the `%*` format specifier, which relies
 /// on `string.format` converting its arguments with `tostring`.
-pub fn remove_interpolated_string_with_tostring(block: &mut Block) {
-    let shadows = ShadowPolicy::from_block(block);
-    remove_interpolated_string_with_strategy(
-        block,
-        ReplacementStrategy::ToStringSpecifier,
-        shadows,
-    );
+pub fn remove_interpolated_string_with_tostring(block: &mut Block, model: &SemanticModel) {
+    remove_interpolated_string_with_strategy(block, model, ReplacementStrategy::ToStringSpecifier);
 }
 
-/// Like [`remove_interpolated_string`], but resolves `string` and `tostring`
-/// through the semantic model.
-///
-/// Read-only aliases such as `local tostring = tostring` are transparent, so
-/// no alias definitions are introduced for them.
-pub fn remove_interpolated_string_with_model(block: &mut Block, model: &SemanticModel) {
-    remove_interpolated_string_with_strategy(
-        block,
-        ReplacementStrategy::StringSpecifier,
-        ShadowPolicy::from_model(model),
-    );
-}
-
-/// Like [`remove_interpolated_string_with_tostring`], but resolves `string` and
-/// `tostring` through the semantic model.
-pub fn remove_interpolated_string_with_tostring_and_model(
+fn remove_interpolated_string_with_strategy(
     block: &mut Block,
     model: &SemanticModel,
-) {
-    remove_interpolated_string_with_strategy(
-        block,
-        ReplacementStrategy::ToStringSpecifier,
-        ShadowPolicy::from_model(model),
-    );
-}
-
-fn remove_interpolated_string_with_strategy<'a>(
-    block: &mut Block,
     strategy: ReplacementStrategy,
-    shadows: ShadowPolicy<'a>,
 ) {
-    const STRING_FORMAT_IDENTIFIER: &str = "__R4_STR_FMT";
-    const TOSTRING_IDENTIFIER: &str = "__R4_TO_STR";
-
     let mut processor = RemoveInterpolatedStringProcessor {
-        string_format_identifier: STRING_FORMAT_IDENTIFIER.to_owned(),
-        tostring_identifier: TOSTRING_IDENTIFIER.to_owned(),
-        define_string_format: false,
-        define_tostring: false,
-        shadows,
+        model,
+        names: NameGenerator::new(model),
+        string_format_identifier: None,
+        tostring_identifier: None,
         strategy,
     };
     DefaultVisitor::visit_block(block, &mut processor);
 
-    if processor.define_string_format || processor.define_tostring {
+    let string_format_identifier = processor.string_format_identifier;
+    let tostring_identifier = processor.tostring_identifier;
+
+    if string_format_identifier.is_some() || tostring_identifier.is_some() {
         let mut variables = Vec::new();
         let mut values = Vec::new();
 
-        if processor.define_string_format {
-            variables.push(TypedIdentifier::new(STRING_FORMAT_IDENTIFIER));
+        if let Some(identifier) = string_format_identifier {
+            variables.push(TypedIdentifier::new(identifier));
             values.push(
                 FieldExpression::new(
                     Prefix::from_name(DEFAULT_STRING_LIBRARY),
@@ -204,8 +189,8 @@ fn remove_interpolated_string_with_strategy<'a>(
             );
         }
 
-        if processor.define_tostring {
-            variables.push(TypedIdentifier::new(TOSTRING_IDENTIFIER));
+        if let Some(identifier) = tostring_identifier {
+            variables.push(TypedIdentifier::new(identifier));
             values.push(Identifier::new(DEFAULT_TOSTRING_IDENTIFIER).into());
         }
 

@@ -9,29 +9,41 @@
 //! * [`rename_variables`]: host environment knowledge used by renaming passes.
 
 mod name_generator;
-mod shadow;
 mod tracker;
 
 pub mod canonicalize;
 pub mod desugar;
 pub mod rename_variables;
+pub mod require;
 mod session;
 
 pub use name_generator::NameGenerator;
 pub use session::{Session, SessionError};
 
 use crate::nodes::Block;
+use crate::semantic::{SemanticAnalyzer, SemanticError};
 
 /// Applies all desugaring passes to transpile modern Luau down to vanilla Lua 5.1.
-pub fn desugar_to_lua51(block: &mut Block) {
+///
+/// The model-dependent passes (`remove_interpolated_string` and
+/// `remove_floor_division`) analyze the block internally at the point they run,
+/// so every pass sees a model that matches the current AST.
+pub fn desugar_to_lua51(block: &mut Block) -> Result<(), SemanticError> {
     desugar::remove_types(block);
     desugar::remove_compound_assign(block);
     desugar::remove_if_expression(block);
-    desugar::remove_interpolated_string(block);
-    desugar::remove_floor_division(block);
+
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::remove_interpolated_string(block, &model);
+
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::remove_floor_division(block, &model);
+
     desugar::remove_continue(block);
     desugar::convert_luau_number(block);
     desugar::remove_method_call(block);
+
+    Ok(())
 }
 
 /// Applies clean syntax canonicalization passes.

@@ -17,24 +17,28 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Identifies the semantic entity bound to an identifier occurrence.
 ///
-/// A binding refers either to a symbol (a local, a parameter, an iteration
-/// variable or an implicit global) or to a goto label. The two domains are
-/// tagged so a label can never be mistaken for a symbol.
+/// A binding refers either to a runtime symbol (a local, a parameter, an
+/// iteration variable or an implicit global), to a goto label, or to a type
+/// alias. The domains are tagged so they can never be confused with one
+/// another.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BindingId(u32);
 
 impl BindingId {
-    const LABEL_TAG: u32 = 1 << 31;
+    const KIND_MASK: u32 = 0b11 << 30;
+    const LABEL_TAG: u32 = 0b01 << 30;
+    const TYPE_TAG: u32 = 0b10 << 30;
+    const INDEX_MASK: u32 = !Self::KIND_MASK;
 
     /// Creates a binding to the symbol at `index`.
     ///
     /// # Panics
     ///
     /// Panics when `index` does not fit in the symbol domain. Real programs
-    /// cannot exhaust the domain (2^31 symbols).
+    /// cannot exhaust the domain (2^30 symbols).
     pub const fn symbol(index: u32) -> Self {
         assert!(
-            index < Self::LABEL_TAG,
+            index & Self::KIND_MASK == 0,
             "symbol index exceeds the binding domain"
         );
         Self(index)
@@ -47,22 +51,47 @@ impl BindingId {
     /// Panics when `index` does not fit in the label domain.
     pub const fn label(index: u32) -> Self {
         assert!(
-            index < Self::LABEL_TAG,
+            index & Self::KIND_MASK == 0,
             "label index exceeds the binding domain"
         );
         Self(index | Self::LABEL_TAG)
     }
 
-    /// Returns whether this binding refers to a label.
-    #[inline]
-    pub const fn is_label(self) -> bool {
-        self.0 & Self::LABEL_TAG != 0
+    /// Creates a binding to the type alias at `index`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `index` does not fit in the type domain.
+    pub const fn type_alias(index: u32) -> Self {
+        assert!(
+            index & Self::KIND_MASK == 0,
+            "type index exceeds the binding domain"
+        );
+        Self(index | Self::TYPE_TAG)
     }
 
-    /// Returns the symbol or label index of this binding.
+    /// Returns whether this binding refers to a runtime symbol.
+    #[inline]
+    pub const fn is_symbol(self) -> bool {
+        self.0 & Self::KIND_MASK == 0
+    }
+
+    /// Returns whether this binding refers to a goto label.
+    #[inline]
+    pub const fn is_label(self) -> bool {
+        self.0 & Self::KIND_MASK == Self::LABEL_TAG
+    }
+
+    /// Returns whether this binding refers to a type alias.
+    #[inline]
+    pub const fn is_type(self) -> bool {
+        self.0 & Self::KIND_MASK == Self::TYPE_TAG
+    }
+
+    /// Returns the symbol, label or type index of this binding.
     #[inline]
     pub const fn index(self) -> u32 {
-        self.0 & !Self::LABEL_TAG
+        self.0 & Self::INDEX_MASK
     }
 
     /// Rebuilds a binding from its raw representation.
@@ -80,7 +109,9 @@ impl BindingId {
 
 impl fmt::Debug for BindingId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_label() {
+        if self.is_type() {
+            write!(f, "Type({})", self.index())
+        } else if self.is_label() {
             write!(f, "Label({})", self.index())
         } else {
             write!(f, "Symbol({})", self.index())

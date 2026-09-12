@@ -1,10 +1,9 @@
-//! Output-parity tests for the semantic upgrade of the standard-library passes.
+//! Model-mandatory tests for the semantic transformation passes.
 //!
-//! For programs without shadowing, the model-aware variants must produce
-//! exactly the same output as the legacy name-based variants (parity). For
-//! programs with read-only aliases (`local math = math`), the model-aware
-//! variants may produce strictly better output; those cases are checked for
-//! semantic equivalence by re-evaluating the transformed code.
+//! `convert_square_root_call`, `group_local`, `remove_floor_division` and
+//! `remove_interpolated_string` no longer have name-based entry points: every
+//! call takes a `&SemanticModel`, resolves identifiers structurally, and
+//! allocates any synthesized identifier through `NameGenerator`.
 
 use r4::generator::{LuaGenerator, ReadableLuaGenerator};
 use r4::nodes::{Block, LastStatement};
@@ -22,6 +21,13 @@ fn parse(code: &str) -> Block {
 fn parse_tokens(code: &str) -> (Block, SemanticModel) {
     Parser::default()
         .preserve_tokens()
+        .parse_analyzed(code)
+        .unwrap_or_else(|error| panic!("failed to parse and analyze `{code}`: {error}"))
+}
+
+/// Parses and analyzes without token data: the passes must not need tokens.
+fn parse_tokenless(code: &str) -> (Block, SemanticModel) {
+    Parser::default()
         .parse_analyzed(code)
         .unwrap_or_else(|error| panic!("failed to parse and analyze `{code}`: {error}"))
 }
@@ -44,186 +50,192 @@ fn evaluate_first_return(output: &str) -> LuaValue {
     Evaluator::default().evaluate(expression)
 }
 
-type LegacyPass = fn(&mut Block);
-type ModelPass = fn(&mut Block, &SemanticModel);
-
-fn assert_parity(code: &str, legacy: LegacyPass, modern: ModelPass) {
-    let (block, model) = parse_tokens(code);
-
-    let mut legacy_block = block.clone();
-    legacy(&mut legacy_block);
-
-    let mut modern_block = block;
-    modern(&mut modern_block, &model);
-
-    assert_eq!(
-        generate(&legacy_block),
-        generate(&modern_block),
-        "legacy and model-aware outputs must match for:\n{code}"
-    );
-}
-
 #[test]
-fn sqrt_pass_is_parity_without_shadowing() {
+fn sqrt_pass_converts_without_shadowing() {
     for code in [
         "return math.sqrt(4)",
         "local x = math.sqrt(value)\nreturn x",
-        "math.sqrt(compute())",
         "return math.sqrt(a) + math.sqrt(b)",
     ] {
-        assert_parity(
-            code,
-            canonicalize::convert_square_root_call,
-            canonicalize::convert_square_root_call_with_model,
+        let (mut block, model) = parse_tokenless(code);
+        canonicalize::convert_square_root_call(&mut block, &model);
+        let output = generate(&block);
+        assert!(
+            !output.contains("math.sqrt"),
+            "the call must be converted for `{code}`: {output}"
         );
+        assert!(
+            output.contains("^ 0.5"),
+            "the conversion must use exponentiation for `{code}`: {output}"
+        );
+        parse(&output);
     }
 }
 
 #[test]
-fn floor_pass_is_parity_without_shadowing() {
-    for code in [
-        "return value // 2",
-        "local x = 1\nx //= 2\nreturn x",
-        "local a = 1\nlocal b = a // 2\nreturn b",
-        "return (a + b) // (c - d)",
-    ] {
-        assert_parity(
-            code,
-            desugar::remove_floor_division,
-            desugar::remove_floor_division_with_model,
-        );
-    }
+fn sqrt_statement_preserves_argument_side_effects() {
+    let (mut block, model) = parse_tokenless("math.sqrt(compute())");
+    canonicalize::convert_square_root_call(&mut block, &model);
+
+    let output = generate(&block);
+    assert!(!output.contains("math.sqrt"), "unexpected: {output}");
+    assert!(output.contains("compute()"), "unexpected: {output}");
 }
 
 #[test]
-fn interpolated_string_pass_is_parity_without_shadowing() {
-    for code in [
-        "return `hello`",
-        "return `value = {value}`",
-        "local name = 'x'\nreturn `hello {name}!`",
-        "return `a {1} b {2} c`",
-    ] {
-        assert_parity(
-            code,
-            desugar::remove_interpolated_string,
-            desugar::remove_interpolated_string_with_model,
-        );
-    }
-}
-
-#[test]
-fn mutable_shadows_stay_conservative_in_both_variants() {
+fn mutable_shadowing_prevents_conversion() {
     for code in [
         "local math = {}\nreturn math.sqrt(4)",
         "local math = make_math()\nreturn math.sqrt(4)",
         "local math = math\nmath = {}\nreturn math.sqrt(4)",
-        "local math = {}\nreturn value // 2",
-        "local tostring = function(x) return x end\nreturn `{value}`",
     ] {
-        assert_parity(
-            code,
-            canonicalize::convert_square_root_call,
-            canonicalize::convert_square_root_call_with_model,
+        let (mut block, model) = parse_tokenless(code);
+        canonicalize::convert_square_root_call(&mut block, &model);
+        let output = generate(&block);
+        assert!(
+            output.contains("math.sqrt"),
+            "a mutable or non-alias shadow must prevent conversion for `{code}`: {output}"
         );
     }
 }
 
 #[test]
 fn sqrt_optimizes_through_immutable_alias() {
-    let code = "local math = math\nreturn math.sqrt(16)";
-    let (block, model) = parse_tokens(code);
+    let (mut block, model) = parse_tokens("local math = math\nreturn math.sqrt(16)");
+    canonicalize::convert_square_root_call(&mut block, &model);
 
-    let mut legacy_block = block.clone();
-    canonicalize::convert_square_root_call(&mut legacy_block);
-    let legacy_output = generate(&legacy_block);
+    let output = generate(&block);
     assert!(
-        legacy_output.contains("math.sqrt"),
-        "legacy variant must refuse the optimization: {legacy_output}"
-    );
-
-    let mut modern_block = block;
-    canonicalize::convert_square_root_call_with_model(&mut modern_block, &model);
-    let modern_output = generate(&modern_block);
-    assert!(
-        modern_output.contains("16 ^ 0.5"),
-        "model variant must optimize through the alias: {modern_output}"
+        output.contains("16 ^ 0.5"),
+        "the alias is read-only, so the optimization is proven safe: {output}"
     );
     assert_eq!(
-        evaluate_first_return(&modern_output),
+        evaluate_first_return(&output),
         LuaValue::Number(4.0),
         "the optimized call must keep its value"
     );
 }
 
 #[test]
-fn floor_optimizes_through_immutable_alias() {
-    let code = "local math = math\nreturn value // 2";
-    let (block, model) = parse_tokens(code);
+fn floor_pass_rewrites_and_keeps_direct_math_access() {
+    let (mut block, model) = parse_tokenless("local math = math\nreturn value // 2");
+    desugar::remove_floor_division(&mut block, &model);
 
-    let mut legacy_block = block.clone();
-    desugar::remove_floor_division(&mut legacy_block);
-    let legacy_output = generate(&legacy_block);
+    let output = generate(&block);
     assert!(
-        legacy_output.contains("__R4_MATH_FLOOR"),
-        "legacy variant must introduce the alias: {legacy_output}"
-    );
-
-    let mut modern_block = block;
-    desugar::remove_floor_division_with_model(&mut modern_block, &model);
-    let modern_output = generate(&modern_block);
-    assert!(
-        modern_output.contains("math.floor(value / 2)"),
-        "model variant must keep the direct call: {modern_output}"
+        output.contains("math.floor(value / 2)"),
+        "the read-only alias must be transparent: {output}"
     );
     assert!(
-        !modern_output.contains("__R4_MATH_FLOOR"),
-        "no synthetic alias is needed: {modern_output}"
+        !output.contains("__R4_MATH_FLOOR"),
+        "no synthetic alias is needed: {output}"
+    );
+}
+
+#[test]
+fn floor_pass_aliases_mutable_shadow_with_fresh_name() {
+    let (mut block, model) = parse_tokenless("local math = {}\nreturn value // 2");
+    desugar::remove_floor_division(&mut block, &model);
+
+    let output = generate(&block);
+    assert!(
+        output.contains("local __R4_MATH_FLOOR = math.floor"),
+        "a mutable shadow needs a fresh alias: {output}"
+    );
+    assert!(
+        output.contains("__R4_MATH_FLOOR(value / 2)"),
+        "uses must be routed through the alias: {output}"
+    );
+}
+
+#[test]
+fn floor_pass_avoids_taken_alias_names() {
+    let code = "local math = {}\nlocal __R4_MATH_FLOOR = 1\nreturn value // 2";
+    let (mut block, model) = parse_tokenless(code);
+    desugar::remove_floor_division(&mut block, &model);
+
+    let output = generate(&block);
+    assert!(
+        output.contains("local __R4_MATH_FLOOR1 = math.floor"),
+        "the alias must avoid the user identifier: {output}"
+    );
+    assert!(
+        output.contains("__R4_MATH_FLOOR1(value / 2)"),
+        "uses must be routed through the fresh alias: {output}"
     );
 }
 
 #[test]
 fn interpolated_string_optimizes_through_immutable_alias() {
-    let code = "local tostring = tostring\nreturn `value = {value}`";
-    let (block, model) = parse_tokens(code);
+    let (mut block, model) = parse_tokens("local tostring = tostring\nreturn `value = {value}`");
+    desugar::remove_interpolated_string(&mut block, &model);
 
-    let mut legacy_block = block.clone();
-    desugar::remove_interpolated_string(&mut legacy_block);
-    let legacy_output = generate(&legacy_block);
+    let output = generate(&block);
     assert!(
-        legacy_output.contains("__R4_TO_STR"),
-        "legacy variant must introduce the alias: {legacy_output}"
-    );
-
-    let mut modern_block = block;
-    desugar::remove_interpolated_string_with_model(&mut modern_block, &model);
-    let modern_output = generate(&modern_block);
-    assert!(
-        modern_output.contains("tostring(value)"),
-        "model variant must call through the alias directly: {modern_output}"
+        output.contains("tostring(value)"),
+        "the read-only alias must be transparent: {output}"
     );
     assert!(
-        !modern_output.contains("__R4_TO_STR"),
-        "no synthetic alias is needed: {modern_output}"
+        !output.contains("__R4_TO_STR"),
+        "no synthetic alias is needed: {output}"
     );
 }
 
 #[test]
-fn group_local_is_parity_without_shadowing() {
-    for code in [
-        "local a = 1\nlocal b = 2\nreturn a + b",
-        "local a = 1\nlocal b = a\nreturn b",
-        "local a = 1\nlocal b = 2\nlocal c = a",
+fn interpolated_string_aliases_mutable_shadow_with_fresh_name() {
+    let code = "local tostring = function(x) return x end\nreturn `{value}`";
+    let (mut block, model) = parse_tokenless(code);
+    desugar::remove_interpolated_string(&mut block, &model);
+
+    let output = generate(&block);
+    assert!(
+        output.contains("local __R4_TO_STR = tostring"),
+        "a mutable shadow needs a fresh alias: {output}"
+    );
+    assert!(
+        output.contains("__R4_TO_STR(value)"),
+        "uses must be routed through the alias: {output}"
+    );
+}
+
+#[test]
+fn interpolated_string_avoids_taken_alias_names() {
+    let code = "local tostring = function(x) return x end\nlocal __R4_TO_STR = 1\nreturn `{value}`";
+    let (mut block, model) = parse_tokenless(code);
+    desugar::remove_interpolated_string(&mut block, &model);
+
+    let output = generate(&block);
+    assert!(
+        output.contains("local __R4_TO_STR1 = tostring"),
+        "the alias must avoid the user identifier: {output}"
+    );
+    assert!(
+        output.contains("__R4_TO_STR1(value)"),
+        "uses must be routed through the fresh alias: {output}"
+    );
+}
+
+#[test]
+fn group_local_merges_plain_assignments() {
+    for (code, expected) in [
+        (
+            "local a = 1\nlocal b = 2\nreturn a + b",
+            "local a, b = 1, 2",
+        ),
+        ("local a = 1\nlocal b = 2\nlocal c = a", "local a, b = 1, 2"),
     ] {
-        assert_parity(
-            code,
-            canonicalize::group_local,
-            canonicalize::group_local_with_model,
+        let (mut block, model) = parse_tokenless(code);
+        canonicalize::group_local(&mut block, &model);
+        let output = generate(&block);
+        assert!(
+            output.contains(expected),
+            "the locals must be merged for `{code}`: {output}"
         );
     }
 }
 
 #[test]
-fn model_group_local_merges_past_unrelated_shadowed_reads() {
+fn group_local_merges_past_unrelated_shadowed_reads() {
     let code = r#"
         local value = 1
         local a = 1
@@ -234,25 +246,16 @@ fn model_group_local_merges_past_unrelated_shadowed_reads() {
         return value + a + b
         "#;
 
-    let (block, model) = parse_tokens(code);
+    let (mut block, model) = parse_tokenless(code);
+    canonicalize::group_local(&mut block, &model);
 
-    let mut legacy_block = block.clone();
-    canonicalize::group_local(&mut legacy_block);
-    let legacy_output = generate(&legacy_block);
+    let output = generate(&block);
     assert!(
-        !legacy_output.contains("local value, a, b"),
-        "the name-based variant must stay conservative: {legacy_output}"
+        output.contains("local value, a, b"),
+        "the unrelated shadow must not block the merge: {output}"
     );
 
-    let mut modern_block = block;
-    canonicalize::group_local_with_model(&mut modern_block, &model);
-    let modern_output = generate(&modern_block);
-    assert!(
-        modern_output.contains("local value, a, b"),
-        "the model variant must merge past the unrelated shadow: {modern_output}"
-    );
-
-    let reparsed = parse(&modern_output);
+    let reparsed = parse(&output);
     let after_model = SemanticAnalyzer::new()
         .analyze(&reparsed)
         .expect("merged code must analyze");
@@ -264,7 +267,7 @@ fn model_group_local_merges_past_unrelated_shadowed_reads() {
     assert_eq!(
         values.len(),
         2,
-        "the closure keeps its own local value: {modern_output}"
+        "the closure keeps its own local value: {output}"
     );
 }
 

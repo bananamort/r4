@@ -1,4 +1,4 @@
-use r4::nodes::{Arguments, Block, Expression, Identifier, Statement};
+use r4::nodes::{Arguments, Block, Expression, Identifier, Statement, Type};
 use r4::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use r4::semantic::{
     AccessKind, SemanticAnalyzer, SemanticErrorKind, SemanticModel, Symbol, SymbolKind,
@@ -1006,4 +1006,223 @@ fn analyzed_blocks_have_unique_identities() {
         "block identities must be unique"
     );
     assert!(collector.identities.len() >= 4);
+}
+
+fn local_declaration_type(statement: &Statement) -> &Type {
+    let Statement::LocalAssign(assignment) = statement else {
+        panic!("expected a local assignment, got {statement:?}");
+    };
+    assignment
+        .iter_variables()
+        .next()
+        .expect("the local assignment has a variable")
+        .get_type()
+        .expect("the local declaration has a type annotation")
+}
+
+fn type_name_identifier(r#type: &Type) -> &Identifier {
+    let Type::Name(type_name) = r#type else {
+        panic!("expected a type name, got {type:?}");
+    };
+    type_name.get_type_name()
+}
+
+#[test]
+fn type_declarations_are_bound_structurally() {
+    let block = parse("type Point = { x: number, y: number }\ntype Shape = Point");
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("token-less type analysis must succeed");
+
+    let statements: Vec<&Statement> = block.iter_statements().collect();
+    let Statement::TypeDeclaration(point) = statements[0] else {
+        panic!("expected a type declaration");
+    };
+    let Statement::TypeDeclaration(shape) = statements[1] else {
+        panic!("expected a type declaration");
+    };
+
+    let point_id = model
+        .resolve_type(point.get_name())
+        .expect("the declared type must resolve");
+    assert_eq!(model.type_symbol(point_id).name, "Point");
+    assert!(!model.type_symbol(point_id).is_exported);
+    assert_eq!(
+        model.resolve_type_in_scope(model.chunk_scope(), "Point"),
+        Some(point_id)
+    );
+
+    let shape_id = model
+        .resolve_type(shape.get_name())
+        .expect("the declared type must resolve");
+    assert_ne!(point_id, shape_id);
+    assert_eq!(
+        model.resolve_type(type_name_identifier(shape.get_type())),
+        Some(point_id),
+        "the alias use must bind to the declared type"
+    );
+}
+
+#[test]
+fn exported_type_declarations_are_flagged() {
+    let block = parse("export type Public = number");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+
+    let Statement::TypeDeclaration(declaration) = block
+        .first_statement()
+        .expect("the block must start with a type declaration")
+    else {
+        panic!("expected a type declaration");
+    };
+
+    let id = model
+        .resolve_type(declaration.get_name())
+        .expect("the exported type must resolve");
+    assert!(model.type_symbol(id).is_exported);
+}
+
+#[test]
+fn same_scope_type_shadowing_binds_each_occurrence() {
+    let block = parse(
+        r#"
+        type T = number
+        local a: T = 1
+        type T = string
+        local b: T = 'x'
+        "#,
+    );
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+
+    let statements: Vec<&Statement> = block.iter_statements().collect();
+    let Statement::TypeDeclaration(first) = statements[0] else {
+        panic!("expected a type declaration");
+    };
+    let Statement::TypeDeclaration(second) = statements[2] else {
+        panic!("expected a type declaration");
+    };
+
+    let first_id = model.resolve_type(first.get_name()).expect("first T");
+    let second_id = model.resolve_type(second.get_name()).expect("second T");
+    assert_ne!(first_id, second_id);
+    assert_eq!(model.type_symbol(first_id).name, "T");
+    assert_eq!(model.type_symbol(second_id).name, "T");
+
+    assert_eq!(
+        model.resolve_type(type_name_identifier(local_declaration_type(statements[1]))),
+        Some(first_id),
+        "the first annotation sees the first declaration"
+    );
+    assert_eq!(
+        model.resolve_type(type_name_identifier(local_declaration_type(statements[3]))),
+        Some(second_id),
+        "the second annotation sees the redeclaration"
+    );
+}
+
+#[test]
+fn type_shadowing_respects_nested_scopes() {
+    let block = parse(
+        r#"
+        type T = number
+        local outer: T = 1
+        do
+            type T = string
+            local inner: T = 'x'
+        end
+        local after: T = 2
+        "#,
+    );
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+
+    let statements: Vec<&Statement> = block.iter_statements().collect();
+    let Statement::TypeDeclaration(outer_declaration) = statements[0] else {
+        panic!("expected a type declaration");
+    };
+    let Statement::Do(do_statement) = statements[2] else {
+        panic!("expected a do statement");
+    };
+
+    let outer = model
+        .resolve_type(outer_declaration.get_name())
+        .expect("outer T");
+    let inner = model
+        .resolve_type(first_type_declaration(do_statement.get_block()).get_name())
+        .expect("inner T");
+    assert_ne!(outer, inner);
+
+    assert_eq!(
+        model.resolve_type(type_name_identifier(local_declaration_type(statements[1]))),
+        Some(outer)
+    );
+    assert_eq!(
+        model.resolve_type(type_name_identifier(local_declaration_type(statements[3]))),
+        Some(outer),
+        "the shadow must not leak out of the do block"
+    );
+}
+
+fn first_type_declaration(block: &Block) -> &r4::nodes::TypeDeclarationStatement {
+    let first = block
+        .first_statement()
+        .expect("the block must contain a statement");
+    let Statement::TypeDeclaration(declaration) = first else {
+        panic!("expected a type declaration, got {first:?}");
+    };
+    declaration
+}
+
+#[test]
+fn strict_typing_rejects_undeclared_types() {
+    let block = parse("type Shape = MissingThing");
+    let error = SemanticAnalyzer::new()
+        .strict_types()
+        .analyze(&block)
+        .expect_err("an undeclared type name must be rejected");
+
+    assert!(matches!(
+        error.kind,
+        SemanticErrorKind::UnresolvedType { ref name } if name == "MissingThing"
+    ));
+
+    // Default analysis leaves the occurrence unbound without guessing `any`.
+    let block = parse("type Shape = MissingThing");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+    let Statement::TypeDeclaration(declaration) = block.first_statement().unwrap() else {
+        panic!("expected a type declaration");
+    };
+    assert_eq!(
+        model.resolve_type(type_name_identifier(declaration.get_type())),
+        None
+    );
+}
+
+#[test]
+fn strict_typing_accepts_builtins_and_generic_parameters() {
+    let block = parse(
+        r#"
+        type Pair<T> = { first: T, second: T }
+        type Maybe = Pair<number>?
+        type Alias = string | nil | boolean | thread | buffer | vector | unknown | never | any
+        "#,
+    );
+
+    SemanticAnalyzer::new()
+        .strict_types()
+        .analyze(&block)
+        .expect("built-in and generic type names must resolve");
+}
+
+#[test]
+fn strict_typing_resolves_aliases_in_type_declarations() {
+    let block = parse("type Base = { value: number }\ntype Derived = Base");
+    let model = SemanticAnalyzer::new()
+        .strict_types()
+        .analyze(&block)
+        .expect("declared aliases must resolve");
+
+    let Statement::TypeDeclaration(base) = block.first_statement().unwrap() else {
+        panic!("expected a type declaration");
+    };
+    let base_id = model.resolve_type(base.get_name()).expect("Base resolves");
+    assert_eq!(model.type_symbol(base_id).name, "Base");
 }

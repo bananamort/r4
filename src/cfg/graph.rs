@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::semantic::{LabelId, ScopeId};
 
 use super::block::{BasicBlock, BlockId, Terminator};
+use super::provenance::StatementOrigin;
 
 /// A control flow graph for a single function (or the main chunk).
 ///
@@ -19,6 +20,8 @@ pub struct ControlFlowGraph {
     pub exit: BlockId,
     /// Maps semantic labels to the basic block that starts at the label.
     pub label_blocks: HashMap<LabelId, BlockId>,
+    /// Maps the structural origin of each loop statement to its header block.
+    pub loop_headers: HashMap<StatementOrigin, BlockId>,
     /// The semantic function scope this graph was built for.
     pub function_scope: ScopeId,
 }
@@ -32,6 +35,7 @@ impl ControlFlowGraph {
             entry,
             exit,
             label_blocks: HashMap::new(),
+            loop_headers: HashMap::new(),
             function_scope,
         }
     }

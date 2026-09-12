@@ -129,6 +129,63 @@ impl Evaluator {
         }
     }
 
+    /// Returns whether evaluating `expression` is mathematically pure.
+    ///
+    /// A pure expression cannot call functions, read mutable tables (fields or
+    /// indexes), allocate a fresh table or closure, observe variable arguments,
+    /// or have any other side effect. This is the strictest purity check the
+    /// evaluator exposes; anything it does not recognize is impure.
+    pub fn is_pure(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::False(_)
+            | Expression::Identifier(_)
+            | Expression::Nil(_)
+            | Expression::Number(_)
+            | Expression::String(_)
+            | Expression::True(_) => true,
+            Expression::Binary(binary) => {
+                self.is_pure(binary.left()) && self.is_pure(binary.right())
+            }
+            Expression::If(if_expression) => {
+                self.is_pure(if_expression.get_condition())
+                    && self.is_pure(if_expression.get_result())
+                    && if_expression.iter_branches().all(|branch| {
+                        self.is_pure(branch.get_condition()) && self.is_pure(branch.get_result())
+                    })
+                    && self.is_pure(if_expression.get_else_result())
+            }
+            Expression::Parenthese(parenthese) => self.is_pure(parenthese.inner_expression()),
+            Expression::TypeCast(type_cast) => self.is_pure(type_cast.get_expression()),
+            Expression::TypeInstantiation(type_instantiation) => {
+                self.is_pure_prefix(type_instantiation.get_prefix())
+            }
+            Expression::Unary(unary) => self.is_pure(unary.get_expression()),
+            // Field/index reads observe mutable tables, calls and closures may
+            // have arbitrary effects, tables and interpolated strings allocate
+            // or call, and `...` depends on the caller.
+            Expression::Call(_)
+            | Expression::Field(_)
+            | Expression::Function(_)
+            | Expression::Index(_)
+            | Expression::InterpolatedString(_)
+            | Expression::Table(_)
+            | Expression::VariableArguments(_) => false,
+        }
+    }
+
+    fn is_pure_prefix(&self, prefix: &Prefix) -> bool {
+        match prefix {
+            Prefix::Identifier(_) => true,
+            Prefix::Parenthese(parenthese) => self.is_pure(parenthese.inner_expression()),
+            Prefix::TypeInstantiation(type_instantiation) => {
+                self.is_pure_prefix(type_instantiation.get_prefix())
+            }
+            // Calls evaluate arbitrary code; field and index reads observe
+            // mutable tables.
+            Prefix::Call(_) | Prefix::Field(_) | Prefix::Index(_) => false,
+        }
+    }
+
     pub fn has_side_effects(&self, expression: &Expression) -> bool {
         match expression {
             Expression::False(_)

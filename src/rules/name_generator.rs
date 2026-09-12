@@ -47,6 +47,14 @@ impl NameGenerator {
         self.reserved.contains(name)
     }
 
+    /// Reserves an additional name so it can never be generated.
+    ///
+    /// Bundlers use this to reserve the symbols of every module they inline,
+    /// not just the symbols of the root model.
+    pub fn reserve(&mut self, name: impl Into<String>) {
+        self.reserved.insert(name.into());
+    }
+
     /// Returns a fresh short identifier.
     pub fn generate(&mut self) -> String {
         loop {

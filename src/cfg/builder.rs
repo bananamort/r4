@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::nodes::{Block, GotoStatement, IfStatement, LabelStatement, LastStatement, Statement};
-use crate::semantic::{GotoBinding, LabelId, ScopeId, SemanticModel};
+use crate::semantic::{GotoBinding, LabelId, ScopeId, SemanticModel, SymbolId};
 
 use super::block::{BasicBlock, BlockId, Terminator};
 use super::graph::ControlFlowGraph;
@@ -49,6 +49,11 @@ pub enum CfgErrorKind {
     /// A block in the AST has no structural identity, so the semantic model
     /// does not match the tree that is being lowered.
     MissingBlockIdentity,
+    /// An identifier in a loop header is not bound in the semantic model.
+    UnresolvedIdentifier {
+        /// The name of the unresolved identifier.
+        name: String,
+    },
 }
 
 impl fmt::Display for CfgError {
@@ -80,6 +85,11 @@ impl fmt::Display for CfgError {
                 f,
                 "a block has no structural identity; the semantic model does not match the AST"
             ),
+            CfgErrorKind::UnresolvedIdentifier { name } => write!(
+                f,
+                "identifier `{}` is not bound in the semantic model",
+                name
+            ),
         }
     }
 }
@@ -102,6 +112,7 @@ pub struct CfgBuilder<'a> {
     current: Option<BlockId>,
     loops: Vec<LoopContext>,
     label_blocks: HashMap<LabelId, BlockId>,
+    loop_headers: HashMap<StatementOrigin, BlockId>,
     pending_gotos: HashMap<LabelId, Vec<BlockId>>,
     goto_bindings: Vec<&'a GotoBinding>,
     labels: Vec<&'a crate::semantic::GotoLabel>,
@@ -121,6 +132,7 @@ impl<'a> CfgBuilder<'a> {
             current: None,
             loops: Vec::new(),
             label_blocks: HashMap::new(),
+            loop_headers: HashMap::new(),
             pending_gotos: HashMap::new(),
             goto_bindings: Vec::new(),
             labels: Vec::new(),
@@ -196,6 +208,7 @@ impl<'a> CfgBuilder<'a> {
         let mut graph = ControlFlowGraph::new(self.entry, self.exit, self.function_scope);
         graph.blocks = self.blocks;
         graph.label_blocks = self.label_blocks;
+        graph.loop_headers = self.loop_headers;
         Ok(graph)
     }
 
@@ -292,14 +305,25 @@ impl<'a> CfgBuilder<'a> {
                 Ok(())
             }
             Statement::Do(do_statement) => self.lower_block_contents(do_statement.get_block()),
-            Statement::GenericFor(generic_for) => self.lower_for(
-                generic_for.iter_expressions().cloned().collect(),
-                generic_for.get_block(),
-            ),
+            Statement::GenericFor(generic_for) => {
+                let defines = self.resolve_iteration_defines(
+                    generic_for
+                        .iter_identifiers()
+                        .map(|identifier| identifier.get_identifier()),
+                )?;
+                self.lower_for(
+                    generic_for.iter_expressions().cloned().collect(),
+                    generic_for.get_block(),
+                    defines,
+                    origin,
+                )
+            }
             Statement::Goto(goto_statement) => self.lower_goto(goto_statement),
             Statement::If(if_statement) => self.lower_if(if_statement, origin),
             Statement::Label(label_statement) => self.lower_label(label_statement),
             Statement::NumericFor(numeric_for) => {
+                let defines = self
+                    .resolve_iteration_defines([numeric_for.get_identifier().get_identifier()])?;
                 let mut expressions = vec![
                     numeric_for.get_start().clone(),
                     numeric_for.get_end().clone(),
@@ -307,11 +331,33 @@ impl<'a> CfgBuilder<'a> {
                 if let Some(step) = numeric_for.get_step() {
                     expressions.push(step.clone());
                 }
-                self.lower_for(expressions, numeric_for.get_block())
+                self.lower_for(expressions, numeric_for.get_block(), defines, origin)
             }
             Statement::Repeat(repeat) => self.lower_repeat(repeat, origin),
             Statement::While(while_statement) => self.lower_while(while_statement, origin),
         }
+    }
+
+    /// Resolves the iteration variables of a `for` loop header.
+    fn resolve_iteration_defines<'b>(
+        &self,
+        identifiers: impl IntoIterator<Item = &'b crate::nodes::Identifier>,
+    ) -> Result<Vec<SymbolId>, CfgError> {
+        identifiers
+            .into_iter()
+            .map(|identifier| {
+                self.model
+                    .resolve_identifier(identifier)
+                    .ok_or_else(|| CfgError {
+                        kind: CfgErrorKind::UnresolvedIdentifier {
+                            name: identifier.get_name().clone(),
+                        },
+                        line: identifier
+                            .get_token()
+                            .and_then(|token| token.get_line_number()),
+                    })
+            })
+            .collect()
     }
 
     fn lower_last_statement(&mut self, statement: &LastStatement) -> Result<(), CfgError> {
@@ -427,6 +473,7 @@ impl<'a> CfgBuilder<'a> {
             },
             Some(ConditionOrigin::new(origin, ConditionKind::While)),
         );
+        self.loop_headers.insert(origin, header);
 
         self.loops.push(LoopContext {
             break_target: exit,
@@ -476,6 +523,7 @@ impl<'a> CfgBuilder<'a> {
             },
             Some(ConditionOrigin::new(origin, ConditionKind::Repeat)),
         );
+        self.loop_headers.insert(origin, body);
 
         self.current = Some(exit);
         Ok(())
@@ -485,6 +533,8 @@ impl<'a> CfgBuilder<'a> {
         &mut self,
         init_expressions: Vec<crate::nodes::Expression>,
         block: &Block,
+        defines: Vec<SymbolId>,
+        origin: StatementOrigin,
     ) -> Result<(), CfgError> {
         let header = self.create_block();
         let body = self.create_block();
@@ -496,7 +546,16 @@ impl<'a> CfgBuilder<'a> {
         }
         self.terminate(Terminator::Jump(header));
 
-        self.set_terminator(header, Terminator::ForLoop { body, exit }, None);
+        self.set_terminator(
+            header,
+            Terminator::ForLoop {
+                body,
+                exit,
+                defines,
+            },
+            None,
+        );
+        self.loop_headers.insert(origin, header);
 
         self.loops.push(LoopContext {
             break_target: exit,

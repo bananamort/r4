@@ -1,7 +1,7 @@
 use r4::generator::{LuaGenerator, ReadableLuaGenerator};
-use r4::nodes::{Block, Statement};
+use r4::nodes::{Block, Expression, Statement};
 use r4::process::{Evaluator, LuaValue};
-use r4::rules::{self, canonicalize, desugar, rename_variables, NameGenerator};
+use r4::rules::{self, canonicalize, desugar, rename_variables, require, NameGenerator};
 use r4::semantic::{SemanticAnalyzer, SemanticModel, SymbolKind};
 use r4::Parser;
 
@@ -20,6 +20,12 @@ fn analyze_with_tokens(code: &str) -> (Block, SemanticModel) {
         .analyze(&block)
         .unwrap_or_else(|error| panic!("semantic analysis failed for `{code}`: {error}"));
     (block, model)
+}
+
+fn analyze(code: &str) -> (Block, SemanticModel) {
+    Parser::default()
+        .parse_analyzed(code)
+        .unwrap_or_else(|error| panic!("failed to parse and analyze `{code}`: {error}"))
 }
 
 fn analyze_lua52_with_tokens(code: &str) -> (Block, SemanticModel) {
@@ -176,18 +182,18 @@ fn continue_lowering_avoids_existing_identifiers() {
 
 #[test]
 fn converts_floor_division() {
-    let mut block = parse("return value // 2");
+    let (mut block, model) = analyze("return value // 2");
 
-    desugar::remove_floor_division(&mut block);
+    desugar::remove_floor_division(&mut block, &model);
 
     assert_eq!(generate(&block).trim(), "return math.floor(value / 2)");
 }
 
 #[test]
 fn converts_compound_floor_division() {
-    let mut block = parse("value //= 2");
+    let (mut block, model) = analyze("value //= 2");
 
-    desugar::remove_floor_division(&mut block);
+    desugar::remove_floor_division(&mut block, &model);
 
     assert_eq!(generate(&block).trim(), "value = math.floor(value / 2)");
 }
@@ -230,14 +236,14 @@ fn removes_call_parentheses() {
 
 #[test]
 fn groups_local_assignments() {
-    let mut block = parse(
+    let (mut block, model) = analyze(
         r#"
         local a = 1
         local b = 2
         "#,
     );
 
-    canonicalize::group_local(&mut block);
+    canonicalize::group_local(&mut block, &model);
 
     assert_eq!(generate(&block).trim(), "local a, b = 1, 2");
 }
@@ -263,7 +269,7 @@ fn desugar_pipeline_lowers_a_luau_function() {
         "#,
     );
 
-    rules::desugar_to_lua51(&mut block);
+    rules::desugar_to_lua51(&mut block).expect("the desugar pipeline must analyze successfully");
     rules::canonicalize(&mut block);
 
     let output = generate(&block);
@@ -889,4 +895,344 @@ fn host_globals_are_exposed() {
     assert!(DEFAULT_GLOBALS.contains(&"_VERSION"));
     assert!(ROBLOX_GLOBALS.contains(&"game"));
     assert!(ROBLOX_GLOBALS.contains(&"workspace"));
+}
+
+#[test]
+fn hoists_pure_loop_invariants() {
+    let (mut block, model) = analyze(
+        r#"
+        local base = 1
+        while condition do
+            local offset = base + 2
+            use(offset)
+        end
+        "#,
+    );
+
+    let hoisted = canonicalize::hoist_loop_invariants(&mut block, &model)
+        .expect("hoisting must succeed with a matching model");
+
+    assert_eq!(hoisted, 1);
+    let output = generate(&block);
+    assert!(
+        !output.contains("offset"),
+        "the hoisted local must be renamed: {output}"
+    );
+    let declaration = output
+        .find("= base + 2")
+        .unwrap_or_else(|| panic!("the invariant must be declared: {output}"));
+    let loop_start = output
+        .find("while")
+        .unwrap_or_else(|| panic!("the loop must remain: {output}"));
+    assert!(
+        declaration < loop_start,
+        "the invariant must be hoisted before the loop: {output}"
+    );
+    assert_eq!(
+        output.matches("base + 2").count(),
+        1,
+        "the invariant must evaluate exactly once: {output}"
+    );
+
+    // Semantic oracle: the rewritten program analyzes and reads the hoisted
+    // local exactly once.
+    let reparsed = parse(&output);
+    let new_model = SemanticAnalyzer::new()
+        .analyze(&reparsed)
+        .expect("the hoisted program must analyze");
+    let locals: Vec<_> = new_model
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.kind == SymbolKind::Local)
+        .collect();
+    assert_eq!(locals.len(), 2, "base and the hoisted local: {output}");
+    assert!(
+        locals.iter().any(|symbol| symbol.read_count == 1),
+        "the hoisted local must be read: {output}"
+    );
+}
+
+#[test]
+fn hoisting_leaves_impure_expressions_in_place() {
+    for code in [
+        "while condition do local x = compute() use(x) end",
+        "while condition do local t = {} use(t) end",
+        "while condition do local v = object.field use(v) end",
+        "while condition do local s = `value {value}` use(s) end",
+    ] {
+        let (mut block, model) = analyze(code);
+        let hoisted = canonicalize::hoist_loop_invariants(&mut block, &model)
+            .expect("hoisting must succeed with a matching model");
+        assert_eq!(hoisted, 0, "impure expression hoisted for `{code}`");
+    }
+}
+
+#[test]
+fn hoisting_respects_loop_written_variables() {
+    let code = r#"
+        local total = 0
+        while condition do
+            total = total + 1
+            local x = total + 1
+            use(x)
+        end
+        "#;
+
+    let (mut block, model) = analyze(code);
+    let hoisted = canonicalize::hoist_loop_invariants(&mut block, &model)
+        .expect("hoisting must succeed with a matching model");
+
+    assert_eq!(
+        hoisted, 0,
+        "a variable written in the loop is not invariant"
+    );
+}
+
+#[test]
+fn hoisting_respects_for_iteration_variables() {
+    let (mut block, model) = analyze("for i = 1, 10 do local x = i + 1\nuse(x) end");
+
+    let hoisted = canonicalize::hoist_loop_invariants(&mut block, &model)
+        .expect("hoisting must succeed with a matching model");
+
+    assert_eq!(hoisted, 0, "the iteration variable changes every iteration");
+}
+
+#[test]
+fn hoisting_respects_closure_captures() {
+    let code = r#"
+        local base = 1
+        while condition do
+            local x = base + 1
+            local f = function() return x end
+            use(f)
+        end
+        "#;
+
+    let (mut block, model) = analyze(code);
+    let hoisted = canonicalize::hoist_loop_invariants(&mut block, &model)
+        .expect("hoisting must succeed with a matching model");
+
+    assert_eq!(hoisted, 0, "a captured local keeps per-iteration bindings");
+}
+
+#[test]
+fn hoisting_skips_conditional_blocks() {
+    let code = r#"
+        local base = 1
+        while condition do
+            if other then
+                local x = base + 1
+                use(x)
+            end
+        end
+        "#;
+
+    let (mut block, model) = analyze(code);
+    let hoisted = canonicalize::hoist_loop_invariants(&mut block, &model)
+        .expect("hoisting must succeed with a matching model");
+
+    assert_eq!(
+        hoisted, 0,
+        "a block that does not dominate every latch must not be hoisted"
+    );
+}
+
+#[test]
+fn hoisting_works_from_for_loop_bodies() {
+    let code = r#"
+        local step = 2
+        for i = 1, 10 do
+            local scaled = step * 2
+            use(scaled)
+        end
+        "#;
+
+    let (mut block, model) = analyze(code);
+    let hoisted = canonicalize::hoist_loop_invariants(&mut block, &model)
+        .expect("hoisting must succeed with a matching model");
+
+    assert_eq!(hoisted, 1);
+    let output = generate(&block);
+    let declaration = output
+        .find("= step * 2")
+        .unwrap_or_else(|| panic!("the invariant must be declared: {output}"));
+    let loop_start = output
+        .find("for")
+        .unwrap_or_else(|| panic!("the loop must remain: {output}"));
+    assert!(
+        declaration < loop_start,
+        "the invariant must be hoisted before the loop: {output}"
+    );
+    assert!(
+        !output.contains("local scaled"),
+        "the original declaration must be removed: {output}"
+    );
+}
+
+struct IdentifierConverter;
+
+impl require::RequirePathConverter for IdentifierConverter {
+    fn convert(&self, path: &str) -> Option<Expression> {
+        let name = path.trim_start_matches("./").replace(['/', '.'], "_");
+        Some(Expression::identifier(format!("module_{name}")))
+    }
+}
+
+#[test]
+fn convert_require_rejects_shadowed_require() {
+    for code in [
+        "local require = function(path) return path end\nreturn require('./x')",
+        "local function f(require) return require('./x') end",
+        "local require = require\nrequire = other\nreturn require('./x')",
+    ] {
+        let (mut block, model) = analyze(code);
+        let converted = require::convert_require(&mut block, &model, &IdentifierConverter)
+            .expect("shadowed require calls are never converted");
+
+        assert_eq!(converted, 0, "converted a shadowed require for `{code}`");
+        assert!(
+            generate(&block).contains("require("),
+            "the shadowed call must be left in place for `{code}`"
+        );
+    }
+}
+
+#[test]
+fn convert_require_converts_global_and_immutable_alias() {
+    for code in [
+        "return require('./x')",
+        "local require = require\nreturn require('./x')",
+    ] {
+        let (mut block, model) = analyze(code);
+        let converted = require::convert_require(&mut block, &model, &IdentifierConverter)
+            .expect("global require must convert");
+
+        assert_eq!(converted, 1, "failed to convert `{code}`");
+        let output = generate(&block);
+        assert!(output.contains("module_x"), "unexpected: {output}");
+        assert!(!output.contains("require("), "unexpected: {output}");
+    }
+}
+
+#[test]
+fn convert_require_handles_statement_calls() {
+    let (mut block, model) = analyze("require('./x')");
+    let converted = require::convert_require(&mut block, &model, &IdentifierConverter)
+        .expect("global require must convert");
+
+    assert_eq!(converted, 1);
+    let output = generate(&block);
+    assert!(output.contains("module_x"), "unexpected: {output}");
+}
+
+#[test]
+fn convert_require_rejects_non_literal_arguments() {
+    let (mut block, model) = analyze("return require(path)");
+    let error = require::convert_require(&mut block, &model, &IdentifierConverter)
+        .expect_err("a dynamic require argument must be reported");
+
+    assert!(matches!(
+        error,
+        require::ConvertRequireError::NonLiteralRequireArgument { .. }
+    ));
+}
+
+#[test]
+fn bundles_required_modules() {
+    let (mut block, model) = analyze("local math = require('./math')\nreturn math.add(1, 2)");
+    let mut provider = require::MemoryModuleProvider::new();
+    provider.insert(
+        "math",
+        "local function add(a, b) return a + b end\nreturn { add = add }",
+    );
+
+    let bundled =
+        require::bundle_modules(&mut block, &model, &provider).expect("bundling must succeed");
+    assert_eq!(bundled, 1);
+
+    let output = generate(&block);
+    assert!(output.contains("__R4_MODULES"), "unexpected: {output}");
+    assert!(!output.contains("require("), "unexpected: {output}");
+    assert!(output.contains("['math']"), "unexpected: {output}");
+
+    let reparsed = parse(&output);
+    let new_model = SemanticAnalyzer::new()
+        .analyze(&reparsed)
+        .expect("bundled code must analyze");
+    assert!(
+        new_model
+            .symbols
+            .iter()
+            .any(|symbol| symbol.name == "math" && symbol.read_count >= 1),
+        "the bundled code must keep the module binding: {output}"
+    );
+}
+
+#[test]
+fn bundles_nested_modules() {
+    let (mut block, model) = analyze("return require('./a')");
+    let mut provider = require::MemoryModuleProvider::new();
+    provider.insert("a", "return require('./b')");
+    provider.insert("b", "return 1");
+
+    let bundled =
+        require::bundle_modules(&mut block, &model, &provider).expect("bundling must succeed");
+    assert_eq!(bundled, 2);
+
+    let output = generate(&block);
+    assert!(output.contains("['a']"), "unexpected: {output}");
+    assert!(output.contains("['b']"), "unexpected: {output}");
+    assert!(!output.contains("require("), "unexpected: {output}");
+}
+
+#[test]
+fn bundle_reports_missing_modules() {
+    let (mut block, model) = analyze("return require('./missing')");
+    let provider = require::MemoryModuleProvider::new();
+    let error = require::bundle_modules(&mut block, &model, &provider)
+        .expect_err("a missing module must be reported");
+
+    assert!(matches!(
+        error,
+        require::BundleError::MissingModule { ref path } if path == "missing"
+    ));
+}
+
+#[test]
+fn bundle_reports_cyclic_modules() {
+    let (mut block, model) = analyze("return require('./a')");
+    let mut provider = require::MemoryModuleProvider::new();
+    provider.insert("a", "return require('./b')");
+    provider.insert("b", "return require('./a')");
+
+    let error = require::bundle_modules(&mut block, &model, &provider)
+        .expect_err("a cycle must be reported");
+
+    assert!(matches!(error, require::BundleError::CyclicRequire { .. }));
+}
+
+#[test]
+fn bundle_reports_non_literal_requires() {
+    let (mut block, model) = analyze("return require(path)");
+    let provider = require::MemoryModuleProvider::new();
+    let error = require::bundle_modules(&mut block, &model, &provider)
+        .expect_err("a dynamic require must be reported");
+
+    assert!(matches!(
+        error,
+        require::BundleError::NonLiteralRequire { module: None, .. }
+    ));
+}
+
+#[test]
+fn bundle_ignores_shadowed_require() {
+    let code = "local require = function(path) return path end\nreturn require('./x')";
+    let (mut block, model) = analyze(code);
+    let provider = require::MemoryModuleProvider::new();
+
+    let bundled =
+        require::bundle_modules(&mut block, &model, &provider).expect("no require to bundle");
+    assert_eq!(bundled, 0);
+    assert!(generate(&block).contains("require("));
 }
