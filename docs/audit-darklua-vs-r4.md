@@ -291,7 +291,18 @@ the follow-ups):
   `rules::canonicalize::remove_unreachable_code` combines constant propagation,
   branch folding and reachability to delete unreachable statements, fold
   constant `if` statements and drop `while false` loops (this change).
-- [ ] **2. Symbol-keyed rename pass** with scope-precise collision checks.
-- [ ] **7. Resolution-based `require` handling.**
-- [ ] **8. Freshened synthetic names** for `remove_call_match` and the bundler.
-- [ ] **9. Adversarial semantic-oracle tests** for the rule pipeline.
+- [x] **2. Symbol-keyed rename pass** —
+  `rules::rename_variables::rename_variables` renames by `SymbolId`, keeps
+  globals untouched, rewrites shadowed locals/parameters/iteration
+  variables/captured upvalues consistently, and generates globally unique
+  names that avoid host globals, original names and keywords. Fails before
+  mutation when any occurrence lacks token data (this change).
+- [ ] **7. Resolution-based `require` handling.** (No `convert_require` port
+  exists in `r4` yet; implement with symbol resolution when it is added.)
+- [x] **8. Freshened synthetic names** —
+  `remove_continue` now generates its loop flags through the shared
+  `IdentifierTracker` instead of a fixed `__R4_CONTINUE_{n}` counter (this
+  change). The bundler/`remove_call_match` do not exist in `r4`.
+- [ ] **9. Adversarial semantic-oracle tests** for the rule pipeline
+  (partially covered by the rename/remove-invalid/remove-unreachable tests,
+  which re-analyze their generated output).

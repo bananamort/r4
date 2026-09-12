@@ -2,7 +2,7 @@ use r4::generator::{LuaGenerator, ReadableLuaGenerator};
 use r4::nodes::{Block, Statement};
 use r4::process::{Evaluator, LuaValue};
 use r4::rules::{self, canonicalize, desugar, rename_variables};
-use r4::semantic::{SemanticAnalyzer, SemanticModel};
+use r4::semantic::{SemanticAnalyzer, SemanticModel, SymbolKind};
 use r4::Parser;
 
 fn parse(code: &str) -> Block {
@@ -134,6 +134,35 @@ fn desugars_continue_statements() {
 }
 
 #[test]
+fn continue_lowering_avoids_existing_identifiers() {
+    let mut block = parse(
+        r#"
+        for i = 1, 10 do
+            if i > 5 then
+                continue
+            end
+            local __R4_CONTINUE1 = 1
+            print(__R4_CONTINUE1)
+        end
+        "#,
+    );
+
+    desugar::remove_continue(&mut block);
+
+    let output = generate(&block);
+    assert!(!output.contains("continue"), "unexpected: {output}");
+    assert!(
+        output.contains("local __R4_CONTINUE1 = 1"),
+        "the user local must keep its name: {output}"
+    );
+    assert!(
+        output.contains("local __R4_CONTINUE ="),
+        "the generated flag must avoid the user identifier: {output}"
+    );
+    parse(&output);
+}
+
+#[test]
 fn converts_floor_division() {
     let mut block = parse("return value // 2");
 
@@ -231,6 +260,157 @@ fn desugar_pipeline_lowers_a_luau_function() {
     assert!(output.contains("math.floor"), "unexpected: {output}");
 
     parse(&output);
+}
+
+#[test]
+fn renames_locals_consistently() {
+    let (mut block, model) = analyze_with_tokens("local long_name = 1\nreturn long_name");
+
+    let renamed = rename_variables::rename_variables(&mut block, &model)
+        .expect("renaming must succeed with tokens");
+
+    assert_eq!(renamed, 1);
+    let output = generate(&block);
+    assert!(!output.contains("long_name"), "unexpected: {output}");
+
+    let reparsed = parse(&output);
+    let new_model = SemanticAnalyzer::new()
+        .analyze(&reparsed)
+        .expect("renamed code must analyze");
+    let local = new_model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Local)
+        .expect("the renamed local must exist");
+    assert_eq!(local.read_count, 1);
+    assert_eq!(local.write_count, 1);
+}
+
+#[test]
+fn preserves_shadowing_bindings() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local value = 1
+        do
+            local value = 2
+            print(value)
+        end
+        print(value)
+        "#,
+    );
+
+    let renamed = rename_variables::rename_variables(&mut block, &model)
+        .expect("renaming must succeed with tokens");
+    assert_eq!(renamed, 2);
+
+    let output = generate(&block);
+    let reparsed = parse(&output);
+    let new_model = SemanticAnalyzer::new()
+        .analyze(&reparsed)
+        .expect("renamed code must analyze");
+
+    let mut locals: Vec<_> = new_model
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.kind == SymbolKind::Local)
+        .collect();
+    locals.sort_by_key(|symbol| symbol.id);
+    assert_eq!(locals.len(), 2);
+    assert_ne!(
+        locals[0].name, locals[1].name,
+        "shadowed locals must receive distinct names"
+    );
+    assert_eq!(locals[0].read_count, 1);
+    assert_eq!(locals[1].read_count, 1);
+}
+
+#[test]
+fn keeps_global_references() {
+    let (mut block, model) = analyze_with_tokens("local print = print\nprint(\"x\")");
+
+    rename_variables::rename_variables(&mut block, &model)
+        .expect("renaming must succeed with tokens");
+
+    let output = generate(&block);
+    assert_eq!(
+        output.matches("print").count(),
+        1,
+        "only the global reference keeps its name: {output}"
+    );
+}
+
+#[test]
+fn renames_captured_upvalues_consistently() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local captured = 1
+        local function f()
+            return captured
+        end
+        return f
+        "#,
+    );
+
+    rename_variables::rename_variables(&mut block, &model)
+        .expect("renaming must succeed with tokens");
+
+    let output = generate(&block);
+    assert!(!output.contains("captured"), "unexpected: {output}");
+    assert!(!output.contains("function f"), "unexpected: {output}");
+
+    let reparsed = parse(&output);
+    let new_model = SemanticAnalyzer::new()
+        .analyze(&reparsed)
+        .expect("renamed code must analyze");
+    let captured = new_model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.capturing_scopes.len() == 1)
+        .expect("the captured symbol must still be captured");
+    assert_eq!(captured.read_count, 1);
+}
+
+#[test]
+fn renames_parameters_and_iteration_variables() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local function f(long_parameter)
+            for index = 1, 10 do
+                return long_parameter + index
+            end
+        end
+        return f
+        "#,
+    );
+
+    let renamed = rename_variables::rename_variables(&mut block, &model)
+        .expect("renaming must succeed with tokens");
+    assert_eq!(renamed, 3, "function, parameter and iteration variable");
+
+    let output = generate(&block);
+    assert!(!output.contains("long_parameter"), "unexpected: {output}");
+    assert!(!output.contains("index"), "unexpected: {output}");
+    parse(&output);
+}
+
+#[test]
+fn rename_pass_requires_token_data() {
+    let mut block = parse("local long_name = 1\nreturn long_name");
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("semantic analysis must succeed");
+
+    let error = rename_variables::rename_variables(&mut block, &model)
+        .expect_err("token-less symbols must be rejected explicitly");
+    assert!(matches!(
+        error,
+        rename_variables::RenameError::MissingTokenData { .. }
+    ));
+
+    assert!(
+        generate(&block).contains("long_name"),
+        "the block must be left untouched when validation fails"
+    );
 }
 
 #[test]

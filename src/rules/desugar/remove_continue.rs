@@ -6,36 +6,43 @@ use crate::nodes::{
     WhileStatement,
 };
 use crate::process::{DefaultPostVisitor, NodePostProcessor, NodePostVisitor, NodeProcessor};
+use crate::rules::tracker::IdentifierTracker;
 
-#[derive(Default)]
 struct Processor {
     loop_stack: Vec<Option<LoopData>>,
-    loop_identifier_count: u16,
+    tracker: IdentifierTracker,
 }
 
 struct LoopData {
     has_continue_statement: bool,
-    loop_break_id: u16,
+    identifier: Identifier,
 }
 
 impl LoopData {
-    fn new(loop_break_id: u16) -> Self {
+    fn new(identifier: Identifier) -> Self {
         Self {
             has_continue_statement: false,
-            loop_break_id,
+            identifier,
         }
     }
 
-    fn get_identifier(&self) -> Identifier {
-        Identifier::new(format!("__R4_CONTINUE_{}", self.loop_break_id))
+    fn get_identifier(&self) -> &Identifier {
+        &self.identifier
     }
 }
 
 impl Processor {
+    fn new(block: &mut Block) -> Self {
+        Self {
+            loop_stack: Vec::new(),
+            tracker: IdentifierTracker::collect_block(block),
+        }
+    }
+
     fn push_loop(&mut self) {
-        self.loop_identifier_count += 1;
+        let identifier = self.tracker.generate_with_prefix("__R4_CONTINUE");
         self.loop_stack
-            .push(Some(LoopData::new(self.loop_identifier_count)));
+            .push(Some(LoopData::new(Identifier::new(identifier))));
     }
 
     fn push_no_loop(&mut self) {
@@ -51,18 +58,19 @@ impl Processor {
 
             if current_loop_block.get_last_statement().is_none() {
                 current_loop_block.push_statement(AssignStatement::from_variable(
-                    loop_data.get_identifier(),
+                    loop_data.get_identifier().clone(),
                     true,
                 ));
             }
 
             let new_block = Block::default()
                 .with_statement(
-                    VariableAssignment::from_variable(loop_data.get_identifier()).with_value(false),
+                    VariableAssignment::from_variable(loop_data.get_identifier().clone())
+                        .with_value(false),
                 )
                 .with_statement(RepeatStatement::new(current_loop_block, true))
                 .with_statement(IfStatement::create(
-                    UnaryExpression::new(UnaryOperator::Not, loop_data.get_identifier()),
+                    UnaryExpression::new(UnaryOperator::Not, loop_data.get_identifier().clone()),
                     LastStatement::Break(None),
                 ));
 
@@ -115,7 +123,7 @@ impl NodeProcessor for Processor {
                             ));
 
                             Some(AssignStatement::from_variable(
-                                loop_data.get_identifier(),
+                                loop_data.get_identifier().clone(),
                                 true,
                             ))
                         } else {
@@ -160,6 +168,6 @@ impl NodePostProcessor for Processor {
 /// Removes `continue` statements (and converts them into flagged `break`
 /// statements wrapped in a repeated loop).
 pub fn remove_continue(block: &mut Block) {
-    let mut processor = Processor::default();
+    let mut processor = Processor::new(block);
     DefaultPostVisitor::visit_block(block, &mut processor);
 }
