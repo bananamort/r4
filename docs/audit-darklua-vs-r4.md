@@ -1,6 +1,7 @@
 # Architectural Audit — `darklua-0.19.0` vs `r4`
 
 Date: 2026-09-12
+Last updated: commit `8cb5a1b` (structural bindings; token lookup tables removed).
 Scope: `references/darklua-0.19.0/src/` versus `r4`'s read-only analysis layers
 (`src/semantic/`, `src/cfg/`).
 
@@ -8,6 +9,10 @@ Scope: `references/darklua-0.19.0/src/` versus `r4`'s read-only analysis layers
 (`Scope`, `ScopeVisitor`, `IdentifierTracker`, `DefaultVisitor`, `Permutator`)
 was traced, and the exact APIs present in `r4::semantic` and `r4::cfg` were
 checked. Claims that could not be reproduced from the code are flagged.
+
+darklua citations are pinned to the frozen reference checkout. `r4` citations
+track the current API by name; line numbers were refreshed at the commit above
+and may move again.
 
 | Claim | Verdict |
 |---|---|
@@ -63,11 +68,12 @@ checked. Claims that could not be reproduced from the code are flagged.
 ### r4 contrast
 
 `r4` separates `SymbolKind::Global` from `Local` at declaration time
-(`src/semantic/symbol.rs:24-30`) and binds every occurrence to a `SymbolId`
-(`src/semantic/model.rs:106-130`; `uses_of` at `154`). Scope resolution walks the
-lexical chain (`resolve_in_scope`, `model.rs:121-140`), so shadowed `pcall`
-locals are distinct symbols and global reads are separate symbols with their
-own use lists and scopes.
+(`SymbolKind` in `src/semantic/symbol.rs`) and binds every occurrence to a
+`SymbolId` (`SemanticModel::resolve_identifier`,
+`src/semantic/model.rs:103-125`; `uses_of` at `210`). Scope resolution walks
+the lexical chain (`resolve_in_scope`, `model.rs:136-160`), so shadowed
+`pcall` locals are distinct symbols and global reads are separate symbols with
+their own use lists and scopes.
 
 ---
 
@@ -128,6 +134,10 @@ before replacing the three rules:
 2. `BasicBlock::statements` are clones, so CFG analysis needs a provenance
    mapping before it can delete source statements.
 
+Both caveats are now addressed: `cfg::analysis::fold_constant_branches_with`
+folds constant edges, and the builder records structural
+`StatementOrigin`/`ConditionOrigin`s (see "Structural semantic layer" below).
+
 ---
 
 ## D. Scope visitor bypasses & dormant bugs
@@ -167,11 +177,12 @@ superlinear, degenerating toward `O(k²·m)`. Shadowing is re-derived by an
 ephemeral name-based tracker on every scan.
 
 **r4 correction.** `r4` has no `symbol.references` field. `Symbol` exposes
-`read_count`/`write_count` (`src/semantic/symbol.rs:47-49`) and
-`SemanticModel::uses_of(symbol) -> &[SymbolUse]` (`src/semantic/model.rs:154`)
+`read_count`/`write_count` (`src/semantic/symbol.rs:53-56`) and
+`SemanticModel::uses_of(symbol) -> &[SymbolUse]` (`src/semantic/model.rs:210`)
 with `AccessKind::{Read,Write,Declaration}` and per-use scope/token
-(`symbol.rs:68-85`). Unused = `read_count == 0`; deleting an unread symbol
-cannot change other symbols' counts, so no fixed-point loop is needed.
+(`SymbolUse`, `symbol.rs:90-99`). Unused = `read_count == 0`; deleting an
+unread symbol cannot change other symbols' counts, so no fixed-point loop is
+needed.
 
 ---
 
@@ -258,10 +269,11 @@ documented bypass bug (D), a flat avoid list bypassed by its own reuse pool
 (A/A′), an environment-less evaluator (no reaching definitions), and
 AST-pattern dead-code passes with no CFG (C). `r4` already provides
 `SymbolId`-keyed def-use with per-use scopes and a verified CFG with
-reachability/dominance/liveness. To eliminate the audited failure modes it
-still needs three additions: **initializer/alias metadata on symbols**,
-**constant-aware branch folding in the CFG**, and **AST provenance from blocks
-back to statements**.
+reachability/dominance/liveness. The three additions this audit originally
+called out — **initializer/alias metadata on symbols**, **constant-aware
+branch folding in the CFG**, and **AST provenance from blocks back to
+statements** — are implemented (see "Implementation status in r4"). The
+remaining work is listed under "Still open".
 
 ---
 
@@ -300,12 +312,16 @@ the follow-ups):
   names that avoid host globals, original names and keywords. Fails before
   mutation when any identifier is unbound in the model (originated with token
   validation, migrated to structural binding validation).
-- [ ] **7. Resolution-based `require` handling.** (No `convert_require` port
-  exists in `r4` yet; implement with symbol resolution when it is added.)
+- [ ] **7. Resolution-based `require` handling.** — *blocked on the missing
+  port*: `r4` has no bundler or `convert_require` (verified: no `bundle` or
+  `convert_require` module). The audit's Claim D only exists in darklua; when
+  require conversion is ported it must resolve `require` through the model
+  (`identifier_resolves_to_global`) so a shadowing local is never rewritten.
 - [x] **8. Freshened synthetic names** —
-  `remove_continue` now generates its loop flags through the shared
-  `IdentifierTracker` instead of a fixed `__R4_CONTINUE_{n}` counter (this
-  change). The bundler/`remove_call_match` do not exist in `r4`.
+  `remove_continue` generates its loop flags through the shared
+  `IdentifierTracker` (not a fixed `__R4_CONTINUE_{n}` counter), and
+  `remove_call_match` allocates reserved-global aliases with the model-first
+  `NameGenerator`. The bundler does not exist in `r4` yet (see "Still open").
 - [x] **9. Adversarial semantic-oracle tests** —
   `tests/rules_semantics_test.rs` re-parses and re-analyzes transformed output
   and checks def-use counts, shadowed-global identity, capture relationships,
@@ -340,16 +356,35 @@ the follow-ups):
 ### Still open
 
 - **Loop optimizations (LICM)** — the exact natural-loop and dominance
-  primitives now exist, but no behavior-preserving pass consumes them yet;
-  hoisting requires preheaders and scope-safe movement, which is a new
-  optimization rather than a migration.
-- **Bundler port** — `remove_call_match` and `remove_assertions` are now ported
-  model-first with the strict `NameGenerator`; the bundler itself does not
-  exist in `r4` yet. When it is ported it must be built on the same generator
-  and resolve through structural bindings.
-- **Type-name resolution** — Luau type names (`Type::Name`) are not bound to
-  declarations; only runtime identifiers and goto labels carry structural
-  bindings today. A type environment can reuse the same binding scheme.
+  primitives exist (`DominatorTree::{back_edges, is_loop_header,
+  natural_loop_blocks, try_natural_loop_blocks}`), but no behavior-preserving
+  pass consumes them yet. Hoisting requires loop preheaders for insertion
+  points, an alias/escape argument before moving reads, and scope-safe
+  movement (hoisting a declaration out of a loop changes capture and
+  visibility). There is no legacy oracle for this optimization, so it needs
+  its own semantic-oracle tests rather than output parity.
+- **Bundler / require port** — `r4` has no `convert_require` and no bundler
+  (verified: neither module exists). `remove_call_match` and
+  `remove_assertions` are already ported model-first with the strict
+  `NameGenerator`. The port order should be: (1) `require` resolution that
+  accepts only `SymbolKind::Global` or an immutable alias
+  (`identifier_resolves_to_global`), eliminating darklua's Claim D by
+  construction; (2) bundler module emission and identifier synthesis through
+  `NameGenerator`, never hard-coded `__DARKLUA_*` names.
+- **Legacy name-based standard-library variants** —
+  `convert_square_root_call`, `group_local`, `remove_floor_division` and
+  `remove_interpolated_string` still expose their original name-based entry
+  points next to `*_with_model`. Recommendation 1 (the model is a required
+  rule input) is only fully realized once every caller passes a
+  `SemanticModel`; the legacy variants should be deprecated or become thin
+  wrappers over the model-aware implementations.
+- **Type-name resolution** — Luau type names are `Identifier`s inside
+  `TypeName`, but analysis only walks their type parameters
+  (`walker.rs::walk_type_name`); no type names are declared or bound. Only
+  runtime identifiers and goto labels carry structural bindings today. A type
+  environment needs type declaration binding plus a third binding domain (or a
+  separate type arena) in the `BindingId` scheme, and would unlock
+  type-aware/`remove_types`-adjacent passes.
 
 ### Structural semantic layer (token-free passes)
 
