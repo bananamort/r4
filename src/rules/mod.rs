@@ -9,7 +9,6 @@
 //! * [`rename_variables`]: host environment knowledge used by renaming passes.
 
 mod name_generator;
-mod tracker;
 
 pub mod canonicalize;
 pub mod desugar;
@@ -21,17 +20,21 @@ pub use name_generator::NameGenerator;
 pub use session::{Session, SessionError};
 
 use crate::nodes::Block;
-use crate::semantic::{SemanticAnalyzer, SemanticError};
+use crate::semantic::{SemanticAnalyzer, SemanticError, SemanticModel};
 
 /// Applies all desugaring passes to transpile modern Luau down to vanilla Lua 5.1.
 ///
-/// The model-dependent passes (`remove_interpolated_string` and
-/// `remove_floor_division`) analyze the block internally at the point they run,
-/// so every pass sees a model that matches the current AST.
+/// Every pass requires a `SemanticModel`; the pipeline re-analyzes the block
+/// before each pass so each one sees a model that matches the current AST.
 pub fn desugar_to_lua51(block: &mut Block) -> Result<(), SemanticError> {
-    desugar::remove_types(block);
-    desugar::remove_compound_assign(block);
-    desugar::remove_if_expression(block);
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::remove_types(block, &model);
+
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::remove_compound_assign(block, &model);
+
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::remove_if_expression(block, &model);
 
     let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::remove_interpolated_string(block, &model);
@@ -39,23 +42,26 @@ pub fn desugar_to_lua51(block: &mut Block) -> Result<(), SemanticError> {
     let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::remove_floor_division(block, &model);
 
-    desugar::remove_continue(block);
-    desugar::convert_luau_number(block);
-    desugar::remove_method_call(block);
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::remove_continue(block, &model);
+
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::convert_luau_number(block, &model);
+
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::remove_method_call(block, &model);
 
     Ok(())
 }
 
 /// Applies clean syntax canonicalization passes.
 ///
-/// Semantic passes that need symbol or control-flow information, such as
-/// [`canonicalize::remove_unused_variables`] and
-/// [`canonicalize::remove_unreachable_code`], are not part of this pipeline;
-/// call them with a [`crate::semantic::SemanticModel`]. They resolve through
-/// structural bindings, so they work on token-less ASTs.
-pub fn canonicalize(block: &mut Block) {
-    canonicalize::convert_index_to_field(block);
-    canonicalize::remove_nil_declarations(block);
-    canonicalize::remove_empty_do(block);
-    canonicalize::remove_call_parens(block);
+/// Every pass requires a `SemanticModel`. The purely syntactic passes ignore
+/// it, but requiring it keeps the rule API uniform: a pass never runs on an
+/// AST that was not analyzed.
+pub fn canonicalize(block: &mut Block, model: &SemanticModel) {
+    canonicalize::convert_index_to_field(block, model);
+    canonicalize::remove_nil_declarations(block, model);
+    canonicalize::remove_empty_do(block, model);
+    canonicalize::remove_call_parens(block, model);
 }

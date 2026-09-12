@@ -15,6 +15,8 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use super::type_id::TypeId;
+
 /// Identifies the semantic entity bound to an identifier occurrence.
 ///
 /// A binding refers either to a runtime symbol (a local, a parameter, an
@@ -57,17 +59,17 @@ impl BindingId {
         Self(index | Self::LABEL_TAG)
     }
 
-    /// Creates a binding to the type alias at `index`.
+    /// Creates a binding to the type alias with the given identifier.
     ///
     /// # Panics
     ///
-    /// Panics when `index` does not fit in the type domain.
-    pub const fn type_alias(index: u32) -> Self {
+    /// Panics when the identifier does not fit in the type domain.
+    pub const fn type_alias(id: TypeId) -> Self {
         assert!(
-            index & Self::KIND_MASK == 0,
+            id.0 & Self::KIND_MASK == 0,
             "type index exceeds the binding domain"
         );
-        Self(index | Self::TYPE_TAG)
+        Self(id.0 | Self::TYPE_TAG)
     }
 
     /// Returns whether this binding refers to a runtime symbol.

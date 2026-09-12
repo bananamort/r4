@@ -3,33 +3,29 @@ use crate::nodes::{
     FieldExpression, IndexExpression, Prefix, Statement, Variable, VariableAssignment,
 };
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
-use crate::rules::tracker::IdentifierTracker;
+use crate::rules::NameGenerator;
+use crate::semantic::SemanticModel;
 
 /// Converts compound assignments (`+=`, `..=`, ...) into regular assignments.
 ///
 /// The variable is evaluated only once: when the left-hand side (or its index)
 /// has side effects, it is hoisted into a generated local inside a `do ... end`
-/// block.
+/// block. Generated names are allocated by [`NameGenerator`], so they cannot
+/// collide with any analyzed symbol.
 struct Processor {
-    tracker: IdentifierTracker,
+    names: NameGenerator,
 }
 
 impl Processor {
-    fn new(block: &mut Block) -> Self {
+    fn new(model: &SemanticModel) -> Self {
         Self {
-            tracker: IdentifierTracker::collect_block(block),
-        }
-    }
-
-    fn new_for_statement(statement: &mut Statement) -> Self {
-        Self {
-            tracker: IdentifierTracker::collect_statement(statement),
+            names: NameGenerator::new(model),
         }
     }
 
     #[inline]
     fn generate_variable(&mut self) -> String {
-        self.tracker.generate_with_prefix("__R4_VAR")
+        self.names.generate_with_prefix("__R4_VAR")
     }
 
     fn simplify_prefix(&self, prefix: &Prefix) -> Option<Prefix> {
@@ -283,13 +279,13 @@ impl NodeProcessor for Processor {
 }
 
 /// Replaces a single compound assignment statement with its desugared form.
-pub(crate) fn replace_compound_assignment(statement: &mut Statement) {
-    let mut processor = Processor::new_for_statement(statement);
+pub(crate) fn replace_compound_assignment(statement: &mut Statement, model: &SemanticModel) {
+    let mut processor = Processor::new(model);
     processor.process_statement(statement);
 }
 
 /// Removes compound assignments from a block.
-pub fn remove_compound_assign(block: &mut Block) {
-    let mut processor = Processor::new(block);
+pub fn remove_compound_assign(block: &mut Block, model: &SemanticModel) {
+    let mut processor = Processor::new(model);
     DefaultVisitor::visit_block(block, &mut processor);
 }

@@ -1,5 +1,6 @@
 use crate::nodes::{Block, Statement};
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
+use crate::semantic::SemanticModel;
 
 #[derive(Debug, Default)]
 struct EmptyDoFilter {
@@ -25,7 +26,7 @@ impl NodeProcessor for EmptyDoFilter {
 }
 
 /// Removes empty `do ... end` statements, including nested ones.
-pub fn remove_empty_do(block: &mut Block) {
+pub fn remove_empty_do(block: &mut Block, _model: &SemanticModel) {
     loop {
         let mut processor = EmptyDoFilter::default();
         DefaultVisitor::visit_block(block, &mut processor);

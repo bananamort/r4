@@ -3,6 +3,7 @@ use crate::nodes::{
     TableExpression,
 };
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
+use crate::semantic::SemanticModel;
 
 #[derive(Default)]
 struct Processor {
@@ -82,7 +83,7 @@ impl NodeProcessor for Processor {
 
 /// Removes Luau `if ... then ... else ...` expressions, replacing them with
 /// `and`/`or` chains (and table indexing when a result may be falsy).
-pub fn remove_if_expression(block: &mut Block) {
+pub fn remove_if_expression(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }

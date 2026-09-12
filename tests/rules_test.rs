@@ -48,18 +48,19 @@ fn generate(block: &Block) -> String {
 
 #[test]
 fn strips_luau_types() {
-    let mut block = parse("local x: number = 10");
+    let (mut block, model) = analyze("local x: number = 10");
 
-    desugar::remove_types(&mut block);
+    desugar::remove_types(&mut block, &model);
 
     assert_eq!(generate(&block).trim(), "local x = 10");
 }
 
 #[test]
 fn strips_function_types() {
-    let mut block = parse("local function add(a: number, b: number): number return a + b end");
+    let (mut block, model) =
+        analyze("local function add(a: number, b: number): number return a + b end");
 
-    desugar::remove_types(&mut block);
+    desugar::remove_types(&mut block, &model);
 
     let output = generate(&block);
     assert!(!output.contains(':'), "types must be removed: {output}");
@@ -71,18 +72,18 @@ fn strips_function_types() {
 
 #[test]
 fn removes_compound_assignments() {
-    let mut block = parse("x += 1");
+    let (mut block, model) = analyze("x += 1");
 
-    desugar::remove_compound_assign(&mut block);
+    desugar::remove_compound_assign(&mut block, &model);
 
     assert_eq!(generate(&block).trim(), "x = x + 1");
 }
 
 #[test]
 fn removes_compound_assignments_with_index_side_effects_once() {
-    let mut block = parse("t[index()] += 1");
+    let (mut block, model) = analyze("t[index()] += 1");
 
-    desugar::remove_compound_assign(&mut block);
+    desugar::remove_compound_assign(&mut block, &model);
 
     let output = generate(&block);
     assert!(output.contains("index()"), "unexpected: {output}");
@@ -94,9 +95,9 @@ fn removes_compound_assignments_with_index_side_effects_once() {
 
 #[test]
 fn lowers_if_expressions() {
-    let mut block = parse("local x = if true then 1 else 2");
+    let (mut block, model) = analyze("local x = if true then 1 else 2");
 
-    desugar::remove_if_expression(&mut block);
+    desugar::remove_if_expression(&mut block, &model);
 
     let output = generate(&block);
     let generated = parse(&output);
@@ -114,18 +115,18 @@ fn lowers_if_expressions() {
 
 #[test]
 fn converts_string_index_to_field() {
-    let mut block = parse(r#"return t["foo"]"#);
+    let (mut block, model) = analyze(r#"return t["foo"]"#);
 
-    canonicalize::convert_index_to_field(&mut block);
+    canonicalize::convert_index_to_field(&mut block, &model);
 
     assert_eq!(generate(&block).trim(), "return t.foo");
 }
 
 #[test]
 fn converts_index_table_entries_to_fields() {
-    let mut block = parse(r#"return { ["key"] = 1, value = 2 }"#);
+    let (mut block, model) = analyze(r#"return { ["key"] = 1, value = 2 }"#);
 
-    canonicalize::convert_index_to_field(&mut block);
+    canonicalize::convert_index_to_field(&mut block, &model);
 
     let output = generate(&block);
     assert!(output.contains("key = 1"), "unexpected: {output}");
@@ -133,7 +134,7 @@ fn converts_index_table_entries_to_fields() {
 
 #[test]
 fn desugars_continue_statements() {
-    let mut block = parse(
+    let (mut block, model) = analyze(
         r#"
         for i = 1, 10 do
             if i > 5 then
@@ -144,7 +145,7 @@ fn desugars_continue_statements() {
         "#,
     );
 
-    desugar::remove_continue(&mut block);
+    desugar::remove_continue(&mut block, &model);
 
     let output = generate(&block);
     assert!(!output.contains("continue"), "unexpected: {output}");
@@ -153,7 +154,7 @@ fn desugars_continue_statements() {
 
 #[test]
 fn continue_lowering_avoids_existing_identifiers() {
-    let mut block = parse(
+    let (mut block, model) = analyze(
         r#"
         for i = 1, 10 do
             if i > 5 then
@@ -165,7 +166,7 @@ fn continue_lowering_avoids_existing_identifiers() {
         "#,
     );
 
-    desugar::remove_continue(&mut block);
+    desugar::remove_continue(&mut block, &model);
 
     let output = generate(&block);
     assert!(!output.contains("continue"), "unexpected: {output}");
@@ -200,36 +201,36 @@ fn converts_compound_floor_division() {
 
 #[test]
 fn removes_method_calls() {
-    let mut block = parse("obj:method(1)");
+    let (mut block, model) = analyze("obj:method(1)");
 
-    desugar::remove_method_call(&mut block);
+    desugar::remove_method_call(&mut block, &model);
 
     assert_eq!(generate(&block).trim(), "obj.method(obj, 1)");
 }
 
 #[test]
 fn removes_trailing_nil_declarations() {
-    let mut block = parse("local x, y = 1, nil");
+    let (mut block, model) = analyze("local x, y = 1, nil");
 
-    canonicalize::remove_nil_declarations(&mut block);
+    canonicalize::remove_nil_declarations(&mut block, &model);
 
     assert_eq!(generate(&block).trim(), "local x, y = 1");
 }
 
 #[test]
 fn removes_empty_do_statements() {
-    let mut block = parse("do do end end");
+    let (mut block, model) = analyze("do do end end");
 
-    canonicalize::remove_empty_do(&mut block);
+    canonicalize::remove_empty_do(&mut block, &model);
 
     assert!(generate(&block).trim().is_empty());
 }
 
 #[test]
 fn removes_call_parentheses() {
-    let mut block = parse(r#"f("hello")"#);
+    let (mut block, model) = analyze(r#"f("hello")"#);
 
-    canonicalize::remove_call_parens(&mut block);
+    canonicalize::remove_call_parens(&mut block, &model);
 
     assert_eq!(generate(&block).trim(), "f'hello'");
 }
@@ -270,7 +271,10 @@ fn desugar_pipeline_lowers_a_luau_function() {
     );
 
     rules::desugar_to_lua51(&mut block).expect("the desugar pipeline must analyze successfully");
-    rules::canonicalize(&mut block);
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("the desugared block must analyze");
+    rules::canonicalize(&mut block, &model);
 
     let output = generate(&block);
     assert!(!output.contains("continue"), "unexpected: {output}");

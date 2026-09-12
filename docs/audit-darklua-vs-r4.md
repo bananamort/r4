@@ -320,9 +320,10 @@ the follow-ups):
   resolvable modules with cycle detection, and every synthesized identifier is
   allocated by `NameGenerator` against the root model and every bundled module.
 - [x] **8. Freshened synthetic names** —
-  `remove_continue` generates its loop flags through the shared
-  `IdentifierTracker`, `remove_call_match` allocates reserved-global aliases
-  with the model-first `NameGenerator`, the standard-library rewrites
+  `remove_continue` generates its loop flags and `remove_compound_assign` its
+  temporary locals through the model-first `NameGenerator` (the name-scanning
+  `IdentifierTracker` was removed), `remove_call_match` allocates
+  reserved-global aliases with `NameGenerator`, the standard-library rewrites
   (`remove_floor_division`, `remove_interpolated_string`) allocate their
   aliases through `NameGenerator` instead of fixed `__R4_*` names, and the
   bundler allocates its loader and module-definition names the same way.
@@ -336,14 +337,15 @@ the follow-ups):
 
 ### Follow-up upgrades (semantic-first pass migration)
 
-- [x] **Model-mandatory standard library passes** —
-  `convert_square_root_call`, `group_local`, `remove_floor_division` and
-  `remove_interpolated_string` take a required `&SemanticModel`; their legacy
-  name-based entry points and the `ShadowPolicy` name scan are removed. They
-  resolve through `SemanticModel::name_is_transparent_global`, so read-only
-  aliases such as `local math = math` are optimized through, while mutable or
-  non-alias shadowing stays conservative. `tests/rules_model_test.rs` verifies
-  the behavior and the collision-free aliases.
+- [x] **Mandatory model across transformation passes** —
+  every transformation pass takes a required `&SemanticModel`. The
+  standard-library rewrites (`convert_square_root_call`, `group_local`,
+  `remove_floor_division`, `remove_interpolated_string`) resolve through
+  `SemanticModel::name_is_transparent_global`; their legacy name-based entry
+  points and the `ShadowPolicy` name scan are removed, so read-only aliases
+  such as `local math = math` are optimized through while mutable or non-alias
+  shadowing stays conservative. `tests/rules_model_test.rs` verifies the
+  behavior and the collision-free aliases.
 - [x] **First-class type-name resolution** — `SemanticModel` owns a
   `TypeId`/`TypeSymbol` arena, `Scope` records declared types, `BindingId` has
   a distinct type domain, and the analyzer binds type declarations, resolves
@@ -385,11 +387,15 @@ deliberate scope boundaries of the new features, not outstanding audit work.
   intentionally does not perform preheader synthesis for load-bearing
   expressions, strength reduction, or speculative hoisting of
   potentially-raising arithmetic.
-- **Model-less syntax passes** — `remove_types`, `remove_compound_assign`,
-  `remove_if_expression`, `remove_continue`, `convert_luau_number` and
-  `remove_method_call` do not resolve symbols and need no model. Every
-  standard-library rewrite and every semantic pass requires a
-  `SemanticModel`.
+- **Uniform model requirement** — every transformation pass takes
+  `&SemanticModel`. The purely syntactic lowerings (`remove_types`,
+  `remove_if_expression`, `remove_method_call`, `convert_luau_number`,
+  `remove_nil_declarations`, `remove_empty_do`, `remove_call_parens`,
+  `convert_index_to_field`) do not resolve identifiers, but the API requires an
+  analyzed AST so a pass can never run on an unanalyzed or stale block. The
+  passes that synthesize identifiers (`remove_compound_assign`,
+  `remove_continue`) and all standard-library rewrites resolve and allocate
+  through the model.
 
 ### Structural semantic layer (token-free passes)
 

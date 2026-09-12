@@ -1,5 +1,6 @@
 use crate::nodes::{Arguments, Block, Expression, FunctionCall, StringExpression, TableExpression};
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
+use crate::semantic::SemanticModel;
 
 use std::mem;
 
@@ -40,7 +41,7 @@ impl NodeProcessor for Processor {
 
 /// Removes parentheses when calling functions with a string or a table
 /// (`f("x")` becomes `f "x"`).
-pub fn remove_call_parens(block: &mut Block) {
+pub fn remove_call_parens(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }

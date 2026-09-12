@@ -284,7 +284,9 @@ fn session_refreshes_model_after_model_less_pass() {
     )
     .expect("session must parse and analyze");
 
-    session.apply(desugar::remove_continue);
+    session
+        .apply_semantic(desugar::remove_continue)
+        .expect("continue lowering must succeed");
 
     let model = session.model().expect("the model must refresh");
     assert!(

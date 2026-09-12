@@ -1,5 +1,6 @@
 use crate::nodes::{Block, Expression, FieldExpression, FunctionCall, Prefix};
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
+use crate::semantic::SemanticModel;
 
 #[derive(Debug, Default)]
 struct Processor {}
@@ -58,7 +59,7 @@ impl NodeProcessor for Processor {
 /// Converts method calls with identifier prefixes to regular function calls.
 ///
 /// This pass transforms calls like `obj:method()` into `obj.method(obj)`.
-pub fn remove_method_call(block: &mut Block) {
+pub fn remove_method_call(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }

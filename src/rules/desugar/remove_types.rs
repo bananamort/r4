@@ -1,5 +1,6 @@
 use crate::nodes::*;
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
+use crate::semantic::SemanticModel;
 
 #[derive(Default)]
 struct RemoveTypesProcessor {
@@ -79,7 +80,7 @@ impl NodeProcessor for RemoveTypesProcessor {
 
 /// Removes all Luau type annotations, type declarations and type-only
 /// expressions from a block.
-pub fn remove_types(block: &mut Block) {
+pub fn remove_types(block: &mut Block, _model: &SemanticModel) {
     let mut processor = RemoveTypesProcessor::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }

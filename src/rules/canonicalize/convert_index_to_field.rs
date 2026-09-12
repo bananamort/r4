@@ -4,6 +4,7 @@ use crate::nodes::{
 };
 use crate::process::utils::is_valid_identifier;
 use crate::process::{DefaultVisitor, Evaluator, LuaValue, NodeProcessor, NodeVisitor};
+use crate::semantic::SemanticModel;
 
 use std::mem;
 
@@ -83,7 +84,7 @@ impl NodeProcessor for Converter {
 
 /// Converts index expressions with string-literal keys into field expressions
 /// (`t["foo"]` becomes `t.foo`).
-pub fn convert_index_to_field(block: &mut Block) {
+pub fn convert_index_to_field(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Converter::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }

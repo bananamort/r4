@@ -1,5 +1,6 @@
 use crate::nodes::{AssignmentKind, Block, Expression, VariableAssignment};
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
+use crate::semantic::SemanticModel;
 
 #[derive(Default)]
 struct Processor {
@@ -80,7 +81,7 @@ impl NodeProcessor for Processor {
 }
 
 /// Removes trailing `nil` values from local assignments.
-pub fn remove_nil_declarations(block: &mut Block) {
+pub fn remove_nil_declarations(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }

@@ -44,7 +44,7 @@ impl NodeProcessor for RemoveFloorDivisionProcessor<'_> {
     fn process_statement(&mut self, statement: &mut Statement) {
         if let Statement::CompoundAssign(assign_statement) = statement {
             if assign_statement.get_operator() == CompoundOperator::DoubleSlash {
-                replace_compound_assignment(statement);
+                replace_compound_assignment(statement, self.model);
             }
         }
     }

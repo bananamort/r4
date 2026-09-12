@@ -6,11 +6,12 @@ use crate::nodes::{
     WhileStatement,
 };
 use crate::process::{DefaultPostVisitor, NodePostProcessor, NodePostVisitor, NodeProcessor};
-use crate::rules::tracker::IdentifierTracker;
+use crate::rules::NameGenerator;
+use crate::semantic::SemanticModel;
 
 struct Processor {
     loop_stack: Vec<Option<LoopData>>,
-    tracker: IdentifierTracker,
+    names: NameGenerator,
 }
 
 struct LoopData {
@@ -32,15 +33,15 @@ impl LoopData {
 }
 
 impl Processor {
-    fn new(block: &mut Block) -> Self {
+    fn new(model: &SemanticModel) -> Self {
         Self {
             loop_stack: Vec::new(),
-            tracker: IdentifierTracker::collect_block(block),
+            names: NameGenerator::new(model),
         }
     }
 
     fn push_loop(&mut self) {
-        let identifier = self.tracker.generate_with_prefix("__R4_CONTINUE");
+        let identifier = self.names.generate_with_prefix("__R4_CONTINUE");
         self.loop_stack
             .push(Some(LoopData::new(Identifier::new(identifier))));
     }
@@ -167,7 +168,7 @@ impl NodePostProcessor for Processor {
 
 /// Removes `continue` statements (and converts them into flagged `break`
 /// statements wrapped in a repeated loop).
-pub fn remove_continue(block: &mut Block) {
-    let mut processor = Processor::new(block);
+pub fn remove_continue(block: &mut Block, model: &SemanticModel) {
+    let mut processor = Processor::new(model);
     DefaultPostVisitor::visit_block(block, &mut processor);
 }

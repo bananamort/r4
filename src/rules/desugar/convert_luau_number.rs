@@ -1,6 +1,7 @@
 use crate::{
     nodes::{Block, HexNumber, NumberExpression, Position, Token},
     process::{DefaultVisitor, NodeProcessor, NodeVisitor},
+    semantic::SemanticModel,
 };
 
 #[derive(Default)]
@@ -56,14 +57,14 @@ impl NodeProcessor for Processor<'_> {
 /// Underscore removal requires reading the token content. Tokens that only
 /// carry a source position (as produced by the parser) are left untouched by
 /// this function; use [`convert_luau_number_with_code`] to also trim them.
-pub fn convert_luau_number(block: &mut Block) {
+pub fn convert_luau_number(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor { code: None };
     DefaultVisitor::visit_block(block, &mut processor);
 }
 
 /// Converts Luau number literals using the original source `code` to read
 /// position-based tokens.
-pub fn convert_luau_number_with_code(block: &mut Block, code: &str) {
+pub fn convert_luau_number_with_code(block: &mut Block, code: &str, _model: &SemanticModel) {
     let mut processor = Processor { code: Some(code) };
     DefaultVisitor::visit_block(block, &mut processor);
 }
