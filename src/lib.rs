@@ -8,6 +8,7 @@ pub mod convert;
 pub mod diagnostic;
 pub mod generator;
 pub mod modules;
+pub mod navigation;
 pub mod nodes;
 mod parser;
 pub mod process;
@@ -22,4 +23,5 @@ pub use diagnostic::{
     descriptor_for, Diagnostic, DiagnosticDescriptor, DiagnosticFormatError, DiagnosticFormatter,
     DiagnosticQueryError, LinePosition, LinePositionSpan, Severity, TextSpan, DIAGNOSTIC_CATALOG,
 };
+pub use navigation::{IndexEntry, NavigationError, NodeId, NodeKind, SyntaxIndex};
 pub use parser::{AnalyzedParseError, Dialect, Parser, ParserError};
