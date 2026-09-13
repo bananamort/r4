@@ -552,6 +552,33 @@ The public API surface was completed with:
   diagnostics and delegates parsing to `Parser`, analysis to `SemanticAnalyzer`
   and module resolution to `ModuleResolver`.
 
+### Composite value tracking
+
+Semantic tracking now goes beyond single scalars:
+
+- `SemanticModel::immutable_alias_root` follows immutable declaration
+  initializers to the symbol a chain ultimately refers to (generalizing the
+  previous one-step `immutable_global_alias`). `local math = math`, `local m =
+  math` and deeper chains all resolve to the original global, while a
+  reassignment breaks the chain.
+- `semantic::EscapeAnalysis` conservatively classifies every local: whether it
+  is initialized from a table constructor, whether it escapes (passed,
+  returned, stored, compared, called, method-called, dynamically indexed or
+  captured), and which static fields are read or written. It never claims a
+  table is confined unless every occurrence is a static field access, so it can
+  only miss optimizations, never remove a live store.
+- `rules::canonicalize::remove_dead_table_stores` (opt-in, not part of the
+  default `canonicalize` pipeline) removes `table.field = value` assignments
+  when the table is a confined local table, the field is never read, there is
+  no dynamic read, and the value has no side effects. Removing the store is
+  sound because a confined table can never receive a metatable, so no
+  `__newindex` can observe the write.
+
+Full static linking of exported module values (hoisting exported value symbols
+rather than accessing them through the returned table) remains future work: the
+runtime loader is already semantically exact, so this would be a performance
+optimization rather than a correctness fix.
+
 ### Scope notes (outside the audited items)
 
 All open items from this audit are implemented. The notes below record

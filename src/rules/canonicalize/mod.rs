@@ -10,6 +10,7 @@ pub mod hoist_loop_invariants;
 pub mod remove_assertions;
 pub mod remove_call_match;
 pub mod remove_dead_stores;
+pub mod remove_dead_table_stores;
 pub mod remove_debug_profiling;
 pub mod remove_nil_declarations;
 pub mod remove_unreachable_code;
@@ -26,6 +27,7 @@ pub use hoist_loop_invariants::{hoist_loop_invariants, HoistLoopInvariantsError}
 pub use remove_assertions::remove_assertions;
 pub use remove_call_match::{identifier_resolves_to_global, remove_call_matches, CallMatcher};
 pub use remove_dead_stores::{remove_dead_stores, DeadStoreError};
+pub use remove_dead_table_stores::remove_dead_table_stores;
 pub use remove_debug_profiling::remove_debug_profiling;
 pub use remove_nil_declarations::remove_nil_declarations;
 pub use remove_unreachable_code::{remove_unreachable_code, UnreachableCodeError};

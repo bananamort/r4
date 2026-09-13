@@ -358,15 +358,41 @@ impl SemanticModel {
     /// Rules that rewrite standard-library calls can use this to optimize
     /// through an immutable alias while remaining correct when the name is
     /// shadowed. Returns `None` for globals themselves, mutable locals, and
-    /// locals initialized from anything other than a global symbol.
+    /// locals initialized from anything other than a symbol chain ending at a
+    /// global.
     pub fn immutable_global_alias(&self, symbol: SymbolId) -> Option<SymbolId> {
-        let local = &self.symbols[symbol.index()];
-        if local.kind == SymbolKind::Global || !self.is_immutable(symbol) {
+        if self.symbols[symbol.index()].kind == SymbolKind::Global {
             return None;
         }
-        let target = local.initializer?;
-        let global = &self.symbols[target.index()];
-        (global.kind == SymbolKind::Global).then_some(target)
+        self.immutable_alias_root(symbol)
+    }
+
+    /// Resolves an immutable alias chain to the symbol it ultimately refers to.
+    ///
+    /// Follows declaration initializers while every intermediate symbol is
+    /// immutable (assigned at most once). Returns `None` when the chain reaches
+    /// a mutable symbol or an uninitialized local (which holds `nil`). A global
+    /// symbol is its own root.
+    ///
+    /// This generalizes [`Self::immutable_global_alias`]: `local math = math`,
+    /// `local m = math` and chains through several immutable locals all resolve
+    /// to the original global.
+    pub fn immutable_alias_root(&self, symbol: SymbolId) -> Option<SymbolId> {
+        let mut current = symbol;
+        for _ in 0..self.symbols.len() {
+            let info = &self.symbols[current.index()];
+            if info.kind == SymbolKind::Global {
+                return Some(current);
+            }
+            if !self.is_immutable(current) {
+                return None;
+            }
+            match info.initializer {
+                Some(next) if next != current => current = next,
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// Returns whether every non-global symbol with this name is an immutable
