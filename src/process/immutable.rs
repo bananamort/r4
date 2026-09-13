@@ -73,6 +73,12 @@ pub trait ImmutableVisitor {
             Statement::Function(function) => {
                 processor.process_attributes(function.attributes());
                 Self::visit_identifier(function.get_name().get_name(), processor);
+                for field in function.get_name().get_field_names() {
+                    Self::visit_identifier(field, processor);
+                }
+                if let Some(method) = function.get_name().get_method() {
+                    Self::visit_identifier(method, processor);
+                }
                 Self::visit_function_signature(
                     function.get_generic_parameters(),
                     function.iter_parameters(),
@@ -91,7 +97,8 @@ pub trait ImmutableVisitor {
                 }
                 Self::visit_block(statement.get_block(), processor);
             }
-            Statement::Goto(_) | Statement::Label(_) => {}
+            Statement::Goto(statement) => Self::visit_identifier(statement.get_label(), processor),
+            Statement::Label(statement) => Self::visit_identifier(statement.get_label(), processor),
             Statement::If(statement) => {
                 for branch in statement.iter_branches() {
                     Self::visit_expression(branch.get_condition(), processor);
@@ -334,6 +341,18 @@ pub trait ImmutableVisitor {
 
     fn visit_attributes(attributes: &Attributes, processor: &mut impl ImmutableProcessor) {
         processor.process_attributes(attributes);
+        for attribute in attributes.iter_attributes() {
+            match attribute {
+                Attribute::Name(named) => {
+                    Self::visit_identifier(named.get_identifier(), processor);
+                }
+                Attribute::Group(group) => {
+                    for element in group.iter_attributes() {
+                        Self::visit_identifier(element.name(), processor);
+                    }
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -506,6 +525,9 @@ pub trait ImmutableVisitor {
             Type::Function(function) => {
                 Self::visit_generic_parameters(function.get_generic_parameters(), processor);
                 for argument in function.iter_arguments() {
+                    if let Some(name) = argument.get_name() {
+                        Self::visit_identifier(name, processor);
+                    }
                     Self::visit_type(argument.get_type(), processor);
                 }
                 Self::visit_function_return_type(function.get_return_type(), processor);

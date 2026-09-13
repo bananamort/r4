@@ -2,11 +2,13 @@
 //! and its implementations.
 
 mod dense;
+mod format;
 mod readable;
 mod token_based;
 pub(crate) mod utils;
 
 pub use dense::DenseLuaGenerator;
+pub use format::{normalize_whitespace, normalize_whitespace_with};
 pub use readable::ReadableLuaGenerator;
 pub use token_based::TokenBasedLuaGenerator;
 

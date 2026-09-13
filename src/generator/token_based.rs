@@ -13,6 +13,10 @@ pub struct TokenBasedLuaGenerator<'a> {
     output: String,
     currently_commenting: bool,
     current_line: usize,
+    normalize: bool,
+    indent: String,
+    newline: String,
+    depth: usize,
 }
 
 impl<'a> TokenBasedLuaGenerator<'a> {
@@ -22,7 +26,32 @@ impl<'a> TokenBasedLuaGenerator<'a> {
             output: String::new(),
             currently_commenting: false,
             current_line: 1,
+            normalize: false,
+            indent: "    ".to_owned(),
+            newline: "\n".to_owned(),
+            depth: 0,
         }
+    }
+
+    /// Creates a generator that normalizes whitespace and indentation while
+    /// preserving every comment.
+    pub fn normalizing(original_code: &'a str) -> Self {
+        let mut generator = Self::new(original_code);
+        generator.normalize = true;
+        generator
+    }
+
+    /// Creates a normalizing generator with an explicit indent unit and line
+    /// separator.
+    pub fn normalizing_with(
+        original_code: &'a str,
+        indent: impl Into<String>,
+        newline: impl Into<String>,
+    ) -> Self {
+        let mut generator = Self::normalizing(original_code);
+        generator.indent = indent.into();
+        generator.newline = newline.into();
+        generator
     }
 
     fn push_str(&mut self, string: &str) {
@@ -32,6 +61,20 @@ impl<'a> TokenBasedLuaGenerator<'a> {
 
     fn write_trivia(&mut self, trivia: &Trivia) {
         let content = trivia.read(self.original_code);
+
+        // In normalizing mode the whitespace trivia is replaced by a single
+        // line separator or a single space; indentation is emitted lazily when
+        // the next token is written. Comments are always emitted verbatim.
+        if self.normalize && trivia.kind() == TriviaKind::Whitespace {
+            if content.contains('\n') {
+                self.currently_commenting = false;
+                let newline = self.newline.clone();
+                self.push_str(&newline);
+            } else if !content.is_empty() && !self.output.ends_with('\n') {
+                self.push_str(" ");
+            }
+            return;
+        }
 
         let is_comment = matches!(trivia.kind(), TriviaKind::Comment);
         let is_line_comment = is_comment && is_single_line_comment(content);
@@ -74,11 +117,18 @@ impl<'a> TokenBasedLuaGenerator<'a> {
                 self.uncomment();
             }
 
-            if let Some(line_number) = token.get_line_number() {
-                while line_number > self.current_line {
-                    self.output.push('\n');
-                    self.current_line += 1;
+            if !self.normalize {
+                if let Some(line_number) = token.get_line_number() {
+                    while line_number > self.current_line {
+                        self.output.push('\n');
+                        self.current_line += 1;
+                    }
                 }
+            }
+
+            if self.normalize && self.output.ends_with('\n') {
+                let indentation = self.indent.repeat(self.depth.saturating_sub(1));
+                self.push_str(&indentation);
             }
 
             if space_check {
@@ -100,6 +150,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
     fn write_block_with_tokens(&mut self, block: &Block, tokens: &BlockTokens) {
         let mut iterator = block.iter_statements().enumerate().peekable();
 
+        self.depth += 1;
         while let Some((index, statement)) = iterator.next() {
             self.write_statement(statement);
 
@@ -117,6 +168,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
         if let Some(statement) = block.get_last_statement() {
             self.write_last_statement(statement);
         }
+        self.depth -= 1;
 
         if let Some(token) = &tokens.final_token {
             self.write_token(token);
