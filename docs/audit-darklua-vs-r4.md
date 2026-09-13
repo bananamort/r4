@@ -516,7 +516,9 @@ type symbol and host global across every bundled module.
 Scope arenas remain per module (the multi-tree container links them through
 import bindings rather than merging them into one flat arena). This keeps
 standalone `SemanticAnalyzer`/`SemanticModel` analysis lightweight and
-unchanged while still providing identity-based cross-module resolution.
+unchanged while still providing identity-based cross-module resolution. When a
+whole-program view is needed, `WholeProgramIndex` derives one over the
+per-module models by qualified key rather than merging the arenas.
 
 ### Token/formatting parity and public API surface
 
@@ -593,6 +595,14 @@ equivalent is simply skipped.
   `root_scope`, `file_scope`, `parent_scope`, `resolve_in_scope`,
   `resolve_identifier`). A module's global root scope is a child of the one
   shared global scope, so the same global has one identity everywhere.
+- **Whole-program index.** `WholeProgramIndex` is a read-only derivation over
+  the per-module models (`MultiModuleModel::whole_program_index`): it ranks
+  canonical globals and module-local symbols into one dense space, records which
+  module-local symbols denote each global, and ranks types and labels. It
+  references the arenas by qualified key (`QualifiedSymbol`/`QualifiedType`/
+  `QualifiedLabel`) without moving or remapping anything, so whole-program
+  bitset analyses can run over `global_count + local_count` ranks while each
+  module stays self-contained, cacheable and independently analyzable.
 - **Type environment.** Type declarations are hoisted per block and type-name
   resolution is position aware: an occurrence binds to the nearest preceding
   declaration, or forward-references the next declaration in the same scope, so

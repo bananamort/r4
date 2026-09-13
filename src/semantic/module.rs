@@ -493,6 +493,14 @@ impl MultiModuleModel {
         }
     }
 
+    /// Builds a flat, densely ranked whole-program index over every module.
+    ///
+    /// The index references the per-module arenas by qualified key; it does not
+    /// move or remap any symbol, and it can be dropped at any time.
+    pub fn whole_program_index(&self) -> super::index::WholeProgramIndex {
+        super::index::WholeProgramIndex::build(self)
+    }
+
     /// Binds a local alias symbol to an imported module.
     pub fn bind_import(&mut self, module: ModuleId, alias: SymbolId, target: ModuleId) {
         let imports = &mut self.modules[module.index()].imports;
