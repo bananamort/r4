@@ -10,6 +10,7 @@ pub struct TypedIdentifier {
     name: Identifier,
     r#type: Option<Type>,
     token: Option<Token>,
+    attribute: Option<String>,
 }
 
 impl TypedIdentifier {
@@ -19,7 +20,25 @@ impl TypedIdentifier {
             name: Identifier::new(name.into()),
             r#type: None,
             token: None,
+            attribute: None,
         }
+    }
+
+    /// Sets the Lua 5.4 local attribute (`<const>`/`<close>`) of this identifier.
+    pub fn with_attribute(mut self, attribute: impl Into<String>) -> Self {
+        self.attribute = Some(attribute.into());
+        self
+    }
+
+    /// Sets the Lua 5.4 local attribute of this identifier.
+    pub fn set_attribute(&mut self, attribute: impl Into<String>) {
+        self.attribute = Some(attribute.into());
+    }
+
+    /// Returns the Lua 5.4 local attribute of this identifier, if any.
+    #[inline]
+    pub fn get_attribute(&self) -> Option<&str> {
+        self.attribute.as_deref()
     }
 
     /// Sets the type for this identifier and returns the updated typed identifier.
@@ -89,6 +108,7 @@ impl<IntoIdentifier: Into<Identifier>> From<IntoIdentifier> for TypedIdentifier 
             name: name.into(),
             r#type: None,
             token: None,
+            attribute: None,
         }
     }
 }

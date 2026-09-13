@@ -35,6 +35,16 @@ pub enum BinaryOperator {
     Caret,
     /// String concatenation operator (`..`)
     Concat,
+    /// Bitwise OR operator (`|`, Lua 5.3+)
+    BitwiseOr,
+    /// Bitwise XOR operator (`~`, Lua 5.3+)
+    BitwiseXor,
+    /// Bitwise AND operator (`&`, Lua 5.3+)
+    BitwiseAnd,
+    /// Left shift operator (`<<`, Lua 5.3+)
+    ShiftLeft,
+    /// Right shift operator (`>>`, Lua 5.3+)
+    ShiftRight,
 }
 
 #[inline]
@@ -216,6 +226,11 @@ impl BinaryOperator {
             Self::Percent => "%",
             Self::Caret => "^",
             Self::Concat => "..",
+            Self::BitwiseOr => "|",
+            Self::BitwiseXor => "~",
+            Self::BitwiseAnd => "&",
+            Self::ShiftLeft => "<<",
+            Self::ShiftRight => ">>",
         }
     }
 
@@ -230,10 +245,14 @@ impl BinaryOperator {
             | Self::LowerOrEqualThan
             | Self::GreaterThan
             | Self::GreaterOrEqualThan => 2,
-            Self::Concat => 3,
-            Self::Plus | Self::Minus => 4,
-            Self::Asterisk | Self::Slash | Self::DoubleSlash | Self::Percent => 5,
-            Self::Caret => 7,
+            Self::BitwiseOr => 3,
+            Self::BitwiseXor => 4,
+            Self::BitwiseAnd => 5,
+            Self::ShiftLeft | Self::ShiftRight => 6,
+            Self::Concat => 7,
+            Self::Plus | Self::Minus => 8,
+            Self::Asterisk | Self::Slash | Self::DoubleSlash | Self::Percent => 9,
+            Self::Caret => 11,
         }
     }
 }

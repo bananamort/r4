@@ -939,12 +939,24 @@ impl<'a> AstConverter<'a> {
                     self.statements.push(type_function_statement.into());
                 }
                 ConvertWork::MakeLocalAssignStatement { statement } => {
+                    let attributes: Vec<Option<&ast::lua54::Attribute>> =
+                        statement.attributes().collect();
                     let variables = statement
                         .names()
                         .iter()
                         .zip(statement.type_specifiers())
-                        .map(|(token_ref, type_specifier)| {
-                            self.convert_typed_identifier(token_ref, type_specifier)
+                        .enumerate()
+                        .map(|(index, (token_ref, type_specifier))| {
+                            let mut identifier =
+                                self.convert_typed_identifier(token_ref, type_specifier)?;
+                            if let Some(attribute) = attributes.get(index).copied().flatten() {
+                                identifier.set_attribute(
+                                    self.convert_token_to_identifier(attribute.name())?
+                                        .get_name()
+                                        .clone(),
+                                );
+                            }
+                            Ok(identifier)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
 
@@ -2829,6 +2841,11 @@ impl<'a> AstConverter<'a> {
             ast::BinOp::TildeEqual(_) => BinaryOperator::NotEqual,
             ast::BinOp::TwoDots(_) => BinaryOperator::Concat,
             ast::BinOp::TwoEqual(_) => BinaryOperator::Equal,
+            ast::BinOp::Ampersand(_) => BinaryOperator::BitwiseAnd,
+            ast::BinOp::Pipe(_) => BinaryOperator::BitwiseOr,
+            ast::BinOp::Tilde(_) => BinaryOperator::BitwiseXor,
+            ast::BinOp::DoubleLessThan(_) => BinaryOperator::ShiftLeft,
+            ast::BinOp::DoubleGreaterThan(_) => BinaryOperator::ShiftRight,
             _ => {
                 return Err(ConvertError::BinaryOperator {
                     operator: operator.to_string(),
@@ -2843,6 +2860,7 @@ impl<'a> AstConverter<'a> {
             ast::UnOp::Minus(_) => UnaryOperator::Minus,
             ast::UnOp::Not(_) => UnaryOperator::Not,
             ast::UnOp::Hash(_) => UnaryOperator::Length,
+            ast::UnOp::Tilde(_) => UnaryOperator::BitwiseNot,
             _ => {
                 return Err(ConvertError::UnaryOperator {
                     operator: operator.to_string(),
@@ -3413,7 +3431,12 @@ fn get_binary_operator_token(
         | BinOp::Star(token)
         | BinOp::TildeEqual(token)
         | BinOp::TwoDots(token)
-        | BinOp::TwoEqual(token) => Ok(token),
+        | BinOp::TwoEqual(token)
+        | BinOp::Ampersand(token)
+        | BinOp::Pipe(token)
+        | BinOp::Tilde(token)
+        | BinOp::DoubleLessThan(token)
+        | BinOp::DoubleGreaterThan(token) => Ok(token),
         _ => Err(ConvertError::BinaryOperator {
             operator: operator.to_string(),
         }),
@@ -3426,7 +3449,7 @@ fn get_unary_operator_token(
     use ast::UnOp;
 
     match operator {
-        UnOp::Minus(token) | UnOp::Not(token) | UnOp::Hash(token) => Ok(token),
+        UnOp::Minus(token) | UnOp::Not(token) | UnOp::Hash(token) | UnOp::Tilde(token) => Ok(token),
         _ => Err(ConvertError::UnaryOperator {
             operator: operator.to_string(),
         }),

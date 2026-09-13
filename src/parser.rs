@@ -9,26 +9,77 @@ use crate::{
     utils::Timer,
 };
 
+/// A Lua/Luau dialect the parser can accept.
+///
+/// The dialect selects the grammar accepted by the underlying parser:
+/// Lua 5.1 through 5.4 (including bitwise operators, floor division, integer
+/// literals and local variable attributes), LuaJIT (goto, hex floats, number
+/// suffixes) and Luau (types, compound assignment, if-expressions, continue).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Dialect {
+    /// Lua 5.1.
+    Lua51,
+    /// Lua 5.2 (goto and labels).
+    Lua52,
+    /// Lua 5.3 (bitwise operators, floor division, integer escapes).
+    Lua53,
+    /// Lua 5.4 (local variable attributes).
+    Lua54,
+    /// LuaJIT 2.0/2.1.
+    LuaJit,
+    /// Luau (the default).
+    #[default]
+    Luau,
+}
+
+impl Dialect {
+    /// Returns the human readable name of this dialect.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Dialect::Lua51 => "lua51",
+            Dialect::Lua52 => "lua52",
+            Dialect::Lua53 => "lua53",
+            Dialect::Lua54 => "lua54",
+            Dialect::LuaJit => "luajit",
+            Dialect::Luau => "luau",
+        }
+    }
+
+    fn lua_version(self) -> LuaVersion {
+        match self {
+            Dialect::Lua51 => LuaVersion::lua51(),
+            Dialect::Lua52 => LuaVersion::lua52(),
+            Dialect::Lua53 => LuaVersion::lua53(),
+            Dialect::Lua54 => LuaVersion::lua54(),
+            Dialect::LuaJit => LuaVersion::luajit(),
+            Dialect::Luau => LuaVersion::luau(),
+        }
+    }
+}
+
+impl std::fmt::Display for Dialect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A parser for Lua code that converts it into an abstract syntax tree.
 ///
-/// By default the parser accepts Luau syntax. Enable [`Parser::lua52`] to parse
-/// Lua 5.2, which adds `goto`/`::label::` statements. The two dialects cannot be
-/// combined because `::` is also Luau's type assertion operator.
+/// The default dialect is Luau. Use [`Parser::dialect`] or the per-dialect
+/// helpers to parse another Lua flavor. The dialects cannot be combined: the
+/// different syntaxes (for example `::` as a type assertion in Luau and as a
+/// label in Lua 5.2+) conflict.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parser {
     hold_token_data: bool,
-    lua52: bool,
+    dialect: Dialect,
 }
 
 impl Parser {
     /// Parses Lua code into a [`Block`].
     pub fn parse(&self, code: &str) -> Result<Block, ParserError> {
         let full_moon_parse_timer = Timer::now();
-        let lua_version = if self.lua52 {
-            LuaVersion::lua52()
-        } else {
-            LuaVersion::luau()
-        };
+        let lua_version = self.dialect.lua_version();
         // `full_moon` can panic on a few malformed inputs (for example a
         // surrogate unicode escape inside an interpolated string). Since this
         // is a library that may be handed untrusted source, turn any panic
@@ -63,17 +114,50 @@ impl Parser {
         self
     }
 
+    /// Sets the dialect the parser accepts.
+    pub fn dialect(mut self, dialect: Dialect) -> Self {
+        self.dialect = dialect;
+        self
+    }
+
+    /// Returns the dialect the parser accepts.
+    #[inline]
+    pub fn get_dialect(&self) -> Dialect {
+        self.dialect
+    }
+
+    /// Configures the parser to accept Lua 5.1 syntax.
+    pub fn lua51(self) -> Self {
+        self.dialect(Dialect::Lua51)
+    }
+
     /// Configures the parser to accept Lua 5.2 syntax, which includes
     /// `goto`/`::label::` statements.
-    pub fn lua52(mut self) -> Self {
-        self.lua52 = true;
-        self
+    pub fn lua52(self) -> Self {
+        self.dialect(Dialect::Lua52)
+    }
+
+    /// Configures the parser to accept Lua 5.3 syntax, which adds bitwise
+    /// operators, floor division and integer literals.
+    pub fn lua53(self) -> Self {
+        self.dialect(Dialect::Lua53)
+    }
+
+    /// Configures the parser to accept Lua 5.4 syntax, which adds local
+    /// variable attributes.
+    pub fn lua54(self) -> Self {
+        self.dialect(Dialect::Lua54)
+    }
+
+    /// Configures the parser to accept LuaJIT syntax.
+    pub fn lua_jit(self) -> Self {
+        self.dialect(Dialect::LuaJit)
     }
 
     /// Returns whether the parser accepts Lua 5.2 syntax.
     #[inline]
     pub fn is_lua52(&self) -> bool {
-        self.lua52
+        self.dialect == Dialect::Lua52
     }
 
     /// Parses the source and runs the semantic analysis in one step.

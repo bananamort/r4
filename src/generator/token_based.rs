@@ -1973,6 +1973,10 @@ impl<'a> TokenBasedLuaGenerator<'a> {
             self.write_symbol(name);
         }
 
+        if let Some(attribute) = typed_identifier.get_attribute() {
+            self.write_symbol(&format!("<{}>", attribute));
+        }
+
         if let Some(r#type) = typed_identifier.get_type() {
             if let Some(colon) = typed_identifier.get_colon_token() {
                 self.write_token(colon);

@@ -416,6 +416,13 @@ impl ReadableLuaGenerator {
     fn write_typed_identifier(&mut self, typed_identifier: &nodes::TypedIdentifier) {
         self.push_str(typed_identifier.get_name());
 
+        if let Some(attribute) = typed_identifier.get_attribute() {
+            self.push_char(' ');
+            self.push_char('<');
+            self.push_str(attribute);
+            self.push_char('>');
+        }
+
         if let Some(r#type) = typed_identifier.get_type() {
             self.push_char(':');
             self.push_space();
@@ -1043,6 +1050,7 @@ impl LuaGenerator for ReadableLuaGenerator {
             Length => self.push_char('#'),
             Minus => self.push_str_and_break_if("-", utils::break_minus),
             Not => self.push_str("not "),
+            BitwiseNot => self.push_char('~'),
         }
 
         let expression = unary.get_expression();

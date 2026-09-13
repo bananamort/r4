@@ -427,6 +427,16 @@ impl Evaluator {
             BinaryOperator::GreaterOrEqualThan => {
                 self.evaluate_relational(expression, |a, b| a >= b)
             }
+            BinaryOperator::BitwiseAnd
+            | BinaryOperator::BitwiseOr
+            | BinaryOperator::BitwiseXor
+            | BinaryOperator::ShiftLeft
+            | BinaryOperator::ShiftRight => Self::bitwise(
+                expression.operator(),
+                self.evaluate(expression.left()),
+                self.evaluate(expression.right()),
+            )
+            .unwrap_or(LuaValue::Unknown),
         }
     }
 
@@ -522,6 +532,10 @@ impl Evaluator {
                 }
             }
             UnaryOperator::Length => self.evaluate(expression.get_expression()).length(),
+            UnaryOperator::BitwiseNot => {
+                Self::bitwise_not(self.evaluate(expression.get_expression()))
+                    .unwrap_or(LuaValue::Unknown)
+            }
         }
     }
 
@@ -645,6 +659,11 @@ impl Evaluator {
                     | BinaryOperator::GreaterOrEqualThan => {
                         self.evaluate_relational_operator(operator, left, right)
                     }
+                    BinaryOperator::BitwiseAnd
+                    | BinaryOperator::BitwiseOr
+                    | BinaryOperator::BitwiseXor
+                    | BinaryOperator::ShiftLeft
+                    | BinaryOperator::ShiftRight => Self::bitwise(operator, left, right),
                     _ => Self::evaluate_math_operator(operator, left, right),
                 }
             }
@@ -674,6 +693,60 @@ impl Evaluator {
             _ => return None,
         };
         Some(LuaValue::Number(value))
+    }
+
+    /// Folds a Lua 5.3 bitwise operator over integer-valued operands.
+    ///
+    /// Returns `None` when an operand is not an integer, so the folder declines
+    /// instead of guessing.
+    fn bitwise(operator: BinaryOperator, left: LuaValue, right: LuaValue) -> Option<LuaValue> {
+        let left = Self::to_integer(left)?;
+        let right = Self::to_integer(right)?;
+        let value = match operator {
+            BinaryOperator::BitwiseAnd => left & right,
+            BinaryOperator::BitwiseOr => left | right,
+            BinaryOperator::BitwiseXor => left ^ right,
+            BinaryOperator::ShiftLeft => Self::shift(left, right, true),
+            BinaryOperator::ShiftRight => Self::shift(left, right, false),
+            _ => return None,
+        };
+        Some(LuaValue::from(value as f64))
+    }
+
+    fn bitwise_not(value: LuaValue) -> Option<LuaValue> {
+        Some(LuaValue::from((!Self::to_integer(value)?) as f64))
+    }
+
+    fn to_integer(value: LuaValue) -> Option<i64> {
+        let LuaValue::Number(value) = value.number_coercion() else {
+            return None;
+        };
+        if !value.is_finite()
+            || value.fract() != 0.0
+            || value < i64::MIN as f64
+            || value > i64::MAX as f64
+        {
+            return None;
+        }
+        Some(value as i64)
+    }
+
+    /// Implements the Lua 5.3 shift rules: a negative shift reverses direction
+    /// and shifts of 64 bits or more produce zero.
+    fn shift(value: i64, amount: i64, left: bool) -> i64 {
+        let (value, amount, left) = if amount < 0 {
+            (value, amount.unsigned_abs(), !left)
+        } else {
+            (value, amount as u64, left)
+        };
+        if amount >= 64 {
+            return 0;
+        }
+        if left {
+            ((value as u64) << amount) as i64
+        } else {
+            ((value as u64) >> amount) as i64
+        }
     }
 
     fn evaluate_relational_operator(
@@ -729,6 +802,7 @@ impl Evaluator {
                 LuaValue::Unknown => None,
                 length => Some(length),
             },
+            UnaryOperator::BitwiseNot => Self::bitwise_not(value),
         }
     }
 

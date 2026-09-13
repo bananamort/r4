@@ -20,4 +20,4 @@ pub use diagnostic::{
     descriptor_for, Diagnostic, DiagnosticDescriptor, DiagnosticFormatError, DiagnosticFormatter,
     DiagnosticQueryError, LinePosition, LinePositionSpan, Severity, TextSpan, DIAGNOSTIC_CATALOG,
 };
-pub use parser::{AnalyzedParseError, Parser, ParserError};
+pub use parser::{AnalyzedParseError, Dialect, Parser, ParserError};

@@ -9,6 +9,8 @@ pub enum UnaryOperator {
     Minus,
     /// The not operator (`not`)
     Not,
+    /// The bitwise not operator (`~`, Lua 5.3+)
+    BitwiseNot,
 }
 
 impl UnaryOperator {
@@ -18,6 +20,7 @@ impl UnaryOperator {
             Self::Length => "#",
             Self::Minus => "-",
             Self::Not => "not",
+            Self::BitwiseNot => "~",
         }
     }
 }
