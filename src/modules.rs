@@ -9,8 +9,12 @@
 //! The result is a [`MultiModuleModel`] whose imports are bound to the target
 //! modules by identity, plus the topological order the bundler inlines in.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use crate::nodes::{
     Arguments, Block, Expression, FunctionCall, Prefix, Statement, StringExpression,
@@ -54,6 +58,141 @@ impl ModuleProvider for MemoryModuleProvider {
     fn load(&self, key: &str) -> Option<String> {
         self.modules.get(key).cloned()
     }
+}
+
+/// A [`ModuleProvider`] backed by a real directory tree.
+///
+/// A normalized module key such as `pkg/util` maps to `<root>/pkg/util.<ext>`
+/// (or `<root>/pkg/util` when the key already ends with the extension). Keys
+/// that would escape `root` through `..` components are rejected, so a
+/// malicious `require` cannot read arbitrary files.
+#[derive(Clone, Debug)]
+pub struct FileSystemModuleProvider {
+    root: PathBuf,
+    extension: String,
+}
+
+impl FileSystemModuleProvider {
+    /// Creates a provider reading `<root>/<key>.lua`.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            extension: "lua".to_owned(),
+        }
+    }
+
+    /// Creates a provider reading `<root>/<key>.<extension>`.
+    pub fn with_extension(root: impl Into<PathBuf>, extension: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            extension: extension.into(),
+        }
+    }
+
+    /// Returns the root directory.
+    #[inline]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Returns the file extension used by this provider.
+    #[inline]
+    pub fn extension(&self) -> &str {
+        &self.extension
+    }
+
+    /// Resolves a module key to a path inside the root, or `None` when the key
+    /// escapes the root.
+    pub fn path_for(&self, key: &str) -> Option<PathBuf> {
+        let mut path = self.root.clone();
+        for component in Path::new(key).components() {
+            match component {
+                Component::Normal(part) => path.push(part),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+            }
+        }
+
+        if !self.extension.is_empty() && !key.ends_with(&format!(".{}", self.extension)) {
+            path.set_extension(&self.extension);
+        }
+        Some(path)
+    }
+}
+
+impl ModuleProvider for FileSystemModuleProvider {
+    fn load(&self, key: &str) -> Option<String> {
+        std::fs::read_to_string(self.path_for(key)?).ok()
+    }
+}
+
+/// A parsed and analyzed module source.
+#[derive(Clone, Debug)]
+pub struct AnalyzedModule {
+    /// The source the module was parsed from.
+    pub source: String,
+    /// The parsed syntax tree.
+    pub block: Block,
+    /// The semantic model of [`Self::block`].
+    pub model: SemanticModel,
+}
+
+/// A content-addressed cache of analyzed module sources.
+///
+/// Resolution parses and analyzes every discovered module. When a graph is
+/// resolved repeatedly (for example while a single file is edited), unchanged
+/// dependencies hit this cache instead of being re-parsed and re-analyzed. The
+/// cache is keyed by a hash of the source and re-validated by comparing the
+/// stored source, so a hash collision can never reuse the wrong analysis.
+#[derive(Debug, Default)]
+pub struct AnalysisCache {
+    entries: HashMap<u64, Arc<AnalyzedModule>>,
+}
+
+impl AnalysisCache {
+    /// Creates an empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the number of cached analyses.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether the cache is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Removes every cached analysis.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Returns the analysis of `source`, if it is cached.
+    pub fn get(&self, source: &str) -> Option<Arc<AnalyzedModule>> {
+        self.entries
+            .get(&source_key(source))
+            .filter(|module| module.source == source)
+            .cloned()
+    }
+
+    /// Stores an analysis, returning the shared handle.
+    pub fn insert(&mut self, module: AnalyzedModule) -> Arc<AnalyzedModule> {
+        let module = Arc::new(module);
+        self.entries
+            .insert(source_key(&module.source), module.clone());
+        module
+    }
+}
+
+fn source_key(source: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Classifies a call as a statically resolvable `require` call.
@@ -286,11 +425,26 @@ impl<'a, P: ModuleProvider> ModuleResolver<'a, P> {
     }
 
     /// Resolves the graph starting from an already-analyzed root block.
+    ///
+    /// Each resolved dependency is parsed and analyzed with a throwaway cache.
+    /// Use [`Self::resolve_with_cache`] to reuse analyses across resolutions.
     pub fn resolve(
+        &self,
+        root_block: Block,
+        root_model: SemanticModel,
+        root_key: &str,
+    ) -> Result<ResolvedModules, ResolveError> {
+        let mut cache = AnalysisCache::default();
+        self.resolve_with_cache(root_block, root_model, root_key, &mut cache)
+    }
+
+    /// Resolves the graph, reusing cached analyses for unchanged sources.
+    pub fn resolve_with_cache(
         &self,
         mut root_block: Block,
         root_model: SemanticModel,
         root_key: &str,
+        cache: &mut AnalysisCache,
     ) -> Result<ResolvedModules, ResolveError> {
         let mut state = ResolveState {
             provider: self.provider,
@@ -298,6 +452,7 @@ impl<'a, P: ModuleProvider> ModuleResolver<'a, P> {
             by_key: HashMap::new(),
             visiting: Vec::new(),
             order: Vec::new(),
+            cache,
         };
 
         let base_directory = parent_directory(root_key);
@@ -330,6 +485,7 @@ struct ResolveState<'a, P> {
     by_key: HashMap<String, ModuleId>,
     visiting: Vec<String>,
     order: Vec<ModuleId>,
+    cache: &'a mut AnalysisCache,
 }
 
 impl<P: ModuleProvider> ResolveState<'_, P> {
@@ -353,19 +509,33 @@ impl<P: ModuleProvider> ResolveState<'_, P> {
                         .ok_or_else(|| ResolveError::MissingModule {
                             path: normalized.clone(),
                         })?;
-                let mut block =
-                    Parser::default()
-                        .parse(&source)
-                        .map_err(|error| ResolveError::Parse {
-                            path: normalized.clone(),
-                            error,
+
+                // Reuse a cached analysis of the same source when possible.
+                let analyzed = match self.cache.get(&source) {
+                    Some(cached) => cached,
+                    None => {
+                        let block = Parser::default().parse(&source).map_err(|error| {
+                            ResolveError::Parse {
+                                path: normalized.clone(),
+                                error,
+                            }
                         })?;
-                let model = SemanticAnalyzer::new().analyze(&block).map_err(|error| {
-                    ResolveError::Analysis {
-                        path: normalized.clone(),
-                        error,
+                        let model = SemanticAnalyzer::new().analyze(&block).map_err(|error| {
+                            ResolveError::Analysis {
+                                path: normalized.clone(),
+                                error,
+                            }
+                        })?;
+                        self.cache.insert(AnalyzedModule {
+                            source,
+                            block,
+                            model,
+                        })
                     }
-                })?;
+                };
+
+                let mut block = analyzed.block.clone();
+                let model = analyzed.model.clone();
 
                 let base_directory = parent_directory(&normalized);
                 let child_dependencies =

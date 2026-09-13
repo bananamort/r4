@@ -20,8 +20,14 @@ impl AnalyzerState {
     /// everything else is dispatched to [`Self::walk_statement`].
     pub(super) fn walk_block_statements(&mut self, block: &Block) -> SemanticResult<()> {
         self.assign_block_identity(block);
+        self.hoist_type_declarations(block);
 
         for (index, statement) in block.iter_statements().enumerate() {
+            if matches!(statement, Statement::TypeDeclaration(_)) {
+                if let Some(cursor) = self.type_declaration_cursors.last_mut() {
+                    *cursor += 1;
+                }
+            }
             match statement {
                 Statement::Label(label) => {
                     let is_block_end = is_block_end_label(block, index);
@@ -36,6 +42,25 @@ impl AnalyzerState {
         }
 
         Ok(())
+    }
+
+    /// Declares every type alias in `block` in the current scope before the
+    /// block's statements are walked.
+    ///
+    /// Luau type aliases are not order sensitive within a scope, so a type may
+    /// reference one declared later in the same block (including mutually
+    /// recursive aliases). Hoisting the names first makes those forward
+    /// references resolve exactly like a later declaration would.
+    fn hoist_type_declarations(&mut self, block: &Block) {
+        for statement in block.iter_statements() {
+            if let Statement::TypeDeclaration(declaration) = statement {
+                self.declare_type_symbol(
+                    declaration.get_name().get_name(),
+                    declaration.is_exported(),
+                    Some(declaration.get_name()),
+                );
+            }
+        }
     }
 
     fn enter_block(&mut self) -> ScopeId {
@@ -510,17 +535,31 @@ impl AnalyzerState {
         Ok(())
     }
 
-    /// Walks a type declaration: declares the alias, pushes its generic type
-    /// parameters, then walks the generic defaults and the declared type.
+    /// Walks a type declaration: the alias was already declared by
+    /// [`Self::hoist_type_declarations`], so this records a bare alias and
+    /// walks the generic defaults and the declared type.
     fn walk_type_declaration(
         &mut self,
         declaration: &TypeDeclarationStatement,
     ) -> SemanticResult<()> {
-        self.declare_type_symbol(
-            declaration.get_name().get_name(),
-            declaration.is_exported(),
-            Some(declaration.get_name()),
-        );
+        let id = declaration
+            .get_name()
+            .get_binding()
+            .map(|binding| crate::nodes::TypeId(binding.index()))
+            .expect("type declarations are hoisted before the block is walked");
+
+        // Record a bare alias such as `type A = B` so that alias chains can be
+        // expanded without re-analyzing the tree. The target is already
+        // declared because every type in the block is hoisted first.
+        if let crate::nodes::Type::Name(type_name) = declaration.get_type() {
+            if !type_name.has_type_parameters() {
+                if let Some(target) = self.lookup_type_name(type_name.get_type_name().get_name()) {
+                    if target != id {
+                        self.types[id.index()].alias_of = Some(target);
+                    }
+                }
+            }
+        }
 
         let mut names = Vec::new();
         let mut defaults = Vec::new();

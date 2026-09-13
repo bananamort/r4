@@ -203,6 +203,38 @@ impl SemanticModel {
         self.resolve_identifier(identifier)
     }
 
+    /// Expands a type alias chain to its terminal alias.
+    ///
+    /// `type A = B; type B = C` expands `A` to `C`. Structural aliases,
+    /// generic aliases and cycles terminate at the last alias reached, so the
+    /// method always returns a valid [`TypeId`].
+    pub fn expand_type_alias(&self, id: TypeId) -> TypeId {
+        let mut current = id;
+        for _ in 0..self.types.len() {
+            match self
+                .types
+                .get(current.index())
+                .and_then(|symbol| symbol.alias_of)
+            {
+                Some(next) if next != current => current = next,
+                _ => return current,
+            }
+        }
+        current
+    }
+
+    /// Resolves a type name occurrence and expands its alias chain.
+    pub fn resolve_type_expanded(&self, identifier: &Identifier) -> Option<TypeId> {
+        self.resolve_type(identifier)
+            .map(|id| self.expand_type_alias(id))
+    }
+
+    /// Resolves a type name in a scope and expands its alias chain.
+    pub fn resolve_type_in_scope_expanded(&self, scope: ScopeId, name: &str) -> Option<TypeId> {
+        self.resolve_type_in_scope(scope, name)
+            .map(|id| self.expand_type_alias(id))
+    }
+
     /// Returns the label bound to a goto or label name occurrence.
     #[inline]
     pub fn label_of(&self, identifier: &Identifier) -> Option<LabelId> {

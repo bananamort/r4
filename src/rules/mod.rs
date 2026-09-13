@@ -19,8 +19,8 @@ pub mod require;
 mod session;
 
 pub use formatting::{
-    append_text_comment, remove_comments, remove_comments_where, remove_spaces,
-    replace_referenced_tokens, shift_token_line, AppendLocation,
+    append_text_comment, append_text_comment_from_file, remove_comments, remove_comments_where,
+    remove_spaces, replace_referenced_tokens, shift_token_line, AppendLocation,
 };
 pub use inject::{inject_global_values, InjectGlobalValueError};
 pub use name_generator::NameGenerator;

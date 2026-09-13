@@ -16,10 +16,11 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::nodes::{
-    Block, Expression, LastStatement, Prefix, Statement, TableEntry, TableExpression, Variable,
+    Block, Expression, Identifier, LastStatement, Prefix, Statement, TableEntry, TableExpression,
+    Variable,
 };
 
-use super::{ScopeId, SemanticModel, SymbolId, TypeId};
+use super::{Scope, ScopeId, SemanticModel, SymbolId, SymbolKind, TypeId};
 
 /// Identifies a module inside a [`MultiModuleModel`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -30,6 +31,77 @@ impl ModuleId {
     #[inline]
     pub const fn index(self) -> usize {
         self.0 as usize
+    }
+}
+
+/// Canonical identity of an implicit global across every module.
+///
+/// Different modules model the same global environment with their own symbol
+/// arenas, so the raw [`SymbolId`] of `print` differs from module to module.
+/// The multi-module container unifies them into a single [`GlobalId`], which is
+/// the identity used by the unified scope hierarchy.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GlobalId(pub u32);
+
+impl GlobalId {
+    /// Returns this identifier as a `usize` index.
+    #[inline]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// A global symbol in the shared global scope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlobalSymbol {
+    /// The canonical identity of this global.
+    pub id: GlobalId,
+    /// The global's name.
+    pub name: String,
+}
+
+/// A scope in the unified hierarchy.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ScopeRef {
+    /// The shared global root scope.
+    Global,
+    /// A scope inside one module.
+    Module {
+        /// The module that owns the scope.
+        module: ModuleId,
+        /// The scope inside that module's model.
+        scope: ScopeId,
+    },
+}
+
+/// A symbol in the unified hierarchy.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SymbolRef {
+    /// A global, identified canonically across modules.
+    Global(GlobalId),
+    /// A lexical symbol owned by one module.
+    Local {
+        /// The module that owns the symbol.
+        module: ModuleId,
+        /// The symbol inside that module's model.
+        symbol: SymbolId,
+    },
+}
+
+impl SymbolRef {
+    /// Returns whether this symbol is a global.
+    #[inline]
+    pub const fn is_global(self) -> bool {
+        matches!(self, SymbolRef::Global(_))
+    }
+
+    /// Returns the module-local symbol, if this is a lexical symbol.
+    #[inline]
+    pub const fn as_local(self) -> Option<(ModuleId, SymbolId)> {
+        match self {
+            SymbolRef::Local { module, symbol } => Some((module, symbol)),
+            SymbolRef::Global(_) => None,
+        }
     }
 }
 
@@ -205,6 +277,9 @@ pub struct ModuleModel {
 #[derive(Default)]
 pub struct MultiModuleModel {
     modules: Vec<ModuleModel>,
+    globals: Vec<GlobalSymbol>,
+    global_index: HashMap<String, GlobalId>,
+    module_globals: Vec<HashMap<SymbolId, GlobalId>>,
 }
 
 impl fmt::Debug for MultiModuleModel {
@@ -232,6 +307,29 @@ impl MultiModuleModel {
         let interface = extract_interface(&block, &model)?;
         let id = ModuleId(self.modules.len() as u32);
         let file_scope = model.chunk_scope();
+
+        // Unify this module's implicit globals with the shared global scope so
+        // that the same global has one identity across every module.
+        let mut module_globals = HashMap::new();
+        for symbol in &model.symbols {
+            if symbol.kind != SymbolKind::Global {
+                continue;
+            }
+            let global = match self.global_index.get(&symbol.name) {
+                Some(&global) => global,
+                None => {
+                    let global = GlobalId(self.globals.len() as u32);
+                    self.globals.push(GlobalSymbol {
+                        id: global,
+                        name: symbol.name.clone(),
+                    });
+                    self.global_index.insert(symbol.name.clone(), global);
+                    global
+                }
+            };
+            module_globals.insert(symbol.id, global);
+        }
+
         self.modules.push(ModuleModel {
             id,
             key,
@@ -242,6 +340,7 @@ impl MultiModuleModel {
             imports: Vec::new(),
             dependencies: HashMap::new(),
         });
+        self.module_globals.push(module_globals);
         Ok(id)
     }
 
@@ -280,6 +379,118 @@ impl MultiModuleModel {
             .iter()
             .find(|module| module.key == key)
             .map(|module| module.id)
+    }
+
+    /// Returns the canonical identity of a global by name.
+    pub fn global_symbol(&self, name: &str) -> Option<GlobalId> {
+        self.global_index.get(name).copied()
+    }
+
+    /// Returns the global with the given canonical identity.
+    #[inline]
+    pub fn global(&self, id: GlobalId) -> &GlobalSymbol {
+        &self.globals[id.index()]
+    }
+
+    /// Iterates over the shared global symbols in discovery order.
+    pub fn globals(&self) -> impl Iterator<Item = &GlobalSymbol> {
+        self.globals.iter()
+    }
+
+    /// Returns the canonical identity of a module-local symbol when it is a
+    /// global.
+    pub fn global_of(&self, module: ModuleId, symbol: SymbolId) -> Option<GlobalId> {
+        self.module_globals[module.index()].get(&symbol).copied()
+    }
+
+    /// Returns whether two module-local symbols refer to the same global.
+    pub fn same_global(&self, left: (ModuleId, SymbolId), right: (ModuleId, SymbolId)) -> bool {
+        match (
+            self.global_of(left.0, left.1),
+            self.global_of(right.0, right.1),
+        ) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        }
+    }
+
+    /// Returns the root of the unified scope hierarchy.
+    #[inline]
+    pub fn root_scope(&self) -> ScopeRef {
+        ScopeRef::Global
+    }
+
+    /// Returns the file scope of a module.
+    pub fn file_scope(&self, module: ModuleId) -> ScopeRef {
+        ScopeRef::Module {
+            module,
+            scope: self.module(module).file_scope,
+        }
+    }
+
+    /// Returns the parent of a scope in the unified hierarchy.
+    ///
+    /// A module's global root scope has the shared [`ScopeRef::Global`] as its
+    /// parent, so traversal from any module scope reaches the single shared
+    /// global scope.
+    pub fn parent_scope(&self, scope: ScopeRef) -> Option<ScopeRef> {
+        let ScopeRef::Module {
+            module,
+            scope: inner,
+        } = scope
+        else {
+            return None;
+        };
+        let model = &self.module(module).model;
+        let root = model.root_scope();
+        if inner == root {
+            return Some(ScopeRef::Global);
+        }
+        let parent = model.scope(inner).parent?;
+        if parent == root {
+            Some(ScopeRef::Global)
+        } else {
+            Some(ScopeRef::Module {
+                module,
+                scope: parent,
+            })
+        }
+    }
+
+    /// Returns the scope a [`ScopeRef`] points at.
+    pub fn scope(&self, scope: ScopeRef) -> Option<&Scope> {
+        match scope {
+            ScopeRef::Global => None,
+            ScopeRef::Module { module, scope } => Some(self.module(module).model.scope(scope)),
+        }
+    }
+
+    /// Resolves a name starting from a scope in the unified hierarchy.
+    pub fn resolve_in_scope(&self, scope: ScopeRef, name: &str) -> Option<SymbolRef> {
+        match scope {
+            ScopeRef::Global => self.global_symbol(name).map(SymbolRef::Global),
+            ScopeRef::Module { module, scope } => {
+                let symbol = self.module(module).model.resolve_in_scope(scope, name)?;
+                Some(self.symbol_ref(module, symbol))
+            }
+        }
+    }
+
+    /// Resolves an identifier occurrence to a symbol in the unified hierarchy.
+    pub fn resolve_identifier(
+        &self,
+        module: ModuleId,
+        identifier: &Identifier,
+    ) -> Option<SymbolRef> {
+        let symbol = self.module(module).model.resolve_identifier(identifier)?;
+        Some(self.symbol_ref(module, symbol))
+    }
+
+    fn symbol_ref(&self, module: ModuleId, symbol: SymbolId) -> SymbolRef {
+        match self.global_of(module, symbol) {
+            Some(global) => SymbolRef::Global(global),
+            None => SymbolRef::Local { module, symbol },
+        }
     }
 
     /// Binds a local alias symbol to an imported module.

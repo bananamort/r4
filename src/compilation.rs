@@ -7,9 +7,19 @@
 //! resolution to [`ModuleResolver`]. It never implements scoping, symbol
 //! resolution or control flow itself, so the individual layers stay
 //! independently usable.
+//!
+//! Analysis is incremental: parsed and analyzed sources are kept in a
+//! content-addressed [`AnalysisCache`](crate::modules::AnalysisCache), so
+//! adding or updating a tree whose source is unchanged reuses the previous
+//! analysis, and resolving a module graph reuses the analyses of unchanged
+//! dependencies.
+
+use std::sync::Arc;
 
 use crate::diagnostic::{line_position_span, Diagnostic, LinePositionSpan, TextSpan};
-use crate::modules::{ModuleProvider, ModuleResolver, ResolvedModules};
+use crate::modules::{
+    AnalysisCache, AnalyzedModule, ModuleProvider, ModuleResolver, ResolvedModules,
+};
 use crate::nodes::{Block, Identifier};
 use crate::parser::Parser;
 use crate::semantic::{Binding, SemanticAnalyzer, SemanticModel, SemanticOptions};
@@ -29,37 +39,38 @@ impl TreeId {
     }
 }
 
-/// A parsed and analyzed syntax tree together with its source.
+/// A parsed and analyzed syntax tree.
+///
+/// Trees with identical source share their analysis, so cloning a
+/// [`SyntaxTree`] is cheap.
 #[derive(Clone, Debug)]
 pub struct SyntaxTree {
-    source: String,
-    block: Block,
-    model: SemanticModel,
+    inner: Arc<AnalyzedModule>,
 }
 
 impl SyntaxTree {
     /// Returns the source text this tree was parsed from.
     #[inline]
     pub fn source(&self) -> &str {
-        &self.source
+        &self.inner.source
     }
 
     /// Returns the syntax tree.
     #[inline]
     pub fn block(&self) -> &Block {
-        &self.block
+        &self.inner.block
     }
 
     /// Returns the semantic model of [`Self::block`].
     #[inline]
     pub fn model(&self) -> &SemanticModel {
-        &self.model
+        &self.inner.model
     }
 
     /// Converts a byte span into a one-based line/column span using this tree's
     /// source.
     pub fn location(&self, span: TextSpan) -> LinePositionSpan {
-        line_position_span(&self.source, span)
+        line_position_span(&self.inner.source, span)
     }
 }
 
@@ -70,7 +81,7 @@ impl SyntaxTree {
 ///
 /// let mut compilation = Compilation::new();
 /// let tree = compilation.add_tree("local x = 1\nreturn x").expect("valid code");
-/// assert_eq!(compilation.tree(tree).unwrap().block().get_last_statement().is_some(), true);
+/// assert!(compilation.tree(tree).unwrap().block().get_last_statement().is_some());
 /// assert!(compilation.diagnostics().is_empty());
 /// ```
 #[derive(Default)]
@@ -79,6 +90,7 @@ pub struct Compilation {
     options: SemanticOptions,
     trees: Vec<SyntaxTree>,
     diagnostics: Vec<Diagnostic>,
+    cache: AnalysisCache,
 }
 
 impl Compilation {
@@ -127,10 +139,68 @@ impl Compilation {
 
     /// Parses and analyzes `source`, storing the tree on success.
     ///
-    /// On failure the corresponding [`Diagnostic`] is recorded and returned.
+    /// Identical sources reuse a cached analysis. On failure the corresponding
+    /// [`Diagnostic`] is recorded and returned.
     pub fn add_tree(&mut self, source: impl Into<String>) -> Result<TreeId, Diagnostic> {
         let source = source.into();
+        let analyzed = match self.cache.get(&source) {
+            Some(cached) => cached,
+            None => self.analyze(source)?,
+        };
+        Ok(self.push(analyzed))
+    }
 
+    /// Replaces the source of an existing tree, analyzing only when it changed.
+    ///
+    /// The tree keeps its identifier. On failure the diagnostic is recorded and
+    /// the previous tree is left untouched.
+    pub fn update_tree(&mut self, id: TreeId, source: impl Into<String>) -> Result<(), Diagnostic> {
+        let source = source.into();
+        if self.tree(id).map(SyntaxTree::source) == Some(source.as_str()) {
+            return Ok(());
+        }
+        let analyzed = match self.cache.get(&source) {
+            Some(cached) => cached,
+            None => self.analyze(source)?,
+        };
+        self.trees[id.index()] = SyntaxTree { inner: analyzed };
+        Ok(())
+    }
+
+    /// Re-analyzes a tree whose block was mutated in place.
+    ///
+    /// The source cache is not repopulated, because the mutated block no longer
+    /// corresponds to its original source. On failure the diagnostic is
+    /// recorded and the previous tree is left untouched.
+    pub fn refresh_tree(&mut self, id: TreeId) -> Result<(), Diagnostic> {
+        let Some(tree) = self.tree(id) else {
+            let diagnostic = Diagnostic::error(format!("unknown tree identifier {:?}", id))
+                .with_code("compile/unknown-tree");
+            self.diagnostics.push(diagnostic.clone());
+            return Err(diagnostic);
+        };
+
+        let source = tree.source().to_owned();
+        let block = tree.block().clone();
+        let model = match SemanticAnalyzer::with_options(self.options.clone()).analyze(&block) {
+            Ok(model) => model,
+            Err(error) => {
+                let diagnostic = error.to_diagnostic().resolve_location(&source);
+                self.diagnostics.push(diagnostic.clone());
+                return Err(diagnostic);
+            }
+        };
+
+        let analyzed = Arc::new(AnalyzedModule {
+            source,
+            block,
+            model,
+        });
+        self.trees[id.index()] = SyntaxTree { inner: analyzed };
+        Ok(())
+    }
+
+    fn analyze(&mut self, source: String) -> Result<Arc<AnalyzedModule>, Diagnostic> {
         let block = match self.parser.parse(&source) {
             Ok(block) => block,
             Err(error) => {
@@ -149,13 +219,17 @@ impl Compilation {
             }
         };
 
-        let id = TreeId(self.trees.len() as u32);
-        self.trees.push(SyntaxTree {
+        Ok(self.cache.insert(AnalyzedModule {
             source,
             block,
             model,
-        });
-        Ok(id)
+        }))
+    }
+
+    fn push(&mut self, analyzed: Arc<AnalyzedModule>) -> TreeId {
+        let id = TreeId(self.trees.len() as u32);
+        self.trees.push(SyntaxTree { inner: analyzed });
+        id
     }
 
     /// Returns the tree with the given identifier, if any.
@@ -182,6 +256,17 @@ impl Compilation {
         self.tree(id).map(SyntaxTree::source)
     }
 
+    /// Returns a mutable reference to the tree's block for in-place edits.
+    ///
+    /// The tree's analysis is detached copy-on-write, so editing one tree never
+    /// affects another tree that shares the same source. Call
+    /// [`Self::refresh_tree`] afterwards to re-analyze the mutated block.
+    pub fn block_mut(&mut self, id: TreeId) -> Option<&mut Block> {
+        self.trees
+            .get_mut(id.index())
+            .map(|tree| &mut Arc::make_mut(&mut tree.inner).block)
+    }
+
     /// Returns the number of trees.
     #[inline]
     pub fn len(&self) -> usize {
@@ -197,6 +282,19 @@ impl Compilation {
     /// Iterates over the tree identifiers in insertion order.
     pub fn iter_ids(&self) -> impl Iterator<Item = TreeId> {
         (0..self.trees.len() as u32).map(TreeId)
+    }
+
+    /// Returns the number of cached analyses.
+    #[inline]
+    pub fn cache_len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Removes every cached analysis.
+    ///
+    /// Existing trees keep their own shared analysis.
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
     }
 
     /// Returns the diagnostics recorded so far.
@@ -224,8 +322,9 @@ impl Compilation {
     /// Resolves the module graph starting from `root` using `provider`.
     ///
     /// The root tree is cloned into the returned graph; the compilation keeps
-    /// its own copy. Any error is recorded as a [`Diagnostic`] before it is
-    /// returned.
+    /// its own copy. Unchanged dependency sources reuse the analysis cache, so
+    /// re-resolving after editing a single file only re-analyzes that file. Any
+    /// error is recorded as a [`Diagnostic`] before it is returned.
     pub fn resolve_modules<P: ModuleProvider>(
         &mut self,
         root: TreeId,
@@ -245,7 +344,12 @@ impl Compilation {
             .expect("the tree exists, so its model exists")
             .clone();
 
-        match ModuleResolver::new(provider).resolve(block, model, ROOT_KEY) {
+        match ModuleResolver::new(provider).resolve_with_cache(
+            block,
+            model,
+            ROOT_KEY,
+            &mut self.cache,
+        ) {
             Ok(resolved) => Ok(resolved),
             Err(error) => {
                 let diagnostic = error.to_diagnostic();
@@ -261,6 +365,7 @@ impl std::fmt::Debug for Compilation {
         f.debug_struct("Compilation")
             .field("trees", &self.trees.len())
             .field("diagnostics", &self.diagnostics.len())
+            .field("cache", &self.cache.len())
             .finish()
     }
 }

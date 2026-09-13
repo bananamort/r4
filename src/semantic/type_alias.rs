@@ -13,4 +13,11 @@ pub struct TypeSymbol {
     pub declaring_scope: ScopeId,
     /// Whether the declaration used the `export` modifier.
     pub is_exported: bool,
+    /// The type this alias directly refers to when it was declared as a bare
+    /// alias such as `type A = B`.
+    ///
+    /// Structural aliases (`type A = { x: number }`), generic aliases and
+    /// self-referential declarations leave this `None`. Follow the chain with
+    /// [`SemanticModel::expand_type_alias`](crate::semantic::SemanticModel::expand_type_alias).
+    pub alias_of: Option<TypeId>,
 }

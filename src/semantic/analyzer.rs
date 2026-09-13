@@ -82,7 +82,8 @@ pub(super) struct AnalyzerState {
     pub(super) global_symbols: HashMap<String, SymbolId>,
     pub(super) uses: Vec<Vec<SymbolUse>>,
     pub(super) types: Vec<TypeSymbol>,
-    pub(super) scope_types: Vec<HashMap<String, TypeId>>,
+    pub(super) scope_type_declarations: Vec<Vec<(String, TypeId)>>,
+    pub(super) type_declaration_cursors: Vec<usize>,
     pub(super) type_parameter_scopes: Vec<Vec<String>>,
     pub(super) next_block_identity: u32,
     pub(super) root_scope: ScopeId,
@@ -104,7 +105,8 @@ impl AnalyzerState {
             global_symbols: HashMap::new(),
             uses: Vec::new(),
             types: Vec::new(),
-            scope_types: Vec::new(),
+            scope_type_declarations: Vec::new(),
+            type_declaration_cursors: Vec::new(),
             type_parameter_scopes: Vec::new(),
             next_block_identity: 0,
             root_scope: ScopeId(0),
@@ -156,18 +158,20 @@ impl AnalyzerState {
         });
         self.scope_symbols.push(HashMap::new());
         self.scope_labels.push(HashMap::new());
-        self.scope_types.push(HashMap::new());
+        self.scope_type_declarations.push(Vec::new());
 
         if let Some(parent) = parent {
             self.scopes[parent.index()].children.push(id);
         }
 
         self.scope_stack.push(id);
+        self.type_declaration_cursors.push(0);
         id
     }
 
     pub(super) fn pop_scope(&mut self) {
         self.scope_stack.pop();
+        self.type_declaration_cursors.pop();
     }
 
     #[inline]
@@ -287,9 +291,10 @@ impl AnalyzerState {
             name: name.to_string(),
             declaring_scope: scope,
             is_exported,
+            alias_of: None,
         });
         self.scopes[scope.index()].types.push(id);
-        self.scope_types[scope.index()].insert(name.to_string(), id);
+        self.scope_type_declarations[scope.index()].push((name.to_string(), id));
 
         if let Some(identifier) = identifier {
             identifier.set_binding(id.as_binding());
@@ -299,11 +304,31 @@ impl AnalyzerState {
     }
 
     /// Looks up a type name in the active scope chain without recording a use.
+    ///
+    /// Resolution is position aware. Within one scope, an occurrence binds to
+    /// the most recent declaration that precedes it; if the name is only
+    /// declared later in the scope, the occurrence forward-references that
+    /// declaration (Luau type aliases are not order sensitive). A name declared
+    /// in an inner scope shadows any outer declaration.
     pub(super) fn lookup_type_name(&self, name: &str) -> Option<TypeId> {
         for index in (0..self.scope_stack.len()).rev() {
             let scope_id = self.scope_stack[index];
-            if let Some(&id) = self.scope_types[scope_id.index()].get(name) {
-                return Some(id);
+            let declarations = &self.scope_type_declarations[scope_id.index()];
+            let seen = self.type_declaration_cursors[index].min(declarations.len());
+
+            if let Some((_, id)) = declarations[..seen]
+                .iter()
+                .rev()
+                .find(|(declared, _)| declared == name)
+            {
+                return Some(*id);
+            }
+
+            if let Some((_, id)) = declarations[seen..]
+                .iter()
+                .find(|(declared, _)| declared == name)
+            {
+                return Some(*id);
             }
         }
         None

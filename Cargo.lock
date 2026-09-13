@@ -1060,6 +1060,7 @@ dependencies = [
  "pretty_assertions",
  "rand",
  "rand_distr",
+ "serde",
  "tracing",
 ]
 

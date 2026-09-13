@@ -598,6 +598,19 @@ pub fn append_text_comment(block: &mut Block, text: &str, location: AppendLocati
     }
 }
 
+/// Appends the contents of a file as a comment at the start or end of `block`.
+///
+/// This is the file-backed counterpart of [`append_text_comment`].
+pub fn append_text_comment_from_file(
+    block: &mut Block,
+    path: impl AsRef<std::path::Path>,
+    location: AppendLocation,
+) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    append_text_comment(block, &text, location);
+    Ok(())
+}
+
 fn format_comment(text: &str) -> String {
     if !text.contains('\n') {
         return format!("--{text}");
