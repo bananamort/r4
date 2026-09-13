@@ -574,10 +574,17 @@ Semantic tracking now goes beyond single scalars:
   sound because a confined table can never receive a metatable, so no
   `__newindex` can observe the write.
 
-Full static linking of exported module values (hoisting exported value symbols
-rather than accessing them through the returned table) remains future work: the
-runtime loader is already semantically exact, so this would be a performance
-optimization rather than a correctness fix.
+Static linking of exported module values is implemented in
+`rules::require` (`link::link_exported_values`, run by `bundle_modules`). When
+a module returns an inline table whose fields are backed by immutable locals,
+and every local alias of the required module is immutable, uncaptured, never
+field-written, never dynamically written and never escapes (including through a
+non-alias `require(...)` use), the bundler mints a root-level local per linked
+export, captures the value right before the exporting module returns, and
+rewrites `alias.field`/`alias["field"]` reads to that local. The runtime loader
+and the returned tables are left in place, so method calls, dynamic indexing and
+loader caching keep working exactly as before; a rewrite that cannot be proven
+equivalent is simply skipped.
 
 ### Scope notes (outside the audited items)
 

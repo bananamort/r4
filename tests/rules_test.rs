@@ -1165,11 +1165,15 @@ fn bundles_required_modules() {
         .analyze(&reparsed)
         .expect("bundled code must analyze");
     assert!(
+        new_model.symbols.iter().any(|symbol| symbol.name == "math"),
+        "the module binding must still be declared: {output}"
+    );
+    assert!(
         new_model
             .symbols
             .iter()
-            .any(|symbol| symbol.name == "math" && symbol.read_count >= 1),
-        "the bundled code must keep the module binding: {output}"
+            .any(|symbol| symbol.name == "__R4_VALUE_math_add" && symbol.read_count >= 1),
+        "the exported value must be statically linked and read: {output}"
     );
 }
 

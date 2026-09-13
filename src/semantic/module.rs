@@ -50,6 +50,13 @@ pub struct ModuleInterface {
     pub values: HashMap<String, Option<SymbolId>>,
     /// The single returned value, when the module returns a non-table symbol.
     pub value: Option<SymbolId>,
+    /// The local table symbol returned by the module, when the module returns a
+    /// variable built by mutation rather than an inline table constructor.
+    ///
+    /// Inline returned tables leave this `None`; they are the only shape whose
+    /// exported fields can be statically linked, because an inline table cannot
+    /// be mutated from inside the module.
+    pub table_symbol: Option<SymbolId>,
     /// Exported type aliases by name.
     pub types: HashMap<String, TypeId>,
 }
@@ -483,6 +490,8 @@ pub fn extract_interface(
 
             if !table_backed {
                 interface.value = Some(symbol);
+            } else {
+                interface.table_symbol = Some(symbol);
             }
         }
         _ => {}

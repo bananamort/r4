@@ -27,6 +27,7 @@ use crate::semantic::{
 };
 
 use super::convert::{convert_require, ConvertRequireError, RequirePathConverter};
+use super::link;
 
 /// The key used for the entry chunk in the resolved module graph.
 const ROOT_KEY: &str = "<root>";
@@ -194,6 +195,7 @@ fn bundle_graph(resolved: ResolvedModules) -> Result<Block, BundleError> {
     }
 
     validate_cross_module_types(&graph, &order, root)?;
+    let linked_values = link::link_exported_values(&mut graph, root, &order, &mut names);
     let hoisted_types = hoist_exported_types(&mut graph, root, &order, &mut names)?;
 
     let modules_name = names.generate_with_prefix("__R4_MODULES");
@@ -238,7 +240,8 @@ fn bundle_graph(resolved: ResolvedModules) -> Result<Block, BundleError> {
     }
 
     let mut root_block = mem::take(&mut graph.module_mut(root).block);
-    let mut statements = hoisted_types;
+    let mut statements = linked_values;
+    statements.extend(hoisted_types);
     statements.extend(definitions);
     statements.extend(root_block.take_statements());
     root_block.set_statements(statements);

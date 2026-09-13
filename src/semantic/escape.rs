@@ -30,7 +30,16 @@ pub struct SymbolEscape {
     /// Whether the symbol is initialized from a table constructor.
     pub is_table: bool,
     /// Whether the symbol may be observed as a value by other code.
+    ///
+    /// This includes plain local copies (`local b = a`), which are recorded in
+    /// [`Self::local_copies`]; consumers that can reason about copies (such as
+    /// the static linker) should use [`Self::hard_escapes`] instead.
     pub escapes: bool,
+    /// Number of occurrences that genuinely expose the symbol: arguments,
+    /// returns, comparisons, call targets and method calls.
+    pub hard_escapes: usize,
+    /// Number of plain local copies (`local b = a`).
+    pub local_copies: usize,
     /// Whether the symbol is read through a non-static index (`t[expr]`).
     pub has_dynamic_read: bool,
     /// Whether the symbol is written through a non-static index (`t[expr] = v`).
@@ -95,6 +104,14 @@ impl EscapeAnalysis {
             .unwrap_or(false)
     }
 
+    /// Returns whether `symbol` is written through a dynamic index.
+    pub fn has_dynamic_write(&self, symbol: SymbolId) -> bool {
+        self.symbols
+            .get(&symbol)
+            .map(|info| info.has_dynamic_write)
+            .unwrap_or(false)
+    }
+
     /// Returns whether `symbol` may escape.
     pub fn escapes(&self, symbol: SymbolId) -> bool {
         self.symbols
@@ -123,7 +140,15 @@ impl EscapeAnalyzer<'_> {
     }
 
     fn mark_escape(&mut self, symbol: SymbolId) {
-        self.entry(symbol).escapes = true;
+        let entry = self.entry(symbol);
+        entry.escapes = true;
+        entry.hard_escapes += 1;
+    }
+
+    fn mark_local_copy(&mut self, symbol: SymbolId) {
+        let entry = self.entry(symbol);
+        entry.escapes = true;
+        entry.local_copies += 1;
     }
 
     fn symbol(&self, identifier: &crate::nodes::Identifier) -> Option<SymbolId> {
@@ -211,6 +236,12 @@ impl EscapeAnalyzer<'_> {
         }
 
         for value in assignment.iter_values() {
+            if let Expression::Identifier(identifier) = value {
+                if let Some(symbol) = self.symbol(identifier) {
+                    self.mark_local_copy(symbol);
+                    continue;
+                }
+            }
             self.analyze_value(value);
         }
     }

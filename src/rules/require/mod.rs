@@ -9,6 +9,7 @@
 mod alias;
 mod bundler;
 mod convert;
+mod link;
 
 pub use alias::{apply_path_aliases, AliasError, AliasRequireConverter};
 pub use bundler::{bundle_modules, BundleError};
