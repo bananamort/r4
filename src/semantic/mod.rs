@@ -26,7 +26,7 @@ pub use analyzer::is_builtin_type_name;
 pub use analyzer::SemanticAnalyzer;
 pub use error::{SemanticError, SemanticErrorKind, SemanticOptions, SemanticResult};
 pub use escape::{EscapeAnalysis, SymbolEscape};
-pub use label::{GotoBinding, GotoLabel, GotoSite, LabelId};
+pub use label::{GotoBinding, GotoLabel, GotoSite, LabelId, VisibleScopes};
 pub use model::{Binding, SemanticModel};
 pub use module::{
     extract_interface, ExportValue, GlobalId, GlobalSymbol, ImportBinding, ModuleError, ModuleId,

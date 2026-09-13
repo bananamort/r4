@@ -236,6 +236,7 @@ fn resolve_module_alias(
 fn non_alias_require_targets(module: &ModuleModel) -> HashSet<ModuleId> {
     let mut collector = NonAliasRequires {
         model: &module.model,
+        module_key: &module.key,
         dependencies: &module.dependencies,
         pending_alias: false,
         targets: HashSet::new(),
@@ -247,6 +248,7 @@ fn non_alias_require_targets(module: &ModuleModel) -> HashSet<ModuleId> {
 
 struct NonAliasRequires<'a> {
     model: &'a SemanticModel,
+    module_key: &'a str,
     dependencies: &'a HashMap<String, ModuleId>,
     pending_alias: bool,
     targets: HashSet<ModuleId>,
@@ -254,10 +256,26 @@ struct NonAliasRequires<'a> {
 
 impl NonAliasRequires<'_> {
     fn check_call(&mut self, call: &crate::nodes::FunctionCall) {
-        if let RequireCall::Path { path } = classify_require_call(call, self.model) {
-            if let Some(&target) = self.dependencies.get(&path) {
-                self.targets.insert(target);
+        let key = match classify_require_call(call, self.model) {
+            RequireCall::Path { path } => path,
+            RequireCall::Instance { segments } => {
+                match crate::modules::resolve_instance_path(self.module_key, &segments) {
+                    Some(resolved) => resolved,
+                    None => {
+                        // An unresolved instance require is reported by the
+                        // resolver; it cannot be statically linked.
+                        for target in self.dependencies.values() {
+                            self.targets.insert(*target);
+                        }
+                        return;
+                    }
+                }
             }
+            RequireCall::NotRequire | RequireCall::NonLiteral => return,
+        };
+
+        if let Some(&target) = self.dependencies.get(&key) {
+            self.targets.insert(target);
         }
     }
 }
@@ -292,7 +310,10 @@ fn is_alias_require(assignment: &VariableAssignment, model: &SemanticModel) -> b
     matches!(
         assignment.iter_values().next(),
         Some(Expression::Call(call))
-            if matches!(classify_require_call(call, model), RequireCall::Path { .. })
+            if matches!(
+                classify_require_call(call, model),
+                RequireCall::Path { .. } | RequireCall::Instance { .. }
+            )
     )
 }
 

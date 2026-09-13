@@ -401,10 +401,11 @@ yet. They are now ported with strict semantics:
 Every one of these is verified in `tests/differential_test.rs` against the
 published `darklua` crate, with byte-identical parity on clean inputs and
 explicit better-output assertions for the folding and shadowing hazards. The
-remaining darklua rules are intentionally out of scope: the token/formatting
-rules (`remove_comments`, `remove_spaces`, `append_text_comment`), the
-configuration-driven `InjectGlobalValue`, and `ConvertRequire`/`Bundle` (r4
-exposes different model-first APIs). The dead-code rules
+token/formatting rules (`remove_comments`, `remove_spaces`, `append_text_comment`,
+`replace_referenced_tokens`, `shift_token_line`) are implemented in
+`rules::formatting` rather than as configuration-driven rules, and
+`ConvertRequire`/`Bundle` are replaced by the model-first
+`convert_require`/`bundle_modules` APIs. The dead-code rules
 `FilterAfterEarlyReturn`/`RemoveUnusedIfBranch`/`RemoveUnusedWhile` are
 superseded by `remove_unreachable_code`.
 
@@ -444,12 +445,10 @@ fixed the following:
   verifies symbol/scope arena integrity, block identity uniqueness and CFG
   edge/origin invariants.
 
-The one remaining complexity note: `GotoSite::visible_symbols` and
-`GotoLabel::visible_symbols` snapshot the locals visible at each goto/label, so
-a Lua 5.2 file with many locals *and* many gotos is `O(gotos * locals)` in the
-worst case. This is bounded by the language's goto usage in practice; shrinking
-it further would require a cursor-based visibility representation and a change
-to the public `visible_symbols` fields.
+`GotoSite::visible_symbols` and `GotoLabel::visible_symbols` are recorded as
+`VisibleScopes` cursor snapshots (the number of visible symbols per active
+scope), so recording and checking goto visibility is `O(active scopes)` instead
+of `O(locals)` per goto and no longer quadratic on goto-heavy files.
 
 ### Compiler-as-a-service API expansion
 
@@ -585,6 +584,42 @@ rewrites `alias.field`/`alias["field"]` reads to that local. The runtime loader
 and the returned tables are left in place, so method calls, dynamic indexing and
 loader caching keep working exactly as before; a rewrite that cannot be proven
 equivalent is simply skipped.
+
+### Unified hierarchy, incremental analysis and frontend parity
+
+- **Unified scope hierarchy.** `MultiModuleModel` unifies the implicit globals
+  of every module into canonical `GlobalId`s (`GlobalSymbol`, `global_of`,
+  `same_global`) and exposes a single scope hierarchy (`ScopeRef`, `SymbolRef`,
+  `root_scope`, `file_scope`, `parent_scope`, `resolve_in_scope`,
+  `resolve_identifier`). A module's global root scope is a child of the one
+  shared global scope, so the same global has one identity everywhere.
+- **Type environment.** Type declarations are hoisted per block and type-name
+  resolution is position aware: an occurrence binds to the nearest preceding
+  declaration, or forward-references the next declaration in the same scope, so
+  forward and mutually recursive Luau type aliases resolve under strict typing
+  while same-scope redeclarations keep positional bindings. Bare aliases record
+  their target (`TypeSymbol::alias_of`) and expand without re-analysis
+  (`expand_type_alias`, `resolve_type_expanded`).
+- **Incremental analysis.** `modules::AnalysisCache` stores parsed and analyzed
+  sources keyed by a re-validated content hash; `resolve_with_cache` reuses
+  unchanged dependency analyses, and `Compilation` caches `add_tree`/
+  `update_tree`, exposes copy-on-write `block_mut` plus `refresh_tree` for
+  in-place edits, and resolves module graphs through the shared cache.
+- **Data conversion.** `convert::convert_data`/`to_expression` turn any
+  `serde::Serialize` value into a Lua expression/module (the library counterpart
+  of darklua's `convert` command), covering sequences, maps, structs, tuples and
+  externally tagged enums.
+- **Filesystem and Roblox requires.** `modules::FileSystemModuleProvider`
+  resolves `<root>/<key>.lua|.luau` and folder modules (`<root>/<key>/init.lua`),
+  rejecting keys that escape the root. `classify_require_call` recognizes
+  Roblox/Luau instance requires (`require(script.Parent.Util)`,
+  `:FindFirstChild`/`:WaitForChild`) and `resolve_instance_path` maps them to
+  module keys using the Rojo file layout; the resolver, alias binding, bundler
+  and static linker all handle them end to end. A `game:GetService` root cannot
+  be resolved without a project mapping, so it fails fast as a non-literal
+  require rather than being guessed.
+- **Goto visibility.** `VisibleScopes` records the visible symbol count per
+  active scope, replacing the per-goto symbol snapshots.
 
 ### Scope notes (outside the audited items)
 

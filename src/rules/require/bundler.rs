@@ -219,6 +219,7 @@ fn bundle_graph(resolved: ResolvedModules) -> Result<Block, BundleError> {
         let converter = LoaderConverter {
             load: load_name.clone(),
             base_directory: crate::modules::parent_directory(&path),
+            module_key: path.clone(),
         };
         {
             let module = graph.module_mut(module_id);
@@ -233,6 +234,7 @@ fn bundle_graph(resolved: ResolvedModules) -> Result<Block, BundleError> {
         let converter = LoaderConverter {
             load: load_name,
             base_directory: String::new(),
+            module_key: ROOT_KEY.to_owned(),
         };
         let module = graph.module_mut(root);
         convert_require(&mut module.block, &module.model, &converter)
@@ -575,11 +577,21 @@ fn rename_block(
 struct LoaderConverter {
     load: String,
     base_directory: String,
+    module_key: String,
 }
 
 impl RequirePathConverter for LoaderConverter {
     fn convert(&self, path: &str) -> Option<Expression> {
         let normalized = crate::modules::normalize_require_path(path, &self.base_directory);
+        Some(
+            FunctionCall::from_name(self.load.clone())
+                .with_argument(StringExpression::from_value(normalized))
+                .into(),
+        )
+    }
+
+    fn convert_instance(&self, segments: &[crate::modules::InstanceSegment]) -> Option<Expression> {
+        let normalized = crate::modules::resolve_instance_path(&self.module_key, segments)?;
         Some(
             FunctionCall::from_name(self.load.clone())
                 .with_argument(StringExpression::from_value(normalized))

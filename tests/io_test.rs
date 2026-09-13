@@ -41,11 +41,34 @@ fn filesystem_provider_reads_nested_modules() {
 }
 
 #[test]
+fn filesystem_provider_resolves_folder_modules_and_extensions() {
+    let root = scratch_directory("folders");
+    fs::create_dir_all(root.join("pkg/mod")).expect("folder module directory");
+    fs::write(root.join("pkg/mod/init.lua"), "return 'folder'").expect("init file");
+    fs::write(root.join("pkg/typed.luau"), "return 'typed'").expect("luau file");
+
+    let provider = FileSystemModuleProvider::new(&root);
+    assert_eq!(provider.load("pkg/mod").as_deref(), Some("return 'folder'"));
+    assert_eq!(
+        provider.load("pkg/typed").as_deref(),
+        Some("return 'typed'")
+    );
+
+    // The folder module candidate is listed after the flat files.
+    let candidates = provider.candidate_paths("pkg/mod");
+    assert_eq!(candidates.first(), Some(&root.join("pkg").join("mod.lua")));
+    assert!(candidates.contains(&root.join("pkg").join("mod").join("init.lua")));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn filesystem_provider_rejects_escaping_keys() {
     let provider = FileSystemModuleProvider::new("/tmp/r4-root");
     assert_eq!(provider.path_for("../secret"), None);
     assert_eq!(provider.path_for("pkg/../../secret"), None);
-    assert!(provider.path_for("pkg/util").is_some());
+    assert!(provider.candidate_paths("../secret").is_empty());
+    assert!(!provider.candidate_paths("pkg/util").is_empty());
 }
 
 #[test]

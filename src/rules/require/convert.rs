@@ -5,7 +5,7 @@ use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::semantic::SemanticModel;
 use crate::utils::expressions_as_statement;
 
-use crate::modules::{classify_require_call, require_call_line, RequireCall};
+use crate::modules::{classify_require_call, require_call_line, InstanceSegment, RequireCall};
 
 /// An error produced while converting `require` calls.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +42,15 @@ impl std::error::Error for ConvertRequireError {}
 pub trait RequirePathConverter {
     /// Returns the expression that replaces `require(path)`.
     fn convert(&self, path: &str) -> Option<Expression>;
+
+    /// Returns the expression that replaces a Roblox/Luau instance `require`.
+    ///
+    /// The default leaves instance requires untouched; implementations that
+    /// understand the project's file layout override this.
+    fn convert_instance(&self, segments: &[InstanceSegment]) -> Option<Expression> {
+        let _ = segments;
+        None
+    }
 }
 
 /// Rewrites every `require("<path>")` call whose prefix resolves to the global
@@ -78,10 +87,11 @@ struct Processor<'a, C> {
 
 impl<C: RequirePathConverter> Processor<'_, C> {
     /// Classifies a call without holding a borrow across the rewrite.
-    fn classify(&mut self, call: &FunctionCall) -> Option<String> {
+    fn classify(&mut self, call: &FunctionCall) -> Option<Classified> {
         match classify_require_call(call, self.model) {
             RequireCall::NotRequire => None,
-            RequireCall::Path { path } => Some(path),
+            RequireCall::Path { path } => Some(Classified::Path(path)),
+            RequireCall::Instance { segments } => Some(Classified::Instance(segments)),
             RequireCall::NonLiteral => {
                 self.error
                     .get_or_insert(ConvertRequireError::NonLiteralRequireArgument {
@@ -91,6 +101,18 @@ impl<C: RequirePathConverter> Processor<'_, C> {
             }
         }
     }
+
+    fn replacement(&self, classified: Classified) -> Option<Expression> {
+        match classified {
+            Classified::Path(path) => self.converter.convert(&path),
+            Classified::Instance(segments) => self.converter.convert_instance(&segments),
+        }
+    }
+}
+
+enum Classified {
+    Path(String),
+    Instance(Vec<InstanceSegment>),
 }
 
 impl<C: RequirePathConverter> NodeProcessor for Processor<'_, C> {
@@ -98,13 +120,13 @@ impl<C: RequirePathConverter> NodeProcessor for Processor<'_, C> {
         let Expression::Call(call) = expression else {
             return;
         };
-        let Some(path) = self.classify(call) else {
+        let Some(classified) = self.classify(call) else {
             return;
         };
         if self.error.is_some() {
             return;
         }
-        if let Some(replacement) = self.converter.convert(&path) {
+        if let Some(replacement) = self.replacement(classified) {
             *expression = replacement;
             self.converted += 1;
         }
@@ -114,13 +136,13 @@ impl<C: RequirePathConverter> NodeProcessor for Processor<'_, C> {
         let Statement::Call(call) = statement else {
             return;
         };
-        let Some(path) = self.classify(call) else {
+        let Some(classified) = self.classify(call) else {
             return;
         };
         if self.error.is_some() {
             return;
         }
-        if let Some(replacement) = self.converter.convert(&path) {
+        if let Some(replacement) = self.replacement(classified) {
             *statement = expressions_as_statement(vec![replacement]);
             self.converted += 1;
         }

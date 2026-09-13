@@ -63,30 +63,53 @@ impl ModuleProvider for MemoryModuleProvider {
 /// A [`ModuleProvider`] backed by a real directory tree.
 ///
 /// A normalized module key such as `pkg/util` maps to `<root>/pkg/util.<ext>`
-/// (or `<root>/pkg/util` when the key already ends with the extension). Keys
+/// (trying each configured extension, defaulting to `lua` then `luau`), or to a
+/// folder module `<root>/pkg/util/<folder>.<ext>` (defaulting to `init`). Keys
 /// that would escape `root` through `..` components are rejected, so a
 /// malicious `require` cannot read arbitrary files.
 #[derive(Clone, Debug)]
 pub struct FileSystemModuleProvider {
     root: PathBuf,
-    extension: String,
+    extensions: Vec<String>,
+    module_folders: Vec<String>,
 }
 
 impl FileSystemModuleProvider {
-    /// Creates a provider reading `<root>/<key>.lua`.
+    /// Creates a provider resolving `<root>/<key>.lua` and `<root>/<key>.luau`,
+    /// falling back to `<root>/<key>/init.lua` and `<root>/<key>/init.luau`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            extension: "lua".to_owned(),
+            extensions: vec!["lua".to_owned(), "luau".to_owned()],
+            module_folders: vec!["init".to_owned()],
         }
     }
 
-    /// Creates a provider reading `<root>/<key>.<extension>`.
+    /// Creates a provider restricted to a single extension.
     pub fn with_extension(root: impl Into<PathBuf>, extension: impl Into<String>) -> Self {
         Self {
             root: root.into(),
-            extension: extension.into(),
+            extensions: vec![extension.into()],
+            module_folders: vec!["init".to_owned()],
         }
+    }
+
+    /// Replaces the list of file extensions that are tried, in order.
+    pub fn with_extensions(
+        mut self,
+        extensions: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.extensions = extensions.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Replaces the folder module file names that are tried, in order.
+    pub fn with_module_folders(
+        mut self,
+        folders: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.module_folders = folders.into_iter().map(Into::into).collect();
+        self
     }
 
     /// Returns the root directory.
@@ -95,15 +118,49 @@ impl FileSystemModuleProvider {
         &self.root
     }
 
-    /// Returns the file extension used by this provider.
+    /// Returns the first configured file extension.
     #[inline]
     pub fn extension(&self) -> &str {
-        &self.extension
+        self.extensions.first().map(String::as_str).unwrap_or("")
     }
 
-    /// Resolves a module key to a path inside the root, or `None` when the key
-    /// escapes the root.
+    /// Returns the extensions that are tried, in order.
+    #[inline]
+    pub fn extensions(&self) -> &[String] {
+        &self.extensions
+    }
+
+    /// Returns every candidate path for a module key, in resolution order.
+    ///
+    /// Returns an empty list when the key would escape the root.
+    pub fn candidate_paths(&self, key: &str) -> Vec<PathBuf> {
+        let Some(base) = self.safe_join(key) else {
+            return Vec::new();
+        };
+
+        let mut candidates = Vec::new();
+        if Path::new(key).extension().is_some() {
+            candidates.push(base.clone());
+        }
+        for extension in &self.extensions {
+            candidates.push(base.with_extension(extension));
+        }
+        for folder in &self.module_folders {
+            for extension in &self.extensions {
+                candidates.push(base.join(folder).with_extension(extension));
+            }
+        }
+        candidates
+    }
+
+    /// Resolves a module key to the first existing candidate path.
     pub fn path_for(&self, key: &str) -> Option<PathBuf> {
+        self.candidate_paths(key)
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+    }
+
+    fn safe_join(&self, key: &str) -> Option<PathBuf> {
         let mut path = self.root.clone();
         for component in Path::new(key).components() {
             match component {
@@ -111,10 +168,6 @@ impl FileSystemModuleProvider {
                 Component::CurDir => {}
                 Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
             }
-        }
-
-        if !self.extension.is_empty() && !key.ends_with(&format!(".{}", self.extension)) {
-            path.set_extension(&self.extension);
         }
         Some(path)
     }
@@ -195,6 +248,17 @@ fn source_key(source: &str) -> u64 {
     hasher.finish()
 }
 
+/// One step of a Roblox/Luau instance path in a `require` argument.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstanceSegment {
+    /// `.Parent` — move to the containing folder.
+    Parent,
+    /// `.Child` / `:FindFirstChild("Child")` / `:WaitForChild("Child")`.
+    Child(String),
+    /// `game:GetService("Name")`.
+    Service(String),
+}
+
 /// Classifies a call as a statically resolvable `require` call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RequireCall {
@@ -204,6 +268,12 @@ pub enum RequireCall {
     Path {
         /// The literal path.
         path: String,
+    },
+    /// The call is a `require` call with a Roblox/Luau instance path argument,
+    /// such as `require(script.Parent.Util)`.
+    Instance {
+        /// The instance path, relative to the requiring script.
+        segments: Vec<InstanceSegment>,
     },
     /// The call is a `require` call whose argument is not a single string
     /// literal (or is not valid UTF-8).
@@ -236,11 +306,125 @@ pub fn classify_require_call(call: &FunctionCall, model: &SemanticModel) -> Requ
                     Some(path) => RequireCall::Path { path },
                     None => RequireCall::NonLiteral,
                 },
+                (Some(expression), None) => match instance_segments(expression) {
+                    Some(segments) => RequireCall::Instance { segments },
+                    None => RequireCall::NonLiteral,
+                },
                 _ => RequireCall::NonLiteral,
             }
         }
         Arguments::Table(_) => RequireCall::NonLiteral,
     }
+}
+
+/// Extracts the instance path of a Roblox/Luau `require` argument.
+///
+/// Only paths rooted at `script` are recognized; `game:GetService` and any
+/// other data-model root depend on a project mapping and are reported as
+/// non-literal (fail fast) instead of being guessed.
+fn instance_segments(expression: &Expression) -> Option<Vec<InstanceSegment>> {
+    match expression {
+        Expression::Identifier(identifier) if identifier.get_name() == "script" => Some(Vec::new()),
+        Expression::Field(field) => {
+            let mut segments = prefix_instance_segments(field.get_prefix())?;
+            segments.push(instance_field_segment(field.get_field().get_name()));
+            Some(segments)
+        }
+        Expression::Call(call) => instance_call_segments(call),
+        Expression::Parenthese(parenthese) => instance_segments(parenthese.inner_expression()),
+        _ => None,
+    }
+}
+
+fn prefix_instance_segments(prefix: &Prefix) -> Option<Vec<InstanceSegment>> {
+    match prefix {
+        Prefix::Identifier(identifier) if identifier.get_name() == "script" => Some(Vec::new()),
+        Prefix::Field(field) => {
+            let mut segments = prefix_instance_segments(field.get_prefix())?;
+            segments.push(instance_field_segment(field.get_field().get_name()));
+            Some(segments)
+        }
+        Prefix::Call(call) => instance_call_segments(call),
+        Prefix::Index(index) => {
+            let name = match index.get_index() {
+                Expression::String(string) => path_of_string(string)?,
+                _ => return None,
+            };
+            let mut segments = prefix_instance_segments(index.get_prefix())?;
+            segments.push(InstanceSegment::Child(name));
+            Some(segments)
+        }
+        Prefix::Parenthese(parenthese) => instance_segments(parenthese.inner_expression()),
+        _ => None,
+    }
+}
+
+fn instance_call_segments(call: &FunctionCall) -> Option<Vec<InstanceSegment>> {
+    match call.get_method() {
+        Some(method)
+            if method.get_name() == "FindFirstChild" || method.get_name() == "WaitForChild" =>
+        {
+            let name = single_string_argument(call)?;
+            let mut segments = prefix_instance_segments(call.get_prefix())?;
+            segments.push(InstanceSegment::Child(name));
+            Some(segments)
+        }
+        Some(method) if method.get_name() == "GetService" => {
+            let name = single_string_argument(call)?;
+            let Prefix::Identifier(identifier) = call.get_prefix() else {
+                return None;
+            };
+            if identifier.get_name() != "game" {
+                return None;
+            }
+            Some(vec![InstanceSegment::Service(name)])
+        }
+        _ => None,
+    }
+}
+
+fn instance_field_segment(name: &str) -> InstanceSegment {
+    if name == "Parent" {
+        InstanceSegment::Parent
+    } else {
+        InstanceSegment::Child(name.to_owned())
+    }
+}
+
+fn single_string_argument(call: &FunctionCall) -> Option<String> {
+    let Arguments::Tuple(tuple) = call.get_arguments() else {
+        return None;
+    };
+    let mut values = tuple.iter_values();
+    match (values.next(), values.next()) {
+        (Some(Expression::String(string)), None) => path_of_string(string),
+        _ => None,
+    }
+}
+
+/// Resolves an instance path relative to the key of the requiring module.
+///
+/// A module key is the Rojo file layout: a `Child` extends the path by one
+/// segment, and `Parent` removes the last segment. `game:GetService` cannot be
+/// resolved without a project mapping, so it returns `None`.
+pub fn resolve_instance_path(key: &str, segments: &[InstanceSegment]) -> Option<String> {
+    let mut current = key.to_owned();
+    for segment in segments {
+        match segment {
+            InstanceSegment::Parent => {
+                current = parent_directory(&current);
+            }
+            InstanceSegment::Child(name) => {
+                current = if current.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{current}/{name}")
+                };
+            }
+            InstanceSegment::Service(_) => return None,
+        }
+    }
+    Some(current)
 }
 
 fn resolves_to_require(model: &SemanticModel, identifier: &crate::nodes::Identifier) -> bool {
@@ -564,8 +748,12 @@ impl<P: ModuleProvider> ResolveState<'_, P> {
 
         for module_id in module_ids {
             let module = self.graph.module(module_id);
-            for (alias, target) in alias_imports(&module.block, &module.model, &module.dependencies)
-            {
+            for (alias, target) in alias_imports(
+                &module.block,
+                &module.model,
+                &module.key,
+                &module.dependencies,
+            ) {
                 bindings.push((module_id, alias, target));
             }
         }
@@ -602,6 +790,17 @@ fn module_dependencies(
                 RequireCall::Path { path } => {
                     let normalized = normalize_require_path(&path, self.base_directory);
                     self.dependencies.push((path, normalized));
+                }
+                RequireCall::Instance { segments } => {
+                    match resolve_instance_path(self.module_key, &segments) {
+                        Some(resolved) => self.dependencies.push((resolved.clone(), resolved)),
+                        None => {
+                            self.error = Some(ResolveError::NonLiteralRequire {
+                                module: self.module_key.to_owned(),
+                                line: require_call_line(call),
+                            });
+                        }
+                    }
                 }
                 RequireCall::NonLiteral => {
                     self.error = Some(ResolveError::NonLiteralRequire {
@@ -642,10 +841,11 @@ fn module_dependencies(
     }
 }
 
-/// Finds `local alias = require("path")` bindings and their target modules.
+/// Finds `local alias = require(...)` bindings and their target modules.
 fn alias_imports(
     block: &Block,
     model: &SemanticModel,
+    module_key: &str,
     dependencies: &HashMap<String, ModuleId>,
 ) -> Vec<(crate::semantic::SymbolId, ModuleId)> {
     let mut bindings = Vec::new();
@@ -660,10 +860,17 @@ fn alias_imports(
         let Some(Expression::Call(call)) = assignment.iter_values().next() else {
             continue;
         };
-        let RequireCall::Path { path } = classify_require_call(call, model) else {
-            continue;
+        let key = match classify_require_call(call, model) {
+            RequireCall::Path { path } => path,
+            RequireCall::Instance { segments } => {
+                match resolve_instance_path(module_key, &segments) {
+                    Some(resolved) => resolved,
+                    None => continue,
+                }
+            }
+            RequireCall::NotRequire | RequireCall::NonLiteral => continue,
         };
-        let Some(&target) = dependencies.get(&path) else {
+        let Some(&target) = dependencies.get(&key) else {
             continue;
         };
         let variable = assignment

@@ -13,7 +13,7 @@ use crate::nodes::{Block, GotoStatement, LabelStatement, Statement};
 
 use super::analyzer::{line_of, span_of, token_key, AnalyzerState};
 use super::error::{SemanticError, SemanticResult};
-use super::label::{GotoBinding, GotoLabel, GotoSite, LabelId};
+use super::label::{GotoBinding, GotoLabel, GotoSite, LabelId, VisibleScopes};
 use super::symbol::SymbolId;
 
 /// Returns whether the statement at `index` is a label at the end of its block.
@@ -43,7 +43,7 @@ impl AnalyzerState {
             function_scope: self.current_function(),
             token,
             span: span_of(statement.get_label()),
-            visible_symbols: self.visible_symbols(),
+            visible_symbols: self.visible_scopes(),
         };
 
         self.goto_sites.push(site);
@@ -70,9 +70,9 @@ impl AnalyzerState {
 
         let scope = self.current_scope();
         let visible_symbols = if is_block_end {
-            self.visible_symbols_outside_current_scope()
+            self.visible_scopes_outside_current_scope()
         } else {
-            self.visible_symbols()
+            self.visible_scopes()
         };
 
         let token = token_key(label.get_label());
@@ -151,15 +151,20 @@ impl AnalyzerState {
     /// satisfied; this single test therefore implements the Lua rule for both
     /// directions.
     fn check_forward_goto_locals(&self, site: &GotoSite, label: &GotoLabel) -> SemanticResult<()> {
-        let offending = label
-            .visible_symbols
-            .iter()
-            .find(|symbol| !site.visible_symbols.contains(symbol));
-
-        match offending {
-            Some(symbol) => Err(self.check_goto_into_local_scope(site, *symbol)),
-            None => Ok(()),
+        if label.visible_symbols.is_subset_of(&site.visible_symbols) {
+            return Ok(());
         }
+
+        for (scope, count) in label.visible_symbols.iter() {
+            let visible = site.visible_symbols.count(scope);
+            if visible < count {
+                if let Some(&symbol) = self.scopes[scope.index()].symbols.get(visible) {
+                    return Err(self.check_goto_into_local_scope(site, symbol));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Builds the explicit rejection error for a goto entering the scope of the
@@ -187,28 +192,28 @@ impl AnalyzerState {
         None
     }
 
-    /// Returns every lexical symbol visible at the current point (excluding
-    /// implicit globals).
-    fn visible_symbols(&self) -> Vec<SymbolId> {
-        self.visible_symbols_until(self.scope_stack.len())
+    /// Returns the scopes (with their visible symbol counts) at the current
+    /// point, excluding implicit globals.
+    fn visible_scopes(&self) -> VisibleScopes {
+        self.visible_scopes_until(self.scope_stack.len())
     }
 
-    /// Returns every lexical symbol visible at the entry of the current scope,
-    /// excluding symbols declared inside it.
-    fn visible_symbols_outside_current_scope(&self) -> Vec<SymbolId> {
+    /// Returns the scopes visible at the entry of the current scope, excluding
+    /// symbols declared inside it.
+    fn visible_scopes_outside_current_scope(&self) -> VisibleScopes {
         let len = self.scope_stack.len().saturating_sub(1);
-        self.visible_symbols_until(len)
+        self.visible_scopes_until(len)
     }
 
-    fn visible_symbols_until(&self, depth: usize) -> Vec<SymbolId> {
-        let mut visible = Vec::new();
+    fn visible_scopes_until(&self, depth: usize) -> VisibleScopes {
+        let mut counts = Vec::new();
         for scope_id in self.scope_stack.iter().take(depth) {
             let scope = &self.scopes[scope_id.index()];
             if scope.kind == super::scope::ScopeKind::Global {
                 continue;
             }
-            visible.extend(scope.symbols.iter().copied());
+            counts.push((*scope_id, scope.symbols.len()));
         }
-        visible
+        VisibleScopes::new(counts)
     }
 }
