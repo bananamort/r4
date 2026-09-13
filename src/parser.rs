@@ -78,6 +78,31 @@ pub struct Parser {
 impl Parser {
     /// Parses Lua code into a [`Block`].
     pub fn parse(&self, code: &str) -> Result<Block, ParserError> {
+        let ast_result = self.parse_fallible(code)?;
+        if !ast_result.errors().is_empty() {
+            return Err(ParserError::parsing(ast_result.errors().to_vec()));
+        }
+        self.convert(ast_result.into_ast())
+    }
+
+    /// Parses Lua code, returning the recovered tree and every syntax
+    /// diagnostic.
+    ///
+    /// `full_moon` reports a reconstructed tree alongside its errors; this
+    /// method preserves both instead of discarding the tree. A conversion or
+    /// panic is fatal and returns `Err`; syntax errors are returned as
+    /// diagnostics so a caller can report all of them.
+    pub fn parse_recovering(
+        &self,
+        code: &str,
+    ) -> Result<(Block, Vec<crate::diagnostic::Diagnostic>), ParserError> {
+        let ast_result = self.parse_fallible(code)?;
+        let diagnostics = ParserError::parsing(ast_result.errors().to_vec()).to_diagnostics();
+        let block = self.convert(ast_result.into_ast())?;
+        Ok((block, diagnostics))
+    }
+
+    fn parse_fallible(&self, code: &str) -> Result<full_moon::ast::AstResult, ParserError> {
         let full_moon_parse_timer = Timer::now();
         let lua_version = self.dialect.lua_version();
         // `full_moon` can panic on a few malformed inputs (for example a
@@ -86,18 +111,19 @@ impl Parser {
         // raised by the third-party parser into a typed parse error instead of
         // unwinding into the caller.
         let parse_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            full_moon::parse_fallible(code, lua_version).into_result()
+            full_moon::parse_fallible(code, lua_version)
         }));
         log::trace!(
             "full-moon parsing done in {}",
             full_moon_parse_timer.duration_label()
         );
-        let ast = match parse_result {
-            Ok(Ok(ast)) => ast,
-            Ok(Err(errors)) => return Err(ParserError::parsing(errors)),
-            Err(payload) => return Err(ParserError::panicked(panic_message(&payload))),
-        };
+        match parse_result {
+            Ok(ast_result) => Ok(ast_result),
+            Err(payload) => Err(ParserError::panicked(panic_message(&payload))),
+        }
+    }
 
+    fn convert(&self, ast: full_moon::ast::Ast) -> Result<Block, ParserError> {
         log::trace!("start converting full-moon AST");
         let conversion_timer = Timer::now();
         let block = self.convert_ast(ast).map_err(ParserError::converting)?;
@@ -254,12 +280,20 @@ impl ParserError {
     /// Syntax errors carry the byte range and the one-based line/column range
     /// reported by the underlying parser.
     pub fn to_diagnostic(&self) -> crate::diagnostic::Diagnostic {
-        let diagnostic =
-            crate::diagnostic::Diagnostic::error(self.to_string()).with_code(self.code());
+        self.to_diagnostics().into_iter().next().unwrap_or_else(|| {
+            crate::diagnostic::Diagnostic::error(self.to_string()).with_code(self.code())
+        })
+    }
 
+    /// Converts this error into a structured diagnostic per underlying error.
+    ///
+    /// A syntax error carries one diagnostic for each error the parser
+    /// recovered from, so a caller can report all of them.
+    pub fn to_diagnostics(&self) -> Vec<crate::diagnostic::Diagnostic> {
         match &*self.kind {
-            ParserErrorKind::Parsing(errors) => {
-                if let Some(error) = errors.first() {
+            ParserErrorKind::Parsing(errors) => errors
+                .iter()
+                .map(|error| {
                     let (start, end) = error.range();
                     let span = crate::diagnostic::TextSpan::new(start.bytes(), end.bytes());
                     let location = crate::diagnostic::LinePositionSpan::new(
@@ -269,11 +303,20 @@ impl ParserError {
                         ),
                         crate::diagnostic::LinePosition::new(end.line() + 1, end.character() + 1),
                     );
-                    return diagnostic.with_span(span).with_location(location);
-                }
-                diagnostic
+                    crate::diagnostic::Diagnostic::error(error.error_message().into_owned())
+                        .with_code("parse/syntax")
+                        .with_span(span)
+                        .with_location(location)
+                })
+                .collect(),
+            ParserErrorKind::Converting(error) => {
+                vec![crate::diagnostic::Diagnostic::error(error.to_string())
+                    .with_code("parse/conversion")]
             }
-            _ => diagnostic,
+            ParserErrorKind::Panicked { message } => vec![crate::diagnostic::Diagnostic::error(
+                format!("the parser panicked: {}", message),
+            )
+            .with_code("parse/panic")],
         }
     }
 }

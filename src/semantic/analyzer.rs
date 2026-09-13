@@ -21,6 +21,31 @@ use super::type_alias::{TypeId, TypeSymbol};
 /// blocks that belong to a different model.
 static ANALYSIS_ORIGIN: AtomicU32 = AtomicU32::new(0);
 
+/// The result of a collecting semantic analysis: a model plus every error.
+#[derive(Clone, Debug)]
+pub struct SemanticAnalysis {
+    /// The model built from the recovered tree.
+    pub model: SemanticModel,
+    /// Every error reported while analyzing, in source order.
+    pub errors: Vec<SemanticError>,
+}
+
+impl SemanticAnalysis {
+    /// Returns whether the analysis was error free.
+    #[inline]
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Returns the errors as structured diagnostics.
+    pub fn diagnostics(&self) -> Vec<crate::diagnostic::Diagnostic> {
+        self.errors
+            .iter()
+            .map(SemanticError::to_diagnostic)
+            .collect()
+    }
+}
+
 /// Runs the semantic analysis passes and builds a [`SemanticModel`].
 ///
 /// The analyzer walks the AST once to build the scope tree, declare symbols and
@@ -63,9 +88,18 @@ impl SemanticAnalyzer {
     }
 
     /// Analyzes a block (typically the root chunk of a file) and produces a
-    /// [`SemanticModel`].
+    /// [`SemanticModel`], stopping at the first error.
     pub fn analyze(&self, block: &Block) -> SemanticResult<SemanticModel> {
-        AnalyzerState::new(self.options.clone()).analyze(block)
+        AnalyzerState::new(self.options.clone(), false).analyze(block)
+    }
+
+    /// Analyzes a block, collecting every error and still producing a model.
+    ///
+    /// This is the tooling entry point: it recovers from undeclared names,
+    /// unresolved types and goto/label errors and reports all of them instead
+    /// of stopping at the first.
+    pub fn analyze_collecting(&self, block: &Block) -> SemanticAnalysis {
+        AnalyzerState::new(self.options.clone(), true).analyze_collecting(block)
     }
 }
 
@@ -93,12 +127,14 @@ pub(super) struct AnalyzerState {
     pub(super) next_block_identity: u32,
     pub(super) block_scopes: HashMap<u32, ScopeId>,
     pub(super) origin: u32,
+    pub(super) collect_errors: bool,
+    pub(super) errors: Vec<SemanticError>,
     pub(super) root_scope: ScopeId,
     pub(super) chunk_scope: ScopeId,
 }
 
 impl AnalyzerState {
-    pub(super) fn new(options: SemanticOptions) -> Self {
+    pub(super) fn new(options: SemanticOptions, collect_errors: bool) -> Self {
         Self {
             options,
             symbols: Vec::new(),
@@ -118,12 +154,35 @@ impl AnalyzerState {
             next_block_identity: 0,
             block_scopes: HashMap::new(),
             origin: ANALYSIS_ORIGIN.fetch_add(1, Ordering::Relaxed),
+            collect_errors,
+            errors: Vec::new(),
             root_scope: ScopeId(0),
             chunk_scope: ScopeId(0),
         }
     }
 
-    pub(super) fn analyze(mut self, block: &Block) -> SemanticResult<SemanticModel> {
+    /// Reports an error: records it and continues in collecting mode, or
+    /// returns it immediately otherwise.
+    pub(super) fn report(&mut self, error: SemanticError) -> SemanticResult<()> {
+        if self.collect_errors {
+            self.errors.push(error);
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+
+    pub(super) fn analyze(self, block: &Block) -> SemanticResult<SemanticModel> {
+        self.run(block).map(|(model, _)| model)
+    }
+
+    pub(super) fn analyze_collecting(mut self, block: &Block) -> SemanticAnalysis {
+        self.collect_errors = true;
+        let (model, errors) = self.run(block).expect("a collecting analysis never fails");
+        SemanticAnalysis { model, errors }
+    }
+
+    fn run(mut self, block: &Block) -> SemanticResult<(SemanticModel, Vec<SemanticError>)> {
         self.root_scope = self.push_scope(ScopeKind::Global);
         self.chunk_scope = self.push_scope(ScopeKind::File);
         self.function_stack.push(self.chunk_scope);
@@ -135,7 +194,8 @@ impl AnalyzerState {
         self.function_stack.pop();
         self.pop_scope();
 
-        Ok(SemanticModel::new(
+        let errors = std::mem::take(&mut self.errors);
+        let model = SemanticModel::new(
             self.symbols,
             self.scopes,
             self.labels,
@@ -147,7 +207,8 @@ impl AnalyzerState {
             self.uses,
             self.block_scopes,
             self.origin,
-        ))
+        );
+        Ok((model, errors))
     }
 
     // ------------------------------------------------------------------
@@ -387,7 +448,7 @@ impl AnalyzerState {
     /// Validates a type name occurrence that has no structural binding.
     ///
     /// Used for occurrences without a `TypeId` (generic type packs).
-    pub(super) fn check_type_occurrence(&self, identifier: &Identifier) -> SemanticResult<()> {
+    pub(super) fn check_type_occurrence(&mut self, identifier: &Identifier) -> SemanticResult<()> {
         if self.lookup_type_name(identifier.get_name()).is_some()
             || self.is_generic_type_parameter(identifier.get_name())
             || is_builtin_type_name(identifier.get_name())
@@ -396,16 +457,15 @@ impl AnalyzerState {
         }
 
         if self.options.strict_types {
-            return Err(
-                SemanticError::unresolved_type(identifier.get_name(), line_of(identifier))
-                    .with_span(span_of(identifier)),
-            );
+            let error = SemanticError::unresolved_type(identifier.get_name(), line_of(identifier))
+                .with_span(span_of(identifier));
+            self.report(error)?;
         }
 
         Ok(())
     }
 
-    fn check_unresolved_type(&self, identifier: &Identifier) -> SemanticResult<()> {
+    fn check_unresolved_type(&mut self, identifier: &Identifier) -> SemanticResult<()> {
         if self.is_generic_type_parameter(identifier.get_name())
             || is_builtin_type_name(identifier.get_name())
         {
@@ -413,10 +473,9 @@ impl AnalyzerState {
         }
 
         if self.options.strict_types {
-            return Err(
-                SemanticError::unresolved_type(identifier.get_name(), line_of(identifier))
-                    .with_span(span_of(identifier)),
-            );
+            let error = SemanticError::unresolved_type(identifier.get_name(), line_of(identifier))
+                .with_span(span_of(identifier));
+            self.report(error)?;
         }
 
         Ok(())
@@ -504,10 +563,9 @@ impl AnalyzerState {
         }
 
         if self.options.strict_globals {
-            return Err(
-                SemanticError::undeclared(name, identifier.and_then(line_of))
-                    .with_span(identifier.and_then(span_of)),
-            );
+            let error = SemanticError::undeclared(name, identifier.and_then(line_of))
+                .with_span(identifier.and_then(span_of));
+            self.report(error)?;
         }
 
         let symbol = self.declare_global(name);

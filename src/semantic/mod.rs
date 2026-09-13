@@ -24,7 +24,7 @@ mod type_alias;
 mod walker;
 
 pub use analyzer::is_builtin_type_name;
-pub use analyzer::SemanticAnalyzer;
+pub use analyzer::{SemanticAnalysis, SemanticAnalyzer};
 pub use error::{
     SemanticError, SemanticErrorKind, SemanticOptions, SemanticQueryError, SemanticResult,
 };

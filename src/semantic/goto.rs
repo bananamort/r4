@@ -64,8 +64,9 @@ impl AnalyzerState {
 
         if let Some(previous) = self.find_active_label(&name) {
             let previous_line = self.labels[previous.index()].token.map(|token| token.line);
-            return Err(SemanticError::duplicate_label(&name, previous_line, line)
-                .with_span(span_of(label.get_label())));
+            let error = SemanticError::duplicate_label(&name, previous_line, line)
+                .with_span(span_of(label.get_label()));
+            self.report(error)?;
         }
 
         let scope = self.current_scope();
@@ -99,23 +100,29 @@ impl AnalyzerState {
     ///
     /// This is the second semantic pass: labels are only known after the whole
     /// function has been walked, which is what makes forward jumps resolvable.
-    pub(super) fn resolve_gotos(&self) -> SemanticResult<Vec<GotoBinding>> {
-        let mut bindings = Vec::with_capacity(self.goto_sites.len());
+    pub(super) fn resolve_gotos(&mut self) -> SemanticResult<Vec<GotoBinding>> {
+        let sites = self.goto_sites.clone();
+        let mut bindings = Vec::with_capacity(sites.len());
 
-        for site in &self.goto_sites {
+        for site in &sites {
             let label_id = match self.find_visible_label(site) {
                 Some(label) => label,
                 None => {
-                    return Err(SemanticError::undefined_label(
+                    let error = SemanticError::undefined_label(
                         &site.name,
                         site.token.map(|token| token.line),
                     )
-                    .with_span(site.span))
+                    .with_span(site.span);
+                    self.report(error)?;
+                    continue;
                 }
             };
 
-            let label = &self.labels[label_id.index()];
-            self.check_forward_goto_locals(site, label)?;
+            if let Err(error) = self.check_forward_goto_locals(site, &self.labels[label_id.index()])
+            {
+                self.report(error)?;
+                continue;
+            }
 
             bindings.push(GotoBinding {
                 label: label_id,

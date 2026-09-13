@@ -170,6 +170,37 @@ impl Compilation {
         Ok(())
     }
 
+    /// Parses and analyzes `source` with recovery, recording every diagnostic.
+    ///
+    /// Unlike [`Self::add_tree`], a syntax error does not abort: the recovered
+    /// tree from the parser is analyzed in collecting mode, so every syntax and
+    /// semantic diagnostic is recorded and the tree is stored. Only a fatal
+    /// parse failure (a panic or a conversion error) returns `Err`.
+    pub fn add_tree_recovering(&mut self, source: impl Into<String>) -> Result<TreeId, Diagnostic> {
+        let source = source.into();
+
+        let (block, mut diagnostics) = match self.parser.parse_recovering(&source) {
+            Ok(result) => result,
+            Err(error) => {
+                let diagnostic = error.to_diagnostic();
+                self.diagnostics.push(diagnostic.clone());
+                return Err(diagnostic);
+            }
+        };
+
+        let analysis =
+            SemanticAnalyzer::with_options(self.options.clone()).analyze_collecting(&block);
+        diagnostics.extend(analysis.diagnostics());
+        self.diagnostics.extend(diagnostics);
+
+        let analyzed = self.cache.insert(AnalyzedModule {
+            source,
+            block,
+            model: analysis.model,
+        });
+        Ok(self.push(analyzed))
+    }
+
     /// Re-analyzes a tree whose block was mutated in place.
     ///
     /// The source cache is not repopulated, because the mutated block no longer
