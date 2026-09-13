@@ -154,7 +154,8 @@ impl<M: CallMatcher> NodeProcessor for Processor<'_, M> {
             return;
         }
 
-        let values = preserve_arguments_side_effects(&self.evaluator, call.get_arguments());
+        let values =
+            preserve_arguments_side_effects(self.model, &self.evaluator, call.get_arguments());
         *statement = expressions_as_statement(values);
         self.removed += 1;
     }
@@ -178,6 +179,7 @@ impl<M: CallMatcher> NodeProcessor for Processor<'_, M> {
         *expression = match replacement {
             Some(result) => result,
             None => expressions_as_expression(preserve_arguments_side_effects(
+                self.model,
                 &self.evaluator,
                 call.get_arguments(),
             )),

@@ -62,7 +62,7 @@ impl DeadTableStoreRemover<'_> {
             .iter_values()
             .next()
             .expect("the assignment was checked to have one value");
-        if self.evaluator.has_side_effects(value) {
+        if crate::semantic::has_side_effects(self.model, &self.evaluator, value) {
             return false;
         }
 

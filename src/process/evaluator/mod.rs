@@ -187,6 +187,20 @@ impl Evaluator {
     }
 
     pub fn has_side_effects(&self, expression: &Expression) -> bool {
+        self.has_side_effects_with(expression, &|_| false)
+    }
+
+    /// Returns whether evaluating `expression` has side effects, treating calls
+    /// accepted by `pure_call` as effect free.
+    ///
+    /// `pure_call` must only accept calls whose callee is a known pure
+    /// function; the arguments are still checked here, so a pure function
+    /// called with an effectful argument is correctly reported as effectful.
+    pub fn has_side_effects_with(
+        &self,
+        expression: &Expression,
+        pure_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
         match expression {
             Expression::False(_)
             | Expression::Function(_)
@@ -196,18 +210,20 @@ impl Evaluator {
             | Expression::String(_)
             | Expression::True(_)
             | Expression::VariableArguments(_) => false,
-            Expression::If(if_expression) => self.if_expression_has_side_effects(if_expression),
+            Expression::If(if_expression) => {
+                self.if_expression_has_side_effects(if_expression, pure_call)
+            }
             Expression::Binary(binary) => {
                 let left = binary.left();
                 let right = binary.right();
 
                 let left_value = self.evaluate(left);
-                let left_side_effect = self.has_side_effects(binary.left());
+                let left_side_effect = self.has_side_effects_with(left, pure_call);
 
                 match binary.operator() {
                     BinaryOperator::And => {
                         if left_value.is_truthy().unwrap_or(true) {
-                            left_side_effect || self.has_side_effects(binary.right())
+                            left_side_effect || self.has_side_effects_with(right, pure_call)
                         } else {
                             left_side_effect
                         }
@@ -216,58 +232,64 @@ impl Evaluator {
                         if left_value.is_truthy().unwrap_or(false) {
                             left_side_effect
                         } else {
-                            left_side_effect || self.has_side_effects(binary.right())
+                            left_side_effect || self.has_side_effects_with(right, pure_call)
                         }
                     }
                     _ => {
                         if self.pure_metamethods {
-                            left_side_effect || self.has_side_effects(binary.right())
+                            left_side_effect || self.has_side_effects_with(right, pure_call)
                         } else {
                             self.maybe_metatable(&left_value)
                                 || self.maybe_metatable(&self.evaluate(right))
-                                || self.has_side_effects(left)
-                                || self.has_side_effects(right)
+                                || self.has_side_effects_with(left, pure_call)
+                                || self.has_side_effects_with(right, pure_call)
                         }
                     }
                 }
             }
             Expression::Unary(unary) => {
                 if self.pure_metamethods || matches!(unary.operator(), UnaryOperator::Not) {
-                    self.has_side_effects(unary.get_expression())
+                    self.has_side_effects_with(unary.get_expression(), pure_call)
                 } else {
                     let sub_expression = unary.get_expression();
 
                     self.maybe_metatable(&self.evaluate(sub_expression))
-                        || self.has_side_effects(sub_expression)
+                        || self.has_side_effects_with(sub_expression, pure_call)
                 }
             }
-            Expression::Field(field) => self.field_has_side_effects(field),
-            Expression::Index(index) => self.index_has_side_effects(index),
+            Expression::Field(field) => self.field_has_side_effects(field, pure_call),
+            Expression::Index(index) => self.index_has_side_effects(index, pure_call),
             Expression::Parenthese(parenthese) => {
-                self.has_side_effects(parenthese.inner_expression())
+                self.has_side_effects_with(parenthese.inner_expression(), pure_call)
             }
             Expression::Table(table) => table
                 .get_entries()
                 .iter()
-                .any(|entry| self.table_entry_has_side_effects(entry)),
-            Expression::Call(call) => self.call_has_side_effects(call),
+                .any(|entry| self.table_entry_has_side_effects(entry, pure_call)),
+            Expression::Call(call) => self.call_has_side_effects(call, pure_call),
             Expression::InterpolatedString(interpolated_string) => interpolated_string
                 .iter_segments()
                 .any(|segment| match segment {
                     InterpolationSegment::String(_) => false,
                     InterpolationSegment::Value(value) => {
-                        self.has_side_effects(value.get_expression())
+                        self.has_side_effects_with(value.get_expression(), pure_call)
                     }
                 }),
-            Expression::TypeCast(type_cast) => self.has_side_effects(type_cast.get_expression()),
+            Expression::TypeCast(type_cast) => {
+                self.has_side_effects_with(type_cast.get_expression(), pure_call)
+            }
             Expression::TypeInstantiation(type_instantiation) => {
-                self.type_instantiation_has_side_effects(type_instantiation)
+                self.type_instantiation_has_side_effects(type_instantiation, pure_call)
             }
         }
     }
 
-    fn if_expression_has_side_effects(&self, if_expression: &IfExpression) -> bool {
-        if self.has_side_effects(if_expression.get_condition()) {
+    fn if_expression_has_side_effects(
+        &self,
+        if_expression: &IfExpression,
+        pure_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
+        if self.has_side_effects_with(if_expression.get_condition(), pure_call) {
             return true;
         }
 
@@ -275,10 +297,10 @@ impl Evaluator {
 
         if let Some(truthy) = condition.is_truthy() {
             if truthy {
-                self.has_side_effects(if_expression.get_result())
+                self.has_side_effects_with(if_expression.get_result(), pure_call)
             } else {
                 for branch in if_expression.iter_branches() {
-                    if self.has_side_effects(branch.get_condition()) {
+                    if self.has_side_effects_with(branch.get_condition(), pure_call) {
                         return true;
                     }
 
@@ -286,71 +308,112 @@ impl Evaluator {
 
                     if let Some(truthy) = branch_condition.is_truthy() {
                         if truthy {
-                            return self.has_side_effects(branch.get_result());
+                            return self.has_side_effects_with(branch.get_result(), pure_call);
                         }
-                    } else if self.has_side_effects(branch.get_result()) {
+                    } else if self.has_side_effects_with(branch.get_result(), pure_call) {
                         return true;
                     }
                 }
 
-                self.has_side_effects(if_expression.get_else_result())
+                self.has_side_effects_with(if_expression.get_else_result(), pure_call)
             }
         } else {
-            if self.has_side_effects(if_expression.get_result()) {
+            if self.has_side_effects_with(if_expression.get_result(), pure_call) {
                 return true;
             }
 
             for branch in if_expression.iter_branches() {
-                if self.has_side_effects(branch.get_condition())
-                    || self.has_side_effects(branch.get_result())
+                if self.has_side_effects_with(branch.get_condition(), pure_call)
+                    || self.has_side_effects_with(branch.get_result(), pure_call)
                 {
                     return true;
                 }
             }
 
-            self.has_side_effects(if_expression.get_else_result())
+            self.has_side_effects_with(if_expression.get_else_result(), pure_call)
         }
     }
 
     #[inline]
-    fn call_has_side_effects(&self, _call: &FunctionCall) -> bool {
-        true
+    fn call_has_side_effects(
+        &self,
+        call: &FunctionCall,
+        pure_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
+        if !pure_call(call) {
+            return true;
+        }
+        self.arguments_have_side_effects(call.get_arguments(), pure_call)
+    }
+
+    fn arguments_have_side_effects(
+        &self,
+        arguments: &Arguments,
+        pure_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
+        match arguments {
+            Arguments::Tuple(tuple) => tuple
+                .iter_values()
+                .any(|value| self.has_side_effects_with(value, pure_call)),
+            Arguments::String(_) => false,
+            Arguments::Table(table) => table
+                .get_entries()
+                .iter()
+                .any(|entry| self.table_entry_has_side_effects(entry, pure_call)),
+        }
     }
 
     #[inline]
-    fn table_entry_has_side_effects(&self, entry: &TableEntry) -> bool {
+    fn table_entry_has_side_effects(
+        &self,
+        entry: &TableEntry,
+        pure_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
         match entry {
-            TableEntry::Field(entry) => self.has_side_effects(entry.get_value()),
+            TableEntry::Field(entry) => self.has_side_effects_with(entry.get_value(), pure_call),
             TableEntry::Index(entry) => {
-                self.has_side_effects(entry.get_key()) || self.has_side_effects(entry.get_value())
+                self.has_side_effects_with(entry.get_key(), pure_call)
+                    || self.has_side_effects_with(entry.get_value(), pure_call)
             }
-            TableEntry::Value(value) => self.has_side_effects(value),
+            TableEntry::Value(value) => self.has_side_effects_with(value, pure_call),
         }
     }
 
     #[inline]
-    fn field_has_side_effects(&self, field: &FieldExpression) -> bool {
-        !self.pure_metamethods || self.prefix_has_side_effects(field.get_prefix())
+    fn field_has_side_effects(
+        &self,
+        field: &FieldExpression,
+        pure_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
+        !self.pure_metamethods || self.prefix_has_side_effects(field.get_prefix(), pure_call)
     }
 
     #[inline]
-    fn index_has_side_effects(&self, index: &IndexExpression) -> bool {
+    fn index_has_side_effects(
+        &self,
+        index: &IndexExpression,
+        pure_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
         !self.pure_metamethods
-            || self.has_side_effects(index.get_index())
-            || self.prefix_has_side_effects(index.get_prefix())
+            || self.has_side_effects_with(index.get_index(), pure_call)
+            || self.prefix_has_side_effects(index.get_prefix(), pure_call)
     }
 
-    fn prefix_has_side_effects(&self, prefix: &Prefix) -> bool {
+    fn prefix_has_side_effects(
+        &self,
+        prefix: &Prefix,
+        pure_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
         match prefix {
-            Prefix::Call(call) => self.call_has_side_effects(call),
-            Prefix::Field(field) => self.field_has_side_effects(field),
+            Prefix::Call(call) => self.call_has_side_effects(call, pure_call),
+            Prefix::Field(field) => self.field_has_side_effects(field, pure_call),
             Prefix::Identifier(_) => false,
-            Prefix::Index(index) => self.index_has_side_effects(index),
+            Prefix::Index(index) => self.index_has_side_effects(index, pure_call),
             Prefix::Parenthese(sub_expression) => {
-                self.has_side_effects(sub_expression.inner_expression())
+                self.has_side_effects_with(sub_expression.inner_expression(), pure_call)
             }
             Prefix::TypeInstantiation(type_instantiation) => {
-                self.type_instantiation_has_side_effects(type_instantiation)
+                self.type_instantiation_has_side_effects(type_instantiation, pure_call)
             }
         }
     }
@@ -358,8 +421,9 @@ impl Evaluator {
     fn type_instantiation_has_side_effects(
         &self,
         type_instantiation: &TypeInstantiationExpression,
+        pure_call: &dyn Fn(&FunctionCall) -> bool,
     ) -> bool {
-        self.prefix_has_side_effects(type_instantiation.get_prefix())
+        self.prefix_has_side_effects(type_instantiation.get_prefix(), pure_call)
     }
 
     #[inline]

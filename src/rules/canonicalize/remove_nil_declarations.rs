@@ -2,12 +2,12 @@ use crate::nodes::{AssignmentKind, Block, Expression, VariableAssignment};
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
 use crate::semantic::SemanticModel;
 
-#[derive(Default)]
-struct Processor {
+struct Processor<'a> {
+    model: &'a SemanticModel,
     evaluator: Evaluator,
 }
 
-impl NodeProcessor for Processor {
+impl NodeProcessor for Processor<'_> {
     fn process_local_assign_statement(&mut self, assignment: &mut VariableAssignment) {
         if let AssignmentKind::Const = assignment.get_assignment_kind() {
             return;
@@ -20,7 +20,7 @@ impl NodeProcessor for Processor {
                 .enumerate()
                 .skip(assignment.variables_len())
             {
-                if !self.evaluator.has_side_effects(extra_value) {
+                if !crate::semantic::has_side_effects(self.model, &self.evaluator, extra_value) {
                     pop_extra_value_at.push(index);
                 }
             }
@@ -81,7 +81,10 @@ impl NodeProcessor for Processor {
 }
 
 /// Removes trailing `nil` values from local assignments.
-pub fn remove_nil_declarations(block: &mut Block, _model: &SemanticModel) {
-    let mut processor = Processor::default();
+pub fn remove_nil_declarations(block: &mut Block, model: &SemanticModel) {
+    let mut processor = Processor {
+        model,
+        evaluator: Evaluator::default(),
+    };
     DefaultVisitor::visit_block(block, &mut processor);
 }

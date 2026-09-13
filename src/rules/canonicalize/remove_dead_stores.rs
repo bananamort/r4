@@ -174,7 +174,7 @@ fn is_dead_store(
 
     assignment
         .iter_values()
-        .all(|value| !evaluator.has_side_effects(value))
+        .all(|value| !crate::semantic::has_side_effects(model, evaluator, value))
 }
 
 struct DeadStoreRemover {

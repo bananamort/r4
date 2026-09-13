@@ -19,6 +19,7 @@ mod label;
 mod model;
 mod module;
 mod scope;
+mod stdlib;
 mod symbol;
 mod type_alias;
 mod walker;
@@ -37,5 +38,6 @@ pub use module::{
     ModuleInterface, ModuleModel, MultiModuleModel, ScopeRef, SymbolRef,
 };
 pub use scope::{Scope, ScopeId, ScopeKind};
+pub use stdlib::{call_is_pure, has_side_effects};
 pub use symbol::{AccessKind, Symbol, SymbolId, SymbolKind, SymbolUse, TokenKey};
 pub use type_alias::{TypeId, TypeSymbol};

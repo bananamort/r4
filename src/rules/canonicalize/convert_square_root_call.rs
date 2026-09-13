@@ -62,7 +62,11 @@ impl NodeProcessor for Processor<'_> {
     fn process_statement(&mut self, statement: &mut Statement) {
         if let Statement::Call(call) = statement {
             if self.is_math_sqrt_call(call) {
-                let values = preserve_arguments_side_effects(&self.evaluator, call.get_arguments());
+                let values = preserve_arguments_side_effects(
+                    self.model,
+                    &self.evaluator,
+                    call.get_arguments(),
+                );
 
                 *statement = expressions_as_statement(values);
             }

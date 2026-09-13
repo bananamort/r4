@@ -147,7 +147,7 @@ impl Processor<'_> {
 
     fn side_effects<'a>(&self, values: impl Iterator<Item = &'a Expression>) -> Vec<Expression> {
         values
-            .filter(|value| self.evaluator.has_side_effects(value))
+            .filter(|value| crate::semantic::has_side_effects(self.model, &self.evaluator, value))
             .cloned()
             .collect()
     }
