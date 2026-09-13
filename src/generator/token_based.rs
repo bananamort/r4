@@ -1940,7 +1940,11 @@ impl<'a> TokenBasedLuaGenerator<'a> {
     fn write_symbol(&mut self, symbol: &str) {
         if self.currently_commenting {
             self.uncomment();
-        } else if self.needs_space(symbol.chars().next().expect("symbol cannot be empty")) {
+        } else if symbol
+            .chars()
+            .next()
+            .is_some_and(|character| self.needs_space(character))
+        {
             self.output.push(' ');
         }
         self.push_str(symbol);

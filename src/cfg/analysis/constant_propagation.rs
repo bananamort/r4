@@ -409,13 +409,17 @@ fn reaching_definitions(
     let mut entry: Vec<BitVec> = vec![BitVec::repeat(false, definition_count); block_count];
     let mut exit: Vec<BitVec> = vec![BitVec::repeat(false, definition_count); block_count];
 
+    // Reuse scratch buffers across blocks and iterations.
+    let mut new_entry = BitVec::repeat(false, definition_count);
+    let mut new_exit = BitVec::repeat(false, definition_count);
+
     loop {
         let mut changed = false;
 
         for index in 0..block_count {
             let block = BlockId(index as u32);
 
-            let mut new_entry = BitVec::repeat(false, definition_count);
+            new_entry.fill(false);
             if block != cfg.entry {
                 for &predecessor in cfg.predecessors(block) {
                     if reachability.is_reachable(predecessor) {
@@ -424,7 +428,7 @@ fn reaching_definitions(
                 }
             }
 
-            let mut new_exit = generated[index].clone();
+            new_exit.clone_from(&generated[index]);
             for id in new_entry.iter_ones() {
                 if !killed[index][id] {
                     new_exit.set(id, true);
@@ -432,8 +436,8 @@ fn reaching_definitions(
             }
 
             if new_entry != entry[index] || new_exit != exit[index] {
-                entry[index] = new_entry;
-                exit[index] = new_exit;
+                entry[index].clone_from(&new_entry);
+                exit[index].clone_from(&new_exit);
                 changed = true;
             }
         }
@@ -462,11 +466,18 @@ fn propagate_values(
         .map(|definition| definition.constant.clone())
         .collect();
 
+    // Reuse one scratch reaching-definition bitset across blocks and
+    // iterations instead of cloning per block.
+    let mut reaching = entry_reaching
+        .first()
+        .map(|bits| BitVec::repeat(false, bits.len()))
+        .unwrap_or_default();
+
     loop {
         let mut changed = false;
 
         for (index, ids) in block_definitions.iter().enumerate() {
-            let mut reaching = entry_reaching[index].clone();
+            reaching.clone_from(&entry_reaching[index]);
 
             for &id in ids {
                 let value = compute_definition_value(

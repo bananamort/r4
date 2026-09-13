@@ -370,6 +370,16 @@ mod test {
         }
 
         #[test]
+        fn double_quoted_escaped_surrogate_unicode_is_rejected() {
+            insta::assert_snapshot!(StringExpression::new("\"\\u{D800}\"").unwrap_err().to_string(), @"malformed escape sequence at 1: invalid unicode scalar value");
+        }
+
+        #[test]
+        fn single_quoted_escaped_surrogate_unicode_is_rejected() {
+            insta::assert_snapshot!(StringExpression::new("'\\u{DFFF}'").unwrap_err().to_string(), @"malformed escape sequence at 1: invalid unicode scalar value");
+        }
+
+        #[test]
         fn double_quoted_escaped_missing_opening_brace_unicode() {
             insta::assert_snapshot!(StringExpression::new("\"\\uAB\"").unwrap_err().to_string(), @"malformed escape sequence at 1: expected opening curly brace");
         }

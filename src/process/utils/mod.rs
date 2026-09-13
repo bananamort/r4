@@ -1,7 +1,3 @@
-// Identifier permutation utilities are kept for future renaming passes; they
-// are not wired into the current transformation pipeline yet.
-#![allow(dead_code)]
-
 mod permutator;
 
 pub(crate) use permutator::Permutator;
@@ -11,17 +7,6 @@ pub(crate) type CharPermutator = Permutator<std::str::Chars<'static>>;
 pub(crate) fn identifier_permutator() -> CharPermutator {
     Permutator::new("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789".chars())
 }
-
-pub(crate) fn generate_identifier(permutator: &mut CharPermutator) -> String {
-    permutator
-        .find(|identifier| is_valid_identifier(identifier))
-        .expect("the permutator should always ultimately return a valid identifier")
-}
-
-pub(crate) const KEYWORDS: [&str; 21] = [
-    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local",
-    "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
-];
 
 macro_rules! matches_any_keyword {
     () => {
@@ -80,12 +65,5 @@ mod test {
         assert!(!is_valid_identifier("1bar"));
         assert!(!is_valid_identifier("var "));
         assert!(!is_valid_identifier("sp ace"));
-    }
-
-    #[test]
-    fn keywords_are_not_valid_identifiers() {
-        for keyword in KEYWORDS {
-            assert!(!is_valid_identifier(keyword));
-        }
     }
 }

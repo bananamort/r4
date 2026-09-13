@@ -29,21 +29,32 @@ impl Parser {
         } else {
             LuaVersion::luau()
         };
-        let parse_result = full_moon::parse_fallible(code, lua_version).into_result();
+        // `full_moon` can panic on a few malformed inputs (for example a
+        // surrogate unicode escape inside an interpolated string). Since this
+        // is a library that may be handed untrusted source, turn any panic
+        // raised by the third-party parser into a typed parse error instead of
+        // unwinding into the caller.
+        let parse_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            full_moon::parse_fallible(code, lua_version).into_result()
+        }));
         log::trace!(
             "full-moon parsing done in {}",
             full_moon_parse_timer.duration_label()
         );
-        parse_result.map_err(ParserError::parsing).and_then(|ast| {
-            log::trace!("start converting full-moon AST");
-            let conversion_timer = Timer::now();
-            let block = self.convert_ast(ast).map_err(ParserError::converting);
-            log::trace!(
-                " ⨽ completed AST conversion in {}",
-                conversion_timer.duration_label()
-            );
-            block
-        })
+        let ast = match parse_result {
+            Ok(Ok(ast)) => ast,
+            Ok(Err(errors)) => return Err(ParserError::parsing(errors)),
+            Err(payload) => return Err(ParserError::panicked(panic_message(&payload))),
+        };
+
+        log::trace!("start converting full-moon AST");
+        let conversion_timer = Timer::now();
+        let block = self.convert_ast(ast).map_err(ParserError::converting)?;
+        log::trace!(
+            " ⨽ completed AST conversion in {}",
+            conversion_timer.duration_label()
+        );
+        Ok(block)
     }
 
     /// Configures the parser to preserve token data (line numbers, whitespace and comments).
@@ -117,6 +128,7 @@ impl From<SemanticError> for AnalyzedParseError {
 enum ParserErrorKind {
     Parsing(Vec<full_moon::Error>),
     Converting(ConvertError),
+    Panicked { message: String },
 }
 
 /// The error type that can occur when parsing code.
@@ -137,6 +149,22 @@ impl ParserError {
             kind: ParserErrorKind::Converting(err).into(),
         }
     }
+
+    fn panicked(message: String) -> Self {
+        Self {
+            kind: ParserErrorKind::Panicked { message }.into(),
+        }
+    }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "the underlying parser panicked".to_owned()
+    }
 }
 
 impl fmt::Display for ParserError {
@@ -149,6 +177,9 @@ impl fmt::Display for ParserError {
                 Ok(())
             }
             ParserErrorKind::Converting(err) => write!(f, "{}", err),
+            ParserErrorKind::Panicked { message } => {
+                write!(f, "the parser panicked: {}", message)
+            }
         }
     }
 }

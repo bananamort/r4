@@ -408,6 +408,49 @@ exposes different model-first APIs). The dead-code rules
 `FilterAfterEarlyReturn`/`RemoveUnusedIfBranch`/`RemoveUnusedWhile` are
 superseded by `remove_unreachable_code`.
 
+### Production hardening audit
+
+An audit of panic sites, memory, allocation and dead code across `r4` found and
+fixed the following:
+
+- **CFG builder crash on valid Lua 5.2.** `::l:: goto l return` unwound in
+  `CfgBuilder::terminate` because the unreachable `return` was lowered after
+  the `goto` had already closed the block. `lower_last_statement` now installs
+  a terminator only while a block is active; the `break`/`continue` loop
+  checks still run so invalid jumps are still rejected.
+- **Surrogate unicode escapes panicked during string parsing.**
+  `\u{D800}`/`\u{DFFF}` are not valid `char`s and previously hit
+  `char::from_u32(...).expect(...)`. They are now reported as a typed
+  `StringError` ("invalid unicode scalar value"). `ConvertError::String` also
+  carries the underlying reason instead of discarding it.
+- **Third-party parser panics are contained.** `full_moon` panics on a few
+  malformed inputs (for example a surrogate escape inside an interpolated
+  string). `Parser::parse` wraps only the third-party parse in
+  `catch_unwind` and returns a typed `ParserError` carrying the panic message;
+  `r4`'s own conversion and analysis paths remain panic-free by construction.
+- **Dead code removed.** The unused `scoped_hash_map` module, the
+  `#![allow(dead_code)]` masks, the migrated-away `lines.rs` token helpers,
+  `generate_identifier`, and `KEYWORDS` were deleted. `cargo clippy
+  --all-targets --all-features -- -D warnings` is clean with no blanket dead
+  code allowances.
+- **Allocation reductions in hot paths.** The liveness and
+  constant-propagation fixpoints reuse scratch bitsets instead of allocating
+  two bitsets per block on every iteration, and the analyzer no longer clones
+  each identifier name before scope resolution (`read_identifier`,
+  `write_identifier`, compound writes).
+- **Adversarial coverage.** `tests/no_panic_test.rs` runs every transformation
+  pass over a corpus of malformed, shadowing, goto, type, attribute and
+  constant-folding snippets, then re-analyzes the transformed trees and
+  verifies symbol/scope arena integrity, block identity uniqueness and CFG
+  edge/origin invariants.
+
+The one remaining complexity note: `GotoSite::visible_symbols` and
+`GotoLabel::visible_symbols` snapshot the locals visible at each goto/label, so
+a Lua 5.2 file with many locals *and* many gotos is `O(gotos * locals)` in the
+worst case. This is bounded by the language's goto usage in practice; shrinking
+it further would require a cursor-based visibility representation and a change
+to the public `visible_symbols` fields.
+
 ### Scope notes (outside the audited items)
 
 All open items from this audit are implemented. The notes below record

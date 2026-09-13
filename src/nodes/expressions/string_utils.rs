@@ -125,14 +125,16 @@ pub(crate) fn read_escaped_string(
                             ));
                         }
 
+                        let Some(character) = char::from_u32(number) else {
+                            return Err(StringError::malformed_escape_sequence(
+                                position,
+                                "invalid unicode scalar value",
+                            ));
+                        };
+
                         let mut buf = [0u8; 4];
 
-                        value.extend(
-                            char::from_u32(number)
-                                .expect("unable to convert u32 to char")
-                                .encode_utf8(&mut buf)
-                                .as_bytes(),
-                        );
+                        value.extend(character.encode_utf8(&mut buf).as_bytes());
                     }
                     'z' => {
                         while chars

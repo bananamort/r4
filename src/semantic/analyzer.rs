@@ -481,15 +481,13 @@ impl AnalyzerState {
     }
 
     pub(super) fn read_identifier(&mut self, identifier: &Identifier) -> SemanticResult<SymbolId> {
-        let name = identifier.get_name().clone();
-        let symbol = self.resolve_name(&name, Some(identifier))?;
+        let symbol = self.resolve_name(identifier.get_name(), Some(identifier))?;
         self.record_access(symbol, AccessKind::Read, Some(identifier));
         Ok(symbol)
     }
 
     pub(super) fn write_identifier(&mut self, identifier: &Identifier) -> SemanticResult<SymbolId> {
-        let name = identifier.get_name().clone();
-        let symbol = self.resolve_name(&name, Some(identifier))?;
+        let symbol = self.resolve_name(identifier.get_name(), Some(identifier))?;
         self.record_access(symbol, AccessKind::Write, Some(identifier));
         Ok(symbol)
     }

@@ -123,18 +123,23 @@ impl Liveness {
         let mut live_in = vec![BitVec::repeat(false, symbol_count); block_count];
         let mut live_out = vec![BitVec::repeat(false, symbol_count); block_count];
 
+        // Reuse scratch buffers instead of allocating two bitsets per block on
+        // every fixpoint iteration.
+        let mut out = BitVec::repeat(false, symbol_count);
+        let mut new_in = BitVec::repeat(false, symbol_count);
+
         loop {
             let mut changed = false;
 
             for index in (0..block_count).rev() {
-                let mut out = BitVec::repeat(false, symbol_count);
+                out.fill(false);
                 for &successor in &cfg.blocks[index].successors {
                     for bit in live_in[successor.index()].iter_ones() {
                         out.set(bit, true);
                     }
                 }
 
-                let mut new_in = uses[index].clone();
+                new_in.clone_from(&uses[index]);
                 for bit in out.iter_ones() {
                     if !defs[index][bit] {
                         new_in.set(bit, true);
@@ -142,8 +147,8 @@ impl Liveness {
                 }
 
                 if new_in != live_in[index] || out != live_out[index] {
-                    live_in[index] = new_in;
-                    live_out[index] = out;
+                    live_in[index].clone_from(&new_in);
+                    live_out[index].clone_from(&out);
                     changed = true;
                 }
             }

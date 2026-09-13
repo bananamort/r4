@@ -76,3 +76,17 @@ fn test_constant_evaluator() {
         panic!("Expected return statement");
     }
 }
+
+#[test]
+fn malformed_unicode_escape_is_a_parse_error() {
+    // A surrogate code point is not a valid `char`; the converter must report a
+    // parse error rather than panicking.
+    let error = Parser::default()
+        .parse("return \"\\u{D800}\"")
+        .expect_err("a surrogate escape must be rejected");
+    let message = error.to_string();
+    assert!(
+        message.contains("invalid unicode scalar value"),
+        "unexpected error: {message}"
+    );
+}

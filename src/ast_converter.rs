@@ -1504,7 +1504,7 @@ impl<'a> AstConverter<'a> {
             }
         }
 
-        let mut block = self.blocks.pop().expect("root block should be converted");
+        let mut block = self.pop_block()?;
 
         if self.hold_token_data {
             if let Some(tokens) = block.mutate_tokens() {
@@ -1898,10 +1898,9 @@ impl<'a> AstConverter<'a> {
         let prefix = self.make_prefix_with_suffixes(call.suffixes())?;
         match prefix {
             Prefix::Call(call) => Ok(*call),
-            _ => panic!(
-                "FunctionCall should convert to a call statement, but got {:#?}",
-                prefix,
-            ),
+            other => Err(ConvertError::Call {
+                call: format!("{other:?}"),
+            }),
         }
     }
 
@@ -2782,9 +2781,10 @@ impl<'a> AstConverter<'a> {
         string: &tokenizer::TokenReference,
     ) -> Result<StringExpression, ConvertError> {
         let mut expression =
-            StringExpression::new(&string.token().to_string()).map_err(|_err| {
+            StringExpression::new(&string.token().to_string()).map_err(|error| {
                 ConvertError::String {
                     string: string.to_string(),
+                    parsing_error: error.to_string(),
                 }
             })?;
 
@@ -2800,8 +2800,9 @@ impl<'a> AstConverter<'a> {
         string: &tokenizer::TokenReference,
     ) -> Result<StringType, ConvertError> {
         let mut expression =
-            StringType::new(&string.token().to_string()).map_err(|_err| ConvertError::String {
+            StringType::new(&string.token().to_string()).map_err(|error| ConvertError::String {
                 string: string.to_string(),
+                parsing_error: error.to_string(),
             })?;
         if self.hold_token_data {
             expression.set_token(self.convert_token(string)?);
@@ -2958,8 +2959,11 @@ impl<'a> AstConverter<'a> {
         match token.token_type() {
             TokenType::InterpolatedString { literal, kind: _ } => {
                 if !literal.is_empty() {
-                    let mut segment = StringSegment::new(literal.as_str())
-                        .expect("unable to convert interpolated string segment");
+                    let mut segment = StringSegment::new(literal.as_str()).map_err(|error| {
+                        ConvertError::InterpolatedString {
+                            string: error.to_string(),
+                        }
+                    })?;
 
                     if self.hold_token_data {
                         let position = self.convert_token_position(token)?;
@@ -2992,20 +2996,14 @@ fn is_argument_variadic(mut r#type: &ast::luau::TypeInfo) -> bool {
             TypeInfo::Optional { base, .. } => {
                 r#type = base;
             }
-            TypeInfo::Intersection(intersection) => {
-                r#type = intersection
-                    .types()
-                    .first()
-                    .expect("intersection should have at least one type")
-                    .value();
-            }
-            TypeInfo::Union(union_type) => {
-                r#type = union_type
-                    .types()
-                    .first()
-                    .expect("union should have at least one type")
-                    .value();
-            }
+            TypeInfo::Intersection(intersection) => match intersection.types().first() {
+                Some(first) => r#type = first.value(),
+                None => break false,
+            },
+            TypeInfo::Union(union_type) => match union_type.types().first() {
+                Some(first) => r#type = first.value(),
+                None => break false,
+            },
             _ => break false,
         }
     }
@@ -3021,20 +3019,14 @@ fn is_variadic_type(mut r#type: &ast::luau::TypeInfo) -> Option<&tokenizer::Toke
             TypeInfo::Optional { base: left, .. } => {
                 r#type = left;
             }
-            TypeInfo::Intersection(intersection) => {
-                r#type = intersection
-                    .types()
-                    .first()
-                    .expect("at least one type")
-                    .value();
-            }
-            TypeInfo::Union(union_type) => {
-                r#type = union_type
-                    .types()
-                    .first()
-                    .expect("at least one type")
-                    .value();
-            }
+            TypeInfo::Intersection(intersection) => match intersection.types().first() {
+                Some(first) => r#type = first.value(),
+                None => break None,
+            },
+            TypeInfo::Union(union_type) => match union_type.types().first() {
+                Some(first) => r#type = first.value(),
+                None => break None,
+            },
             _ => break None,
         }
     }
@@ -3308,6 +3300,7 @@ pub(crate) enum ConvertError {
     },
     String {
         string: String,
+        parsing_error: String,
     },
     TypeInfo {
         type_info: String,
@@ -3357,7 +3350,16 @@ impl fmt::Display for ConvertError {
             ConvertError::BinaryOperator { operator } => ("binary operator", operator),
             ConvertError::CompoundOperator { operator } => ("compound operator", operator),
             ConvertError::UnaryOperator { operator } => ("unary operator", operator),
-            ConvertError::String { string } => ("string", string),
+            ConvertError::String {
+                string,
+                parsing_error,
+            } => {
+                return write!(
+                    f,
+                    "unable to convert string from `{}` ({})",
+                    string, parsing_error
+                )
+            }
             ConvertError::TypeInfo { type_info } => ("type", type_info),
             ConvertError::TableTypeProperty { property } => ("table type property", property),
             ConvertError::GenericDeclaration { generics } => ("generics", generics),

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::nodes::{
     BinaryExpression, BinaryOperator, Block, DoStatement, Expression, Statement, VariableAssignment,
 };

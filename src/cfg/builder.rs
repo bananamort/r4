@@ -367,7 +367,13 @@ impl<'a> CfgBuilder<'a> {
                     kind: CfgErrorKind::BreakOutsideLoop,
                     line: token.as_ref().and_then(|token| token.get_line_number()),
                 })?;
-                self.terminate(Terminator::Break(context.break_target));
+                // A previous statement (for example a `goto`) may already have
+                // terminated this block, making the `break` unreachable. The
+                // loop check above still runs so an invalid `break` is
+                // reported, but no second terminator is installed.
+                if self.current.is_some() {
+                    self.terminate(Terminator::Break(context.break_target));
+                }
                 Ok(())
             }
             LastStatement::Continue(token) => {
@@ -375,11 +381,15 @@ impl<'a> CfgBuilder<'a> {
                     kind: CfgErrorKind::ContinueOutsideLoop,
                     line: token.as_ref().and_then(|token| token.get_line_number()),
                 })?;
-                self.terminate(Terminator::Continue(context.continue_target));
+                if self.current.is_some() {
+                    self.terminate(Terminator::Continue(context.continue_target));
+                }
                 Ok(())
             }
             LastStatement::Return(_) => {
-                self.terminate(Terminator::Return(Some(statement.clone())));
+                if self.current.is_some() {
+                    self.terminate(Terminator::Return(Some(statement.clone())));
+                }
                 Ok(())
             }
         }

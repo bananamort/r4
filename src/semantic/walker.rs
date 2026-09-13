@@ -79,8 +79,7 @@ impl AnalyzerState {
                 self.walk_variable_read(assign.get_variable())?;
                 self.walk_expression(assign.get_value())?;
                 if let Variable::Identifier(identifier) = assign.get_variable() {
-                    let name = identifier.get_name().clone();
-                    let symbol = self.resolve_name(&name, Some(identifier))?;
+                    let symbol = self.resolve_name(identifier.get_name(), Some(identifier))?;
                     self.record_access(symbol, AccessKind::Write, Some(identifier));
                 }
             }

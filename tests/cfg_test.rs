@@ -1174,3 +1174,28 @@ fn constant_propagation_distinguishes_same_scope_shadowing() {
     );
     assert_invariants(&cfg);
 }
+
+#[test]
+fn goto_followed_by_unreachable_return_builds() {
+    let block = Parser::default()
+        .lua52()
+        .parse("::label::\ngoto label\nreturn")
+        .expect("the code must parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+    let cfg = build_chunk(&block, &model).expect("cfg construction must not panic");
+    assert_invariants(&cfg);
+}
+
+#[test]
+fn unreachable_break_outside_loop_is_still_rejected() {
+    let block = Parser::default()
+        .lua52()
+        .parse("::label::\ngoto label\nbreak")
+        .expect("the code must parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+    let error = build_chunk(&block, &model).expect_err("break outside a loop must be rejected");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::BreakOutsideLoop
+    ));
+}
