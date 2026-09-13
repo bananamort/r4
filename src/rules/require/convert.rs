@@ -47,8 +47,7 @@ pub trait RequirePathConverter {
     ///
     /// The default leaves instance requires untouched; implementations that
     /// understand the project's file layout override this.
-    fn convert_instance(&self, segments: &[InstanceSegment]) -> Option<Expression> {
-        let _ = segments;
+    fn convert_instance(&self, _segments: &[InstanceSegment]) -> Option<Expression> {
         None
     }
 }

@@ -121,8 +121,11 @@ impl fmt::Display for LinePositionSpan {
 }
 
 /// Computes the one-based line position of a byte offset in `source`.
+///
+/// An offset past the end of the source resolves to the position of the end of
+/// the source; the caller is responsible for validating spans when that
+/// distinction matters (see [`DiagnosticFormatter`]).
 pub fn line_position(source: &str, offset: usize) -> LinePosition {
-    let offset = offset.min(source.len());
     let mut line = 1;
     let mut column = 1;
 

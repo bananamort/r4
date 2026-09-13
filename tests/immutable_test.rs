@@ -68,6 +68,57 @@ fn counts_nodes_across_nesting() {
 }
 
 #[test]
+fn reaches_function_names_methods_and_attribute_names() {
+    let block = parse("local M = {}\nfunction M.f() end\nfunction M:m() end\nreturn M");
+    let names = collect_identifier_names(&block);
+    for expected in ["M", "f", "m"] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "{expected} in {names:?}"
+        );
+    }
+}
+
+#[test]
+fn reaches_function_type_argument_names() {
+    let block =
+        parse("local f: (value: number) -> number = function(value) return value end\nreturn f");
+    let names = collect_identifier_names(&block);
+    assert!(
+        names.iter().filter(|name| *name == "value").count() >= 3,
+        "{names:?}"
+    );
+}
+
+#[test]
+fn reaches_goto_and_label_names() {
+    let block = Parser::default()
+        .lua52()
+        .parse("::top::\ngoto top\nreturn 0")
+        .expect("Lua 5.2 code parses");
+    let names = collect_identifier_names(&block);
+    assert_eq!(
+        names.iter().filter(|name| *name == "top").count(),
+        2,
+        "{names:?}"
+    );
+}
+
+#[test]
+fn reaches_type_parameters_and_typeof() {
+    let block = parse(
+        "type Alias<T> = typeof(build)\nlocal function build<T>(value: T): T\n    return value\nend\nreturn Alias",
+    );
+    let names = collect_identifier_names(&block);
+    for expected in ["Alias", "T", "build", "value"] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "{expected} in {names:?}"
+        );
+    }
+}
+
+#[test]
 fn custom_processor_accumulates_a_result() {
     struct CallNames {
         names: Vec<String>,
