@@ -1,5 +1,6 @@
 //! r4: A semantically-aware and control-flow tracking Lua analysis and transformation engine.
 
+pub mod annotation;
 mod ast_converter;
 pub mod cfg;
 pub mod compilation;
@@ -14,6 +15,7 @@ pub mod rules;
 pub mod semantic;
 pub mod utils;
 
+pub use annotation::{AnnotationError, NodeAddress, SyntaxAnnotation, SyntaxAnnotations};
 pub use compilation::{Compilation, SyntaxTree, TreeId};
 pub use convert::{convert_data, to_expression as convert_expression, ConvertDataError};
 pub use diagnostic::{

@@ -12,6 +12,7 @@ use std::fmt;
 use crate::nodes::Block;
 use crate::parser::{Parser, ParserError};
 use crate::semantic::{SemanticAnalyzer, SemanticError, SemanticModel};
+use crate::{AnnotationError, NodeAddress, SyntaxAnnotation, SyntaxAnnotations};
 
 use crate::generator::{DenseLuaGenerator, LuaGenerator, ReadableLuaGenerator};
 
@@ -50,11 +51,13 @@ impl<E> From<SemanticError> for SessionError<E> {
     }
 }
 
-/// Owns a block together with a lazily refreshed semantic model.
+/// Owns a block together with a lazily refreshed semantic model and its
+/// non-intrusive annotations.
 #[derive(Debug)]
 pub struct Session {
     block: Block,
     model: Option<SemanticModel>,
+    annotations: SyntaxAnnotations,
 }
 
 impl Session {
@@ -74,7 +77,37 @@ impl Session {
         Ok(Self {
             block,
             model: Some(model),
+            annotations: SyntaxAnnotations::new(),
         })
+    }
+
+    /// Returns the session's annotations.
+    #[inline]
+    pub fn annotations(&self) -> &SyntaxAnnotations {
+        &self.annotations
+    }
+
+    /// Returns the session's annotations mutably.
+    #[inline]
+    pub fn annotations_mut(&mut self) -> &mut SyntaxAnnotations {
+        &mut self.annotations
+    }
+
+    /// Attaches an annotation to a structural node address.
+    pub fn annotate(&mut self, address: NodeAddress, annotation: SyntaxAnnotation) {
+        self.annotations.insert(address, annotation);
+    }
+
+    /// Validates every annotation against the current tree.
+    ///
+    /// Re-analyzes the block first when it changed, then fails with a typed
+    /// error if any annotation no longer resolves: annotations are never
+    /// silently dropped.
+    pub fn validate_annotations(&mut self) -> Result<(), SessionError<AnnotationError>> {
+        self.refresh().map_err(SessionError::Semantic)?;
+        self.annotations
+            .validate(&self.block)
+            .map_err(SessionError::Pass)
     }
 
     /// Returns the current block.
