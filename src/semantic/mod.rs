@@ -25,7 +25,7 @@ pub use analyzer::is_builtin_type_name;
 pub use analyzer::SemanticAnalyzer;
 pub use error::{SemanticError, SemanticErrorKind, SemanticOptions, SemanticResult};
 pub use label::{GotoBinding, GotoLabel, GotoSite, LabelId};
-pub use model::SemanticModel;
+pub use model::{Binding, SemanticModel};
 pub use module::{
     extract_interface, ExportValue, ImportBinding, ModuleError, ModuleId, ModuleInterface,
     ModuleModel, MultiModuleModel,

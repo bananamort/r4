@@ -1,3 +1,4 @@
+use crate::diagnostic::TextSpan;
 use crate::nodes::BindingId;
 
 use super::scope::ScopeId;
@@ -38,6 +39,8 @@ pub struct GotoLabel {
     pub is_block_end: bool,
     /// The source position of the label name, when token data is available.
     pub token: Option<TokenKey>,
+    /// The byte range of the label name, when token data is available.
+    pub span: Option<TextSpan>,
     /// The symbols visible at the label (adjusted by `is_block_end`).
     pub visible_symbols: Vec<SymbolId>,
 }
@@ -63,6 +66,8 @@ pub struct GotoSite {
     pub function_scope: ScopeId,
     /// The source position of the goto label name, when token data is available.
     pub token: Option<TokenKey>,
+    /// The byte range of the goto label name, when token data is available.
+    pub span: Option<TextSpan>,
     /// The symbols visible at the goto.
     pub visible_symbols: Vec<SymbolId>,
 }

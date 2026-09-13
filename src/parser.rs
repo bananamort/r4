@@ -155,6 +155,49 @@ impl ParserError {
             kind: ParserErrorKind::Panicked { message }.into(),
         }
     }
+
+    /// Returns a stable machine readable code for this error.
+    pub fn code(&self) -> &'static str {
+        match &*self.kind {
+            ParserErrorKind::Parsing(_) => "parse/syntax",
+            ParserErrorKind::Converting(_) => "parse/conversion",
+            ParserErrorKind::Panicked { .. } => "parse/panic",
+        }
+    }
+
+    /// Converts this error into a structured [`Diagnostic`](crate::diagnostic::Diagnostic).
+    ///
+    /// Syntax errors carry the byte range and the one-based line/column range
+    /// reported by the underlying parser.
+    pub fn to_diagnostic(&self) -> crate::diagnostic::Diagnostic {
+        let diagnostic =
+            crate::diagnostic::Diagnostic::error(self.to_string()).with_code(self.code());
+
+        match &*self.kind {
+            ParserErrorKind::Parsing(errors) => {
+                if let Some(error) = errors.first() {
+                    let (start, end) = error.range();
+                    let span = crate::diagnostic::TextSpan::new(start.bytes(), end.bytes());
+                    let location = crate::diagnostic::LinePositionSpan::new(
+                        crate::diagnostic::LinePosition::new(
+                            start.line() + 1,
+                            start.character() + 1,
+                        ),
+                        crate::diagnostic::LinePosition::new(end.line() + 1, end.character() + 1),
+                    );
+                    return diagnostic.with_span(span).with_location(location);
+                }
+                diagnostic
+            }
+            _ => diagnostic,
+        }
+    }
+}
+
+impl From<ParserError> for crate::diagnostic::Diagnostic {
+    fn from(error: ParserError) -> Self {
+        error.to_diagnostic()
+    }
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {

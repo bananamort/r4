@@ -519,6 +519,39 @@ import bindings rather than merging them into one flat arena). This keeps
 standalone `SemanticAnalyzer`/`SemanticModel` analysis lightweight and
 unchanged while still providing identity-based cross-module resolution.
 
+### Token/formatting parity and public API surface
+
+The remaining darklua token-level rules are now public passes in
+`rules::formatting`, kept strictly separate from semantic passes (they never
+take a `SemanticModel` and never restructure the tree):
+
+- `remove_comments(block)` and `remove_comments_where(block, keep)` clear all
+  comments, or keep the trivia for which the predicate returns `true`.
+- `remove_spaces(block)` clears whitespace trivia.
+- `shift_token_line(block, amount)` shifts recorded line numbers.
+- `replace_referenced_tokens(block, code)` materializes tokens that reference the
+  original source into owned content.
+- `append_text_comment(block, text, location)` prepends or appends a text
+  comment, choosing long-bracket delimiters when the text spans lines and
+  shifting line numbers to keep token-based generation aligned.
+
+These complement, rather than replace, the non-destructive
+`DenseLuaGenerator` minification pipeline.
+
+The public API surface was completed with:
+
+- `diagnostic` (`Diagnostic`, `Severity`, `TextSpan`, `LinePosition`,
+  `LinePositionSpan`), plus `resolve_location` to derive line/column from a byte
+  span and source.
+- `SemanticError` now carries an optional `TextSpan` and exposes `code()` and
+  `to_diagnostic()`; `ParserError`, `ResolveError` and `ModuleError` expose the
+  same conversion. `Token::get_span()` provides byte ranges.
+- `semantic::Binding` and `SemanticModel::{binding_of, symbol_of, label_of,
+  type_of}` give a uniform query over value, label and type occurrences.
+- `Compilation`/`TreeId`/`SyntaxTree`: an orchestrator that owns trees, records
+  diagnostics and delegates parsing to `Parser`, analysis to `SemanticAnalyzer`
+  and module resolution to `ModuleResolver`.
+
 ### Scope notes (outside the audited items)
 
 All open items from this audit are implemented. The notes below record

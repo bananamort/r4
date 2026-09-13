@@ -165,6 +165,13 @@ impl fmt::Display for ModuleError {
 
 impl std::error::Error for ModuleError {}
 
+impl ModuleError {
+    /// Converts this error into a structured diagnostic.
+    pub fn to_diagnostic(&self) -> crate::diagnostic::Diagnostic {
+        crate::diagnostic::Diagnostic::error(self.to_string()).with_code("module/interface")
+    }
+}
+
 /// A module inside the multi-tree container.
 pub struct ModuleModel {
     /// The identifier of this module.

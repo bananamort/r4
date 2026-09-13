@@ -2,6 +2,8 @@
 
 mod ast_converter;
 pub mod cfg;
+pub mod compilation;
+pub mod diagnostic;
 pub mod generator;
 pub mod modules;
 pub mod nodes;
@@ -11,4 +13,6 @@ pub mod rules;
 pub mod semantic;
 pub mod utils;
 
+pub use compilation::{Compilation, SyntaxTree, TreeId};
+pub use diagnostic::{Diagnostic, LinePosition, LinePositionSpan, Severity, TextSpan};
 pub use parser::{AnalyzedParseError, Parser, ParserError};

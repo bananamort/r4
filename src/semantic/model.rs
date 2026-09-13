@@ -7,6 +7,49 @@ use super::scope::{Scope, ScopeId, ScopeKind};
 use super::symbol::{Symbol, SymbolId, SymbolKind, SymbolUse};
 use super::type_alias::{TypeId, TypeSymbol};
 
+/// The semantic entity that a bindable identifier occurrence refers to.
+///
+/// Returned by [`SemanticModel::binding_of`], which resolves value, label and
+/// type occurrences uniformly.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Binding {
+    /// A runtime symbol (local, parameter, iteration variable or global).
+    Symbol(SymbolId),
+    /// A goto label.
+    Label(LabelId),
+    /// A type alias.
+    Type(TypeId),
+}
+
+impl Binding {
+    /// Returns the runtime symbol, if this binding refers to one.
+    #[inline]
+    pub const fn as_symbol(self) -> Option<SymbolId> {
+        match self {
+            Binding::Symbol(symbol) => Some(symbol),
+            _ => None,
+        }
+    }
+
+    /// Returns the label, if this binding refers to one.
+    #[inline]
+    pub const fn as_label(self) -> Option<LabelId> {
+        match self {
+            Binding::Label(label) => Some(label),
+            _ => None,
+        }
+    }
+
+    /// Returns the type alias, if this binding refers to one.
+    #[inline]
+    pub const fn as_type(self) -> Option<TypeId> {
+        match self {
+            Binding::Type(r#type) => Some(r#type),
+            _ => None,
+        }
+    }
+}
+
 /// The result of a semantic analysis pass over a parsed [`Block`](crate::nodes::Block).
 ///
 /// The model owns flat arenas for symbols, scopes and labels, all addressed by
@@ -149,6 +192,40 @@ impl SemanticModel {
         let id = TypeId(binding.index());
         let r#type = self.types.get(id.index())?;
         (r#type.id == id && r#type.name == *identifier.get_name()).then_some(id)
+    }
+
+    /// Returns the value symbol bound to an identifier occurrence.
+    ///
+    /// This is a descriptive alias of [`Self::resolve_identifier`] for callers
+    /// that query symbols uniformly.
+    #[inline]
+    pub fn symbol_of(&self, identifier: &Identifier) -> Option<SymbolId> {
+        self.resolve_identifier(identifier)
+    }
+
+    /// Returns the label bound to a goto or label name occurrence.
+    #[inline]
+    pub fn label_of(&self, identifier: &Identifier) -> Option<LabelId> {
+        self.resolve_label(identifier)
+    }
+
+    /// Returns the type alias bound to a type name occurrence.
+    #[inline]
+    pub fn type_of(&self, identifier: &Identifier) -> Option<TypeId> {
+        self.resolve_type(identifier)
+    }
+
+    /// Resolves any bindable identifier occurrence to the entity it binds to.
+    ///
+    /// The binding tag recorded on the identifier selects the domain, so the
+    /// caller does not need to know whether a name refers to a value, a label
+    /// or a type. Stale or foreign bindings return `None`.
+    pub fn binding_of(&self, identifier: &Identifier) -> Option<Binding> {
+        match identifier.get_binding()? {
+            binding if binding.is_label() => self.resolve_label(identifier).map(Binding::Label),
+            binding if binding.is_type() => self.resolve_type(identifier).map(Binding::Type),
+            _ => self.resolve_identifier(identifier).map(Binding::Symbol),
+        }
     }
 
     /// Resolves a type name lexically starting from `scope`.

@@ -360,10 +360,10 @@ impl AnalyzerState {
         }
 
         if self.options.strict_types {
-            return Err(SemanticError::unresolved_type(
-                identifier.get_name(),
-                line_of(identifier),
-            ));
+            return Err(
+                SemanticError::unresolved_type(identifier.get_name(), line_of(identifier))
+                    .with_span(span_of(identifier)),
+            );
         }
 
         Ok(())
@@ -377,10 +377,10 @@ impl AnalyzerState {
         }
 
         if self.options.strict_types {
-            return Err(SemanticError::unresolved_type(
-                identifier.get_name(),
-                line_of(identifier),
-            ));
+            return Err(
+                SemanticError::unresolved_type(identifier.get_name(), line_of(identifier))
+                    .with_span(span_of(identifier)),
+            );
         }
 
         Ok(())
@@ -467,10 +467,10 @@ impl AnalyzerState {
         }
 
         if self.options.strict_globals {
-            return Err(SemanticError::undeclared(
-                name,
-                identifier.and_then(line_of),
-            ));
+            return Err(
+                SemanticError::undeclared(name, identifier.and_then(line_of))
+                    .with_span(identifier.and_then(span_of)),
+            );
         }
 
         let symbol = self.declare_global(name);
@@ -503,6 +503,11 @@ pub(super) fn line_of(identifier: &Identifier) -> Option<usize> {
     identifier
         .get_token()
         .and_then(|token| token.get_line_number())
+}
+
+/// Returns the byte range of an identifier, when token data is available.
+pub(super) fn span_of(identifier: &Identifier) -> Option<crate::diagnostic::TextSpan> {
+    identifier.get_token().and_then(|token| token.get_span())
 }
 
 /// Returns whether `name` is a built-in Luau type.

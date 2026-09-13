@@ -243,6 +243,25 @@ impl fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
+impl ResolveError {
+    /// Returns a stable machine readable code for this error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ResolveError::MissingModule { .. } => "module/missing",
+            ResolveError::CyclicRequire { .. } => "module/cyclic-require",
+            ResolveError::Parse { .. } => "module/parse",
+            ResolveError::Analysis { .. } => "module/analysis",
+            ResolveError::NonLiteralRequire { .. } => "module/non-literal-require",
+            ResolveError::Interface(_) => "module/interface",
+        }
+    }
+
+    /// Converts this error into a structured diagnostic.
+    pub fn to_diagnostic(&self) -> crate::diagnostic::Diagnostic {
+        crate::diagnostic::Diagnostic::error(self.to_string()).with_code(self.code())
+    }
+}
+
 /// The analyzed modules and their topological order.
 #[derive(Debug)]
 pub struct ResolvedModules {

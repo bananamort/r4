@@ -11,7 +11,7 @@
 
 use crate::nodes::{Block, GotoStatement, LabelStatement, Statement};
 
-use super::analyzer::{line_of, token_key, AnalyzerState};
+use super::analyzer::{line_of, span_of, token_key, AnalyzerState};
 use super::error::{SemanticError, SemanticResult};
 use super::label::{GotoBinding, GotoLabel, GotoSite, LabelId};
 use super::symbol::SymbolId;
@@ -42,6 +42,7 @@ impl AnalyzerState {
             scope: self.current_scope(),
             function_scope: self.current_function(),
             token,
+            span: span_of(statement.get_label()),
             visible_symbols: self.visible_symbols(),
         };
 
@@ -63,7 +64,8 @@ impl AnalyzerState {
 
         if let Some(previous) = self.find_active_label(&name) {
             let previous_line = self.labels[previous.index()].token.map(|token| token.line);
-            return Err(SemanticError::duplicate_label(&name, previous_line, line));
+            return Err(SemanticError::duplicate_label(&name, previous_line, line)
+                .with_span(span_of(label.get_label())));
         }
 
         let scope = self.current_scope();
@@ -83,6 +85,7 @@ impl AnalyzerState {
             function_scope: self.current_function(),
             is_block_end,
             token,
+            span: span_of(label.get_label()),
             visible_symbols,
         });
         self.scope_labels[scope.index()].insert(name, id);
@@ -106,7 +109,8 @@ impl AnalyzerState {
                     return Err(SemanticError::undefined_label(
                         &site.name,
                         site.token.map(|token| token.line),
-                    ))
+                    )
+                    .with_span(site.span))
                 }
             };
 
@@ -166,6 +170,7 @@ impl AnalyzerState {
             &self.symbols[symbol.index()].name,
             site.token.map(|token| token.line),
         )
+        .with_span(site.span)
     }
 
     /// Returns the label with the given name active in the current function, if

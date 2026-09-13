@@ -296,6 +296,15 @@ impl Token {
         };
     }
 
+    /// Returns the byte range of this token in the original source, when token
+    /// data is available.
+    pub fn get_span(&self) -> Option<crate::diagnostic::TextSpan> {
+        Some(crate::diagnostic::TextSpan::new(
+            self.get_start()?,
+            self.get_end()?,
+        ))
+    }
+
     /// Clears all comments from the tokens in this node.
     pub fn clear_comments(&mut self) {
         self.leading_trivia

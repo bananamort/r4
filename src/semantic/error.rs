@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::diagnostic::{Diagnostic, TextSpan};
+
 /// Options controlling semantic analysis.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SemanticOptions {
@@ -18,6 +20,8 @@ pub struct SemanticError {
     pub kind: SemanticErrorKind,
     /// The source line of the offending construct, when token data is available.
     pub line: Option<usize>,
+    /// The byte range of the offending construct, when token data is available.
+    pub span: Option<TextSpan>,
 }
 
 /// The different semantic errors that can be reported.
@@ -64,6 +68,7 @@ impl SemanticError {
                 name: name.to_string(),
             },
             line,
+            span: None,
         }
     }
 
@@ -78,6 +83,7 @@ impl SemanticError {
                 previous_line,
             },
             line,
+            span: None,
         }
     }
 
@@ -87,6 +93,7 @@ impl SemanticError {
                 name: name.to_string(),
             },
             line,
+            span: None,
         }
     }
 
@@ -97,6 +104,7 @@ impl SemanticError {
                 symbol: symbol.to_string(),
             },
             line,
+            span: None,
         }
     }
 
@@ -106,7 +114,38 @@ impl SemanticError {
                 name: name.to_string(),
             },
             line,
+            span: None,
         }
+    }
+
+    /// Attaches the byte range of the offending construct.
+    pub(crate) fn with_span(mut self, span: Option<TextSpan>) -> Self {
+        self.span = span;
+        self
+    }
+
+    /// Returns a stable machine readable code for this error.
+    pub fn code(&self) -> &'static str {
+        match &self.kind {
+            SemanticErrorKind::UndeclaredSymbol { .. } => "semantic/undeclared-symbol",
+            SemanticErrorKind::DuplicateLabel { .. } => "semantic/duplicate-label",
+            SemanticErrorKind::UndefinedLabel { .. } => "semantic/undefined-label",
+            SemanticErrorKind::GotoIntoLocalScope { .. } => "semantic/goto-into-local-scope",
+            SemanticErrorKind::UnresolvedType { .. } => "semantic/unresolved-type",
+        }
+    }
+
+    /// Converts this error into a structured [`Diagnostic`].
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::error(self.to_string())
+            .with_code(self.code())
+            .with_optional_span(self.span)
+    }
+}
+
+impl From<SemanticError> for Diagnostic {
+    fn from(error: SemanticError) -> Self {
+        error.to_diagnostic()
     }
 }
 
