@@ -1,6 +1,9 @@
 use std::fmt;
 
 use crate::diagnostic::{Diagnostic, TextSpan};
+use crate::nodes::BlockIdentity;
+
+use super::scope::ScopeKind;
 
 /// Options controlling semantic analysis.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -146,6 +149,114 @@ impl SemanticError {
 impl From<SemanticError> for Diagnostic {
     fn from(error: SemanticError) -> Self {
         error.to_diagnostic()
+    }
+}
+
+/// An error produced by a node-keyed semantic query.
+///
+/// Node-keyed queries never guess: a node that was not analyzed, or that does
+/// not belong to this model, is reported instead of returning a silent
+/// fallback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SemanticQueryError {
+    /// The block has no structural identity, so it was never analyzed.
+    UnidentifiedBlock,
+    /// The block identity is not present in this model.
+    UnknownBlock {
+        /// The block's identity.
+        identity: BlockIdentity,
+    },
+    /// The block belongs to a different analysis run.
+    ForeignBlock {
+        /// The block's identity.
+        identity: BlockIdentity,
+    },
+    /// No enclosing scope of the requested kind exists for the block.
+    NoEnclosingScope {
+        /// The block whose scopes were searched.
+        identity: BlockIdentity,
+        /// The scope kind that was requested.
+        kind: ScopeKind,
+    },
+    /// The identifier does not resolve to a runtime symbol.
+    UnboundIdentifier {
+        /// The identifier's name.
+        name: String,
+    },
+    /// The identifier does not resolve to a goto label.
+    UnboundLabel {
+        /// The identifier's name.
+        name: String,
+    },
+    /// The identifier does not resolve to a type alias.
+    UnboundType {
+        /// The identifier's name.
+        name: String,
+    },
+    /// The identifier carries no binding from this model.
+    UnboundOccurrence {
+        /// The identifier's name.
+        name: String,
+    },
+}
+
+impl fmt::Display for SemanticQueryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SemanticQueryError::UnidentifiedBlock => {
+                write!(f, "the block has no structural identity")
+            }
+            SemanticQueryError::UnknownBlock { identity } => {
+                write!(f, "block {:?} does not belong to this model", identity)
+            }
+            SemanticQueryError::ForeignBlock { identity } => write!(
+                f,
+                "block {:?} belongs to a different analysis run",
+                identity
+            ),
+            SemanticQueryError::NoEnclosingScope { identity, kind } => {
+                write!(f, "block {:?} has no enclosing {:?} scope", identity, kind)
+            }
+            SemanticQueryError::UnboundIdentifier { name } => {
+                write!(f, "identifier `{}` is not bound to a symbol", name)
+            }
+            SemanticQueryError::UnboundLabel { name } => {
+                write!(f, "identifier `{}` is not bound to a label", name)
+            }
+            SemanticQueryError::UnboundType { name } => {
+                write!(f, "identifier `{}` is not bound to a type", name)
+            }
+            SemanticQueryError::UnboundOccurrence { name } => {
+                write!(
+                    f,
+                    "identifier `{}` carries no binding from this model",
+                    name
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SemanticQueryError {}
+
+impl SemanticQueryError {
+    /// Returns a stable machine readable code for this error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            SemanticQueryError::UnidentifiedBlock => "query/unidentified-block",
+            SemanticQueryError::UnknownBlock { .. } => "query/unknown-block",
+            SemanticQueryError::ForeignBlock { .. } => "query/foreign-block",
+            SemanticQueryError::NoEnclosingScope { .. } => "query/no-enclosing-scope",
+            SemanticQueryError::UnboundIdentifier { .. } => "query/unbound-identifier",
+            SemanticQueryError::UnboundLabel { .. } => "query/unbound-label",
+            SemanticQueryError::UnboundType { .. } => "query/unbound-type",
+            SemanticQueryError::UnboundOccurrence { .. } => "query/unbound-occurrence",
+        }
+    }
+
+    /// Converts this error into a structured diagnostic.
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::error(self.to_string()).with_code(self.code())
     }
 }
 

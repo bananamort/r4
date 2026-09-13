@@ -598,7 +598,10 @@ impl ResolveError {
 
     /// Converts this error into a structured diagnostic.
     pub fn to_diagnostic(&self) -> crate::diagnostic::Diagnostic {
-        crate::diagnostic::Diagnostic::error(self.to_string()).with_code(self.code())
+        match self {
+            ResolveError::Interface(error) => error.to_diagnostic(),
+            _ => crate::diagnostic::Diagnostic::error(self.to_string()).with_code(self.code()),
+        }
     }
 }
 

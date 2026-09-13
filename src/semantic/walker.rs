@@ -22,6 +22,13 @@ impl AnalyzerState {
         self.assign_block_identity(block);
         self.hoist_type_declarations(block);
 
+        // Record which scope this block introduces, so node-keyed queries can
+        // map a block back to its scope.
+        if let Some(identity) = block.get_identity() {
+            let scope = self.current_scope();
+            self.block_scopes.insert(identity.0, scope);
+        }
+
         for (index, statement) in block.iter_statements().enumerate() {
             if matches!(statement, Statement::TypeDeclaration(_)) {
                 if let Some(cursor) = self.type_declaration_cursors.last_mut() {

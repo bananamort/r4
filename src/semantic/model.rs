@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use crate::nodes::Identifier;
+use crate::nodes::{Block, Identifier};
 
+use super::error::SemanticQueryError;
 use super::label::{GotoBinding, GotoLabel, LabelId};
 use super::scope::{Scope, ScopeId, ScopeKind};
 use super::symbol::{Symbol, SymbolId, SymbolKind, SymbolUse};
@@ -72,6 +73,8 @@ pub struct SemanticModel {
     chunk_scope: ScopeId,
     global_symbols: HashMap<String, SymbolId>,
     uses: Vec<Vec<SymbolUse>>,
+    block_scopes: HashMap<u32, ScopeId>,
+    origin: u32,
 }
 
 impl SemanticModel {
@@ -88,6 +91,8 @@ impl SemanticModel {
         chunk_scope: ScopeId,
         global_symbols: HashMap<String, SymbolId>,
         uses: Vec<Vec<SymbolUse>>,
+        block_scopes: HashMap<u32, ScopeId>,
+        origin: u32,
     ) -> Self {
         Self {
             symbols,
@@ -99,6 +104,8 @@ impl SemanticModel {
             chunk_scope,
             global_symbols,
             uses,
+            block_scopes,
+            origin,
         }
     }
 
@@ -257,6 +264,103 @@ impl SemanticModel {
             binding if binding.is_label() => self.resolve_label(identifier).map(Binding::Label),
             binding if binding.is_type() => self.resolve_type(identifier).map(Binding::Type),
             _ => self.resolve_identifier(identifier).map(Binding::Symbol),
+        }
+    }
+
+    /// Returns the scope a block belongs to.
+    ///
+    /// Fails with [`SemanticQueryError::UnidentifiedBlock`] when the block was
+    /// never analyzed and with [`SemanticQueryError::UnknownBlock`] when its
+    /// identity is not part of this model.
+    pub fn try_scope_of(&self, block: &Block) -> Result<ScopeId, SemanticQueryError> {
+        let identity = block
+            .get_identity()
+            .ok_or(SemanticQueryError::UnidentifiedBlock)?;
+        if block.get_analysis_origin() != Some(self.origin) {
+            return Err(SemanticQueryError::ForeignBlock { identity });
+        }
+        self.block_scopes
+            .get(&identity.0)
+            .copied()
+            .ok_or(SemanticQueryError::UnknownBlock { identity })
+    }
+
+    /// Returns the origin of the analysis that produced this model.
+    ///
+    /// Two models have distinct origins, so a node from a foreign model is
+    /// always detected by the node-keyed queries.
+    #[inline]
+    pub fn analysis_origin(&self) -> u32 {
+        self.origin
+    }
+
+    /// Returns the nearest enclosing scope of `kind` for `block`.
+    pub fn try_find_scope(
+        &self,
+        block: &Block,
+        kind: ScopeKind,
+    ) -> Result<ScopeId, SemanticQueryError> {
+        let identity = block
+            .get_identity()
+            .ok_or(SemanticQueryError::UnidentifiedBlock)?;
+        let mut current = Some(self.try_scope_of(block)?);
+        while let Some(scope_id) = current {
+            let scope = &self.scopes[scope_id.index()];
+            if scope.kind == kind {
+                return Ok(scope_id);
+            }
+            current = scope.parent;
+        }
+        Err(SemanticQueryError::NoEnclosingScope { identity, kind })
+    }
+
+    /// Returns the symbol an identifier occurrence is bound to.
+    pub fn try_declared_symbol(
+        &self,
+        identifier: &Identifier,
+    ) -> Result<SymbolId, SemanticQueryError> {
+        self.resolve_identifier(identifier)
+            .ok_or_else(|| SemanticQueryError::UnboundIdentifier {
+                name: identifier.get_name().clone(),
+            })
+    }
+
+    /// Returns the label an identifier occurrence is bound to.
+    pub fn try_declared_label(
+        &self,
+        identifier: &Identifier,
+    ) -> Result<LabelId, SemanticQueryError> {
+        self.resolve_label(identifier)
+            .ok_or_else(|| SemanticQueryError::UnboundLabel {
+                name: identifier.get_name().clone(),
+            })
+    }
+
+    /// Returns the type alias an identifier occurrence is bound to.
+    pub fn try_declared_type(&self, identifier: &Identifier) -> Result<TypeId, SemanticQueryError> {
+        self.resolve_type(identifier)
+            .ok_or_else(|| SemanticQueryError::UnboundType {
+                name: identifier.get_name().clone(),
+            })
+    }
+
+    /// Returns the binding of an identifier occurrence.
+    pub fn try_binding(&self, identifier: &Identifier) -> Result<Binding, SemanticQueryError> {
+        self.binding_of(identifier)
+            .ok_or_else(|| SemanticQueryError::UnboundOccurrence {
+                name: identifier.get_name().clone(),
+            })
+    }
+
+    /// Returns the scope that declares the entity an identifier refers to.
+    pub fn try_scope_of_identifier(
+        &self,
+        identifier: &Identifier,
+    ) -> Result<ScopeId, SemanticQueryError> {
+        match self.try_binding(identifier)? {
+            Binding::Symbol(symbol) => Ok(self.symbols[symbol.index()].declaring_scope),
+            Binding::Label(label) => Ok(self.labels[label.index()].scope),
+            Binding::Type(r#type) => Ok(self.types[r#type.index()].declaring_scope),
         }
     }
 

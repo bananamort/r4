@@ -6,6 +6,7 @@
 //! goto/label pass lives in [`super::goto`].
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::nodes::{Block, BlockIdentity, Identifier};
 
@@ -15,6 +16,10 @@ use super::model::SemanticModel;
 use super::scope::{Scope, ScopeId, ScopeKind};
 use super::symbol::{AccessKind, Symbol, SymbolId, SymbolKind, SymbolUse, TokenKey};
 use super::type_alias::{TypeId, TypeSymbol};
+
+/// Monotonic origin assigned to each semantic analysis run, used to reject
+/// blocks that belong to a different model.
+static ANALYSIS_ORIGIN: AtomicU32 = AtomicU32::new(0);
 
 /// Runs the semantic analysis passes and builds a [`SemanticModel`].
 ///
@@ -86,6 +91,8 @@ pub(super) struct AnalyzerState {
     pub(super) type_declaration_cursors: Vec<usize>,
     pub(super) type_parameter_scopes: Vec<Vec<String>>,
     pub(super) next_block_identity: u32,
+    pub(super) block_scopes: HashMap<u32, ScopeId>,
+    pub(super) origin: u32,
     pub(super) root_scope: ScopeId,
     pub(super) chunk_scope: ScopeId,
 }
@@ -109,6 +116,8 @@ impl AnalyzerState {
             type_declaration_cursors: Vec::new(),
             type_parameter_scopes: Vec::new(),
             next_block_identity: 0,
+            block_scopes: HashMap::new(),
+            origin: ANALYSIS_ORIGIN.fetch_add(1, Ordering::Relaxed),
             root_scope: ScopeId(0),
             chunk_scope: ScopeId(0),
         }
@@ -136,6 +145,8 @@ impl AnalyzerState {
             self.chunk_scope,
             self.global_symbols,
             self.uses,
+            self.block_scopes,
+            self.origin,
         ))
     }
 
@@ -424,6 +435,7 @@ impl AnalyzerState {
             .checked_add(1)
             .expect("the block identity arena is exhausted");
         block.set_identity(identity);
+        block.set_analysis_origin(self.origin);
     }
 
     pub(super) fn record_access(

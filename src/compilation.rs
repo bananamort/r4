@@ -16,11 +16,14 @@
 
 use std::sync::Arc;
 
-use crate::diagnostic::{line_position_span, Diagnostic, LinePositionSpan, TextSpan};
+use crate::diagnostic::{
+    line_position_span, Diagnostic, DiagnosticFormatError, DiagnosticFormatter,
+    DiagnosticQueryError, LinePositionSpan, TextSpan,
+};
 use crate::modules::{
     AnalysisCache, AnalyzedModule, ModuleProvider, ModuleResolver, ResolvedModules,
 };
-use crate::nodes::{Block, Identifier};
+use crate::nodes::{Block, Identifier, Token};
 use crate::parser::Parser;
 use crate::semantic::{Binding, SemanticAnalyzer, SemanticModel, SemanticOptions};
 
@@ -311,6 +314,43 @@ impl Compilation {
     /// Removes the recorded diagnostics.
     pub fn clear_diagnostics(&mut self) {
         self.diagnostics.clear();
+    }
+
+    /// Returns the recorded diagnostics whose span lies within `span`.
+    ///
+    /// Diagnostics without a span are not returned: they cannot be attributed
+    /// to a source range.
+    pub fn diagnostics_in(&self, span: TextSpan) -> Vec<&Diagnostic> {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic
+                    .span
+                    .map(|candidate| span.start <= candidate.start && candidate.end <= span.end)
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    /// Returns the recorded diagnostics attached to a token's source span.
+    ///
+    /// Fails with [`DiagnosticQueryError::MissingSpan`] when the token has no
+    /// span (the tree was parsed without token data).
+    pub fn diagnostics_for_token(
+        &self,
+        token: &Token,
+    ) -> Result<Vec<&Diagnostic>, DiagnosticQueryError> {
+        let span = token.get_span().ok_or(DiagnosticQueryError::MissingSpan)?;
+        Ok(self.diagnostics_in(span))
+    }
+
+    /// Renders a diagnostic with its source line and a caret annotation.
+    pub fn format_diagnostic(
+        &self,
+        diagnostic: &Diagnostic,
+        source: &str,
+    ) -> Result<String, DiagnosticFormatError> {
+        DiagnosticFormatter::new(source).render(diagnostic)
     }
 
     /// Resolves an identifier occurrence in the given tree to the entity it

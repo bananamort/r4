@@ -16,5 +16,8 @@ pub mod utils;
 
 pub use compilation::{Compilation, SyntaxTree, TreeId};
 pub use convert::{convert_data, to_expression as convert_expression, ConvertDataError};
-pub use diagnostic::{Diagnostic, LinePosition, LinePositionSpan, Severity, TextSpan};
+pub use diagnostic::{
+    descriptor_for, Diagnostic, DiagnosticDescriptor, DiagnosticFormatError, DiagnosticFormatter,
+    DiagnosticQueryError, LinePosition, LinePositionSpan, Severity, TextSpan, DIAGNOSTIC_CATALOG,
+};
 pub use parser::{AnalyzedParseError, Parser, ParserError};

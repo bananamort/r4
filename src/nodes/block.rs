@@ -35,6 +35,7 @@ pub struct Block {
     last_statement: Option<LastStatement>,
     tokens: Option<Box<BlockTokens>>,
     identity: IdentityCell,
+    analysis: IdentityCell,
 }
 
 impl Clone for Block {
@@ -44,6 +45,7 @@ impl Clone for Block {
             last_statement: self.last_statement.clone(),
             tokens: self.tokens.clone(),
             identity: self.identity.clone(),
+            analysis: self.analysis.clone(),
         }
     }
 }
@@ -79,7 +81,18 @@ impl Block {
             last_statement,
             tokens: None,
             identity: IdentityCell::empty(),
+            analysis: IdentityCell::empty(),
         }
+    }
+
+    /// Stores the analysis origin of this block.
+    pub(crate) fn set_analysis_origin(&self, origin: u32) {
+        self.analysis.set(origin);
+    }
+
+    /// Returns the analysis origin of this block, if it was analyzed.
+    pub(crate) fn get_analysis_origin(&self) -> Option<u32> {
+        self.analysis.get()
     }
 
     /// Returns the structural identity of this block, if it was analyzed.

@@ -25,7 +25,9 @@ mod walker;
 
 pub use analyzer::is_builtin_type_name;
 pub use analyzer::SemanticAnalyzer;
-pub use error::{SemanticError, SemanticErrorKind, SemanticOptions, SemanticResult};
+pub use error::{
+    SemanticError, SemanticErrorKind, SemanticOptions, SemanticQueryError, SemanticResult,
+};
 pub use escape::{EscapeAnalysis, SymbolEscape};
 pub use index::{QualifiedLabel, QualifiedSymbol, QualifiedType, WholeProgramIndex};
 pub use label::{GotoBinding, GotoLabel, GotoSite, LabelId, VisibleScopes};

@@ -245,9 +245,20 @@ impl fmt::Display for ModuleError {
 impl std::error::Error for ModuleError {}
 
 impl ModuleError {
+    /// Returns a stable machine readable code for this error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ModuleError::UnboundExport { .. } => "module/unbound-export",
+            ModuleError::UnknownExport { .. } => "module/unknown-export",
+            ModuleError::UnknownImportAlias { .. } => "module/unknown-import-alias",
+            ModuleError::UnknownImportedType { .. } => "module/unknown-imported-type",
+            ModuleError::AmbiguousImportedType { .. } => "module/ambiguous-imported-type",
+        }
+    }
+
     /// Converts this error into a structured diagnostic.
     pub fn to_diagnostic(&self) -> crate::diagnostic::Diagnostic {
-        crate::diagnostic::Diagnostic::error(self.to_string()).with_code("module/interface")
+        crate::diagnostic::Diagnostic::error(self.to_string()).with_code(self.code())
     }
 }
 
