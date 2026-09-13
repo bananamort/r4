@@ -1,50 +1,35 @@
+//! Identity-based module bundling.
+//!
+//! The bundler is a pure consumer of the two layers below it. Dependency
+//! discovery, path resolution and topological ordering come from
+//! [`crate::modules::ModuleResolver`]; the module boundaries, export
+//! interfaces and import bindings come from
+//! [`crate::semantic::MultiModuleModel`]. This module never resolves a
+//! cross-module name by string dictionary: references are retargeted through
+//! the target module's interface by identity, and a reference that cannot be
+//! resolved that way is a typed error.
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::mem;
 
+use crate::modules::{ModuleProvider, ModuleResolver, ResolveError, ResolvedModules};
 use crate::nodes::{
     AssignStatement, Block, Expression, FunctionAssignment, FunctionCall, FunctionExpression,
     IfStatement, IndexExpression, Prefix, ReturnStatement, Statement, StringExpression, Type,
     TypeName, TypedIdentifier, Variable, VariableAssignment,
 };
-use crate::parser::{Parser, ParserError};
+use crate::parser::ParserError;
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::rules::NameGenerator;
-use crate::semantic::{SemanticAnalyzer, SemanticError, SemanticModel, TypeId};
-
-use super::convert::{convert_require, ConvertRequireError, RequirePathConverter};
-use super::{
-    classify_require_call, normalize_require_path, parent_directory, require_call_line, RequireCall,
+use crate::semantic::{
+    is_builtin_type_name, ModuleError, ModuleId, MultiModuleModel, SemanticError, TypeId,
 };
 
-/// Provides the source text of a module by its normalized path.
-pub trait ModuleProvider {
-    /// Returns the module source, or `None` when the module does not exist.
-    fn load(&self, path: &str) -> Option<String>;
-}
+use super::convert::{convert_require, ConvertRequireError, RequirePathConverter};
 
-/// A [`ModuleProvider`] backed by an in-memory map.
-#[derive(Clone, Debug, Default)]
-pub struct MemoryModuleProvider {
-    modules: HashMap<String, String>,
-}
-
-impl MemoryModuleProvider {
-    /// Creates an empty provider.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Registers a module source under `path`.
-    pub fn insert(&mut self, path: impl Into<String>, source: impl Into<String>) {
-        self.modules.insert(path.into(), source.into());
-    }
-}
-
-impl ModuleProvider for MemoryModuleProvider {
-    fn load(&self, path: &str) -> Option<String> {
-        self.modules.get(path).cloned()
-    }
-}
+/// The key used for the entry chunk in the resolved module graph.
+const ROOT_KEY: &str = "<root>";
 
 /// An error produced while bundling modules.
 #[derive(Debug)]
@@ -85,23 +70,40 @@ pub enum BundleError {
         /// The conflicting type name.
         name: String,
     },
-    /// An exported type declaration is not bound in its module's model.
-    UnresolvedExportedType {
-        /// The module declaring the type.
+    /// A referenced type is exported by a module that the caller does not
+    /// import.
+    UnimportedType {
+        /// The referring module key.
         module: String,
         /// The type name.
         name: String,
     },
+    /// A cross-module reference could not be resolved by identity.
+    Module(ModuleError),
     /// A `require` call could not be converted.
     Convert(ConvertRequireError),
+}
+
+impl From<ResolveError> for BundleError {
+    fn from(error: ResolveError) -> Self {
+        match error {
+            ResolveError::MissingModule { path } => BundleError::MissingModule { path },
+            ResolveError::CyclicRequire { path } => BundleError::CyclicRequire { path },
+            ResolveError::Parse { path, error } => BundleError::Parse { path, error },
+            ResolveError::Analysis { path, error } => BundleError::Analysis { path, error },
+            ResolveError::NonLiteralRequire { module, line } => {
+                let module = (module != ROOT_KEY).then_some(module);
+                BundleError::NonLiteralRequire { module, line }
+            }
+            ResolveError::Interface(error) => BundleError::Module(error),
+        }
+    }
 }
 
 impl fmt::Display for BundleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BundleError::MissingModule { path } => {
-                write!(f, "module `{}` was not found", path)
-            }
+            BundleError::MissingModule { path } => write!(f, "module `{}` was not found", path),
             BundleError::CyclicRequire { path } => {
                 write!(f, "cyclic require involving module `{}`", path)
             }
@@ -113,10 +115,10 @@ impl fmt::Display for BundleError {
             }
             BundleError::NonLiteralRequire { module, line } => {
                 if let Some(module) = module {
-                    write!(f, "module `{}` requires a non-literal path", module)
+                    write!(f, "module `{}` requires a non-literal path", module)?;
                 } else {
-                    write!(f, "the chunk requires a non-literal path")
-                }?;
+                    write!(f, "the chunk requires a non-literal path")?;
+                }
                 if let Some(line) = line {
                     write!(f, " at line {}", line)?;
                 }
@@ -127,11 +129,12 @@ impl fmt::Display for BundleError {
                 "exported type `{}` is declared by more than one module",
                 name
             ),
-            BundleError::UnresolvedExportedType { module, name } => write!(
+            BundleError::UnimportedType { module, name } => write!(
                 f,
-                "exported type `{}` of module `{}` is not bound in the semantic model",
-                name, module
+                "module `{}` references the type `{}`, which it does not import",
+                module, name
             ),
+            BundleError::Module(error) => write!(f, "{}", error),
             BundleError::Convert(error) => write!(f, "{}", error),
         }
     }
@@ -139,101 +142,49 @@ impl fmt::Display for BundleError {
 
 impl std::error::Error for BundleError {}
 
-struct BundledModule {
-    block: Block,
-    model: SemanticModel,
-}
-
-struct Discovery<'a, P> {
-    provider: &'a P,
-    modules: HashMap<String, BundledModule>,
-    visiting: HashSet<String>,
-    order: Vec<String>,
-}
-
-impl<P: ModuleProvider> Discovery<'_, P> {
-    fn discover(&mut self, path: &str, base_directory: &str) -> Result<(), BundleError> {
-        let normalized = normalize_require_path(path, base_directory);
-
-        if self.visiting.contains(&normalized) {
-            return Err(BundleError::CyclicRequire { path: normalized });
-        }
-        if self.modules.contains_key(&normalized) {
-            return Ok(());
-        }
-
-        let source = self
-            .provider
-            .load(&normalized)
-            .ok_or_else(|| BundleError::MissingModule {
-                path: normalized.clone(),
-            })?;
-
-        let mut block = Parser::default()
-            .parse(&source)
-            .map_err(|error| BundleError::Parse {
-                path: normalized.clone(),
-                error,
-            })?;
-        let model =
-            SemanticAnalyzer::new()
-                .analyze(&block)
-                .map_err(|error| BundleError::Analysis {
-                    path: normalized.clone(),
-                    error,
-                })?;
-
-        self.visiting.insert(normalized.clone());
-        let dependencies = collect_dependencies(&mut block, &model, Some(normalized.clone()))?;
-        for dependency in dependencies {
-            self.discover(&dependency, &parent_directory(&normalized))?;
-        }
-        self.visiting.remove(&normalized);
-
-        self.order.push(normalized.clone());
-        self.modules
-            .insert(normalized, BundledModule { block, model });
-
-        Ok(())
-    }
-}
-
 /// Bundles every statically resolvable module reachable from `block`.
 ///
-/// The pass discovers `require("<path>")` calls that resolve to the global
-/// `require` (directly or through an immutable alias), loads each module from
-/// `provider`, and inlines the modules as lazily evaluated functions behind a
-/// caching loader. Every synthesized identifier is allocated by
-/// [`NameGenerator`] against the root model and every bundled module, so the
-/// generated names cannot collide anywhere in the produced program.
-///
-/// Returns the number of modules bundled. The caller owns cache invalidation
-/// after the rewrite (for example through
-/// [`Session`](crate::rules::Session)).
+/// Discovery, path resolution and cycle detection are handled by the module
+/// resolver; cross-module references are retargeted through each module's
+/// declared interface. Returns the number of modules bundled and writes the
+/// resulting chunk back into `block`.
 pub fn bundle_modules<P: ModuleProvider>(
     block: &mut Block,
-    model: &SemanticModel,
+    model: &crate::semantic::SemanticModel,
     provider: &P,
 ) -> Result<usize, BundleError> {
-    let mut discovery = Discovery {
-        provider,
-        modules: HashMap::new(),
-        visiting: HashSet::new(),
-        order: Vec::new(),
-    };
+    let root_block = mem::take(block);
+    let resolved = ModuleResolver::new(provider)
+        .resolve(root_block, model.clone(), ROOT_KEY)
+        .map_err(BundleError::from)?;
 
-    let root_dependencies = collect_dependencies(block, model, None)?;
-    for dependency in root_dependencies {
-        discovery.discover(&dependency, "")?;
-    }
+    let module_count = resolved
+        .order
+        .iter()
+        .filter(|module| **module != resolved.root)
+        .count();
 
-    let module_count = discovery.order.len();
     if module_count == 0 {
+        let mut resolved = resolved;
+        let root = resolved.root;
+        *block = mem::take(&mut resolved.graph.module_mut(root).block);
         return Ok(0);
     }
 
-    let mut names = NameGenerator::new(model);
-    for module in discovery.modules.values() {
+    *block = bundle_graph(resolved)?;
+    Ok(module_count)
+}
+
+fn bundle_graph(resolved: ResolvedModules) -> Result<Block, BundleError> {
+    let ResolvedModules {
+        mut graph,
+        root,
+        order,
+    } = resolved;
+
+    let mut names = NameGenerator::new(&graph.module(root).model);
+    for module in graph.iter_ids() {
+        let module = graph.module(module);
         for symbol in &module.model.symbols {
             names.reserve(symbol.name.clone());
         }
@@ -242,13 +193,8 @@ pub fn bundle_modules<P: ModuleProvider>(
         }
     }
 
-    let hoisted_types = hoist_exported_types(
-        &mut discovery.modules,
-        &discovery.order,
-        block,
-        model,
-        &mut names,
-    )?;
+    validate_cross_module_types(&graph, &order, root)?;
+    let hoisted_types = hoist_exported_types(&mut graph, root, &order, &mut names)?;
 
     let modules_name = names.generate_with_prefix("__R4_MODULES");
     let cache_name = names.generate_with_prefix("__R4_CACHE");
@@ -266,77 +212,149 @@ pub fn bundle_modules<P: ModuleProvider>(
         &result_name,
     )];
 
-    for path in discovery.order.clone() {
-        let mut module = discovery
-            .modules
-            .remove(&path)
-            .expect("every discovered module is stored");
+    for module_id in order.iter().copied().filter(|module| *module != root) {
+        let path = graph.module(module_id).key.clone();
         let converter = LoaderConverter {
             load: load_name.clone(),
-            base_directory: parent_directory(&path),
+            base_directory: crate::modules::parent_directory(&path),
         };
+        {
+            let module = graph.module_mut(module_id);
+            convert_require(&mut module.block, &module.model, &converter)
+                .map_err(BundleError::Convert)?;
+        }
+        let block = mem::take(&mut graph.module_mut(module_id).block);
+        definitions.push(build_module_definition(&modules_name, &path, block));
+    }
+
+    {
+        let converter = LoaderConverter {
+            load: load_name,
+            base_directory: String::new(),
+        };
+        let module = graph.module_mut(root);
         convert_require(&mut module.block, &module.model, &converter)
             .map_err(BundleError::Convert)?;
-        definitions.push(build_module_definition(&modules_name, &path, module.block));
     }
 
-    let converter = LoaderConverter {
-        load: load_name,
-        base_directory: String::new(),
-    };
-    convert_require(block, model, &converter).map_err(BundleError::Convert)?;
-
+    let mut root_block = mem::take(&mut graph.module_mut(root).block);
     let mut statements = hoisted_types;
     statements.extend(definitions);
-    statements.extend(block.take_statements());
-    block.set_statements(statements);
+    statements.extend(root_block.take_statements());
+    root_block.set_statements(statements);
 
-    Ok(module_count)
+    Ok(root_block)
 }
 
-fn is_exported_type_declaration(statement: &Statement) -> bool {
-    matches!(statement, Statement::TypeDeclaration(declaration) if declaration.is_exported())
+// ----------------------------------------------------------------------
+// Cross-module type validation and hoisting
+// ----------------------------------------------------------------------
+
+struct TypeValidator<'a> {
+    graph: &'a MultiModuleModel,
+    module: ModuleId,
+    error: Option<BundleError>,
 }
 
-fn declaration_name(statement: &Statement) -> String {
-    match statement {
-        Statement::TypeDeclaration(declaration) => declaration.get_name().get_name().clone(),
-        _ => unreachable!("only type declarations are hoisted"),
+impl NodeProcessor for TypeValidator<'_> {
+    fn process_type_name(&mut self, type_name: &mut TypeName) {
+        if self.error.is_some() {
+            return;
+        }
+
+        let identifier = type_name.get_type_name();
+        if self
+            .graph
+            .module(self.module)
+            .model
+            .resolve_type(identifier)
+            .is_some()
+        {
+            return;
+        }
+
+        let name = identifier.get_name();
+        if is_builtin_type_name(name) {
+            return;
+        }
+
+        match self.graph.resolve_imported_type(self.module, name) {
+            Ok(_) => {}
+            Err(ModuleError::UnknownImportedType { .. }) => {
+                if !self.graph.modules_exporting_type(name).is_empty() {
+                    self.error = Some(BundleError::UnimportedType {
+                        module: self.graph.module(self.module).key.clone(),
+                        name: name.clone(),
+                    });
+                }
+            }
+            Err(error) => self.error = Some(BundleError::Module(error)),
+        }
     }
 }
 
-/// A top-level type declaration extracted from a module.
-struct ModuleTypeDeclaration {
-    id: TypeId,
-    exported: bool,
-    statement: Statement,
+fn validate_cross_module_types(
+    graph: &MultiModuleModel,
+    order: &[ModuleId],
+    root: ModuleId,
+) -> Result<(), BundleError> {
+    let mut modules: Vec<ModuleId> = order.to_vec();
+    if !modules.contains(&root) {
+        modules.push(root);
+    }
+
+    for module in modules {
+        let mut block = graph.module(module).block.clone();
+        let mut validator = TypeValidator {
+            graph,
+            module,
+            error: None,
+        };
+        DefaultVisitor::visit_block(&mut block, &mut validator);
+        if let Some(error) = validator.error {
+            return Err(error);
+        }
+    }
+
+    Ok(())
 }
 
 struct TypeRenamer<'a> {
-    model: &'a SemanticModel,
+    graph: &'a MultiModuleModel,
+    module: ModuleId,
     local: &'a HashMap<TypeId, String>,
-    global: &'a HashMap<String, String>,
+    global: &'a HashMap<(ModuleId, TypeId), String>,
 }
 
 impl NodeProcessor for TypeRenamer<'_> {
     fn process_type_name(&mut self, type_name: &mut TypeName) {
         let identifier = type_name.get_type_name();
-        let target = match self.model.resolve_type(identifier) {
-            // A resolved name is only renamed when it is one of this module's
-            // hoisted types; a shadowing local type keeps its name.
-            Some(id) => self.local.get(&id).cloned(),
-            // An unresolved name may refer to a type exported by another
-            // module; retarget it to that module's hoisted type.
-            None => self.global.get(identifier.get_name()).cloned(),
-        };
-        if let Some(fresh) = target {
-            type_name.mutate_type_name().set_name(fresh);
+
+        if let Some(id) = self
+            .graph
+            .module(self.module)
+            .model
+            .resolve_type(identifier)
+        {
+            if let Some(fresh) = self.local.get(&id) {
+                type_name.mutate_type_name().set_name(fresh.clone());
+            }
+            return;
+        }
+
+        if let Ok((target, id)) = self
+            .graph
+            .resolve_imported_type(self.module, identifier.get_name())
+        {
+            if let Some(fresh) = self.global.get(&(target, id)) {
+                type_name.mutate_type_name().set_name(fresh.clone());
+            }
         }
     }
 }
 
 struct TypeReferenceCollector<'a> {
-    model: &'a SemanticModel,
+    model: &'a crate::semantic::SemanticModel,
     ids: Vec<TypeId>,
 }
 
@@ -348,7 +366,7 @@ impl NodeProcessor for TypeReferenceCollector<'_> {
     }
 }
 
-fn referenced_types(model: &SemanticModel, r#type: &Type) -> Vec<TypeId> {
+fn referenced_types(model: &crate::semantic::SemanticModel, r#type: &Type) -> Vec<TypeId> {
     let mut collector = TypeReferenceCollector {
         model,
         ids: Vec::new(),
@@ -358,57 +376,40 @@ fn referenced_types(model: &SemanticModel, r#type: &Type) -> Vec<TypeId> {
     collector.ids
 }
 
-/// Hoists exported type declarations out of bundled modules into the root
-/// scope.
-///
-/// Every exported type (and any local type it depends on) is minted a fresh
-/// collision-free name by `names`, removed from its module, and re-declared at
-/// the top of the root chunk. References are retargeted structurally through
-/// each module's model, so a shadowing local type is never renamed. Two
-/// modules exporting the same type name is a typed error rather than a silent
-/// collision.
+struct ExtractedDeclaration {
+    id: TypeId,
+    exported: bool,
+    statement: Statement,
+}
+
 fn hoist_exported_types(
-    modules: &mut HashMap<String, BundledModule>,
-    order: &[String],
-    root_block: &mut Block,
-    root_model: &SemanticModel,
+    graph: &mut MultiModuleModel,
+    root: ModuleId,
+    order: &[ModuleId],
     names: &mut NameGenerator,
 ) -> Result<Vec<Statement>, BundleError> {
-    let module_exports = modules.values().any(|module| {
-        module
-            .block
-            .iter_statements()
-            .any(is_exported_type_declaration)
-    });
-    let root_exports = root_block
-        .iter_statements()
-        .any(is_exported_type_declaration);
-
-    if !module_exports && !root_exports {
-        return Ok(Vec::new());
-    }
-
-    let mut exported_owner: HashMap<String, String> = HashMap::new();
-    let mut global_names: HashMap<String, String> = HashMap::new();
-
-    // Root exported types already live in the root scope.
-    if root_exports {
-        for statement in root_block.iter_statements() {
-            if let Statement::TypeDeclaration(declaration) = statement {
-                if declaration.is_exported() {
-                    let name = declaration.get_name().get_name().clone();
-                    exported_owner.entry(name.clone()).or_default();
-                    global_names.entry(name.clone()).or_insert(name);
+    // Reject duplicate exported type names across all modules (and the root).
+    let mut owner: HashMap<String, ModuleId> = HashMap::new();
+    for module in graph.iter_ids() {
+        let interface = &graph.module(module).interface;
+        for name in interface.types.keys() {
+            if let Some(previous) = owner.insert(name.clone(), module) {
+                if previous != module {
+                    return Err(BundleError::DuplicateExportedType { name: name.clone() });
                 }
             }
         }
     }
 
-    // Extract every top-level type declaration and reject duplicate exported
-    // names across modules.
-    let mut extracted: Vec<(String, Vec<ModuleTypeDeclaration>)> = Vec::new();
-    for path in order {
-        let module = modules.get_mut(path).expect("every ordered module exists");
+    // Extract each module's top-level type declarations and decide which move
+    // to the root: exported types plus the local types they depend on.
+    let mut extracted: HashMap<ModuleId, Vec<ExtractedDeclaration>> = HashMap::new();
+    let mut hoisted_flags: HashMap<ModuleId, Vec<bool>> = HashMap::new();
+    let mut local_mappings: HashMap<ModuleId, HashMap<TypeId, String>> = HashMap::new();
+    let mut global_mapping: HashMap<(ModuleId, TypeId), String> = HashMap::new();
+
+    for &module_id in order.iter().filter(|module| **module != root) {
+        let module = graph.module_mut(module_id);
         let model = &module.model;
 
         let mut declarations = Vec::new();
@@ -418,21 +419,9 @@ fn hoist_exported_types(
             if let Statement::TypeDeclaration(declaration) = &statement {
                 let name = declaration.get_name().get_name().clone();
                 let id = model.resolve_type(declaration.get_name()).ok_or_else(|| {
-                    BundleError::UnresolvedExportedType {
-                        module: path.clone(),
-                        name: name.clone(),
-                    }
+                    BundleError::Module(ModuleError::UnboundExport { name: name.clone() })
                 })?;
-
-                if declaration.is_exported() {
-                    if let Some(owner) = exported_owner.insert(name.clone(), path.clone()) {
-                        if owner != *path {
-                            return Err(BundleError::DuplicateExportedType { name });
-                        }
-                    }
-                }
-
-                declarations.push(ModuleTypeDeclaration {
+                declarations.push(ExtractedDeclaration {
                     id,
                     exported: declaration.is_exported(),
                     statement,
@@ -441,18 +430,7 @@ fn hoist_exported_types(
                 rest.push(statement);
             }
         }
-
         module.block.set_statements(rest);
-        extracted.push((path.clone(), declarations));
-    }
-
-    // Decide which declarations to hoist (exported types plus their local
-    // dependencies) and mint their fresh names.
-    let mut module_names: HashMap<String, HashMap<TypeId, String>> = HashMap::new();
-    let mut hoisted_flags: HashMap<String, Vec<bool>> = HashMap::new();
-
-    for (path, declarations) in &extracted {
-        let module = modules.get(path).expect("every extracted module exists");
 
         let index_by_id: HashMap<TypeId, usize> = declarations
             .iter()
@@ -465,7 +443,7 @@ fn hoist_exported_types(
             let Statement::TypeDeclaration(statement) = &declaration.statement else {
                 continue;
             };
-            for referenced in referenced_types(&module.model, statement.get_type()) {
+            for referenced in referenced_types(model, statement.get_type()) {
                 if let Some(&dependency) = index_by_id.get(&referenced) {
                     dependencies[index].push(dependency);
                 }
@@ -485,146 +463,111 @@ fn hoist_exported_types(
             }
         }
 
-        let mut mapping: HashMap<TypeId, String> = HashMap::new();
+        let mut mapping = HashMap::new();
         let mut flags = vec![false; declarations.len()];
         for &index in &hoisted {
             let declaration = &declarations[index];
-            let name = declaration_name(&declaration.statement);
+            let name = match &declaration.statement {
+                Statement::TypeDeclaration(statement) => statement.get_name().get_name().clone(),
+                _ => unreachable!("only type declarations are extracted"),
+            };
             let fresh = names.generate_with_prefix(format!("__R4_TYPE_{name}"));
-            if declaration.exported {
-                global_names.insert(name, fresh.clone());
-            }
+            global_mapping.insert((module_id, declaration.id), fresh.clone());
             mapping.insert(declaration.id, fresh);
             flags[index] = true;
         }
 
-        module_names.insert(path.clone(), mapping);
-        hoisted_flags.insert(path.clone(), flags);
+        extracted.insert(module_id, declarations);
+        hoisted_flags.insert(module_id, flags);
+        local_mappings.insert(module_id, mapping);
     }
 
-    // Move the hoisted declarations to the root and retarget references.
+    // Rename references and move the hoisted declarations to the root.
     let mut hoisted_statements: Vec<Statement> = Vec::new();
 
-    for (path, declarations) in extracted {
-        let module = modules
-            .get_mut(&path)
-            .expect("every extracted module exists");
-        let mapping = module_names
-            .get(&path)
-            .expect("every module has a type mapping");
+    for &module_id in order.iter().filter(|module| **module != root) {
+        let declarations = extracted
+            .remove(&module_id)
+            .expect("every module was extracted");
         let flags = hoisted_flags
-            .get(&path)
+            .remove(&module_id)
             .expect("every module has hoisted flags");
+        let mapping = local_mappings
+            .remove(&module_id)
+            .expect("every module has a type mapping");
 
-        let BundledModule { block, model } = module;
-
+        let mut block = mem::take(&mut graph.module_mut(module_id).block);
         let mut rebuilt: Vec<Statement> = Vec::new();
+
         for (index, declaration) in declarations.into_iter().enumerate() {
+            let ExtractedDeclaration {
+                id, mut statement, ..
+            } = declaration;
             if flags[index] {
-                let ModuleTypeDeclaration {
-                    id,
-                    statement: declaration_statement,
-                    ..
-                } = declaration;
-                let mut statement = declaration_statement;
                 if let Statement::TypeDeclaration(declaration) = &mut statement {
                     declaration.remove_exported();
                     if let Some(fresh) = mapping.get(&id) {
                         declaration.mutate_name().set_name(fresh.clone());
                     }
                 }
-
-                let mut renamer = TypeRenamer {
-                    model,
-                    local: mapping,
-                    global: &global_names,
-                };
-                DefaultVisitor::visit_statement(&mut statement, &mut renamer);
+                rename_statement(graph, module_id, &mapping, &global_mapping, &mut statement);
                 hoisted_statements.push(statement);
             } else {
-                rebuilt.push(declaration.statement);
+                rebuilt.push(statement);
             }
         }
 
         rebuilt.extend(block.take_statements());
         block.set_statements(rebuilt);
-
-        let mut renamer = TypeRenamer {
-            model,
-            local: mapping,
-            global: &global_names,
-        };
-        DefaultVisitor::visit_block(block, &mut renamer);
+        rename_block(graph, module_id, &mapping, &global_mapping, &mut block);
+        graph.module_mut(module_id).block = block;
     }
 
-    let empty: HashMap<TypeId, String> = HashMap::new();
-    let mut root_renamer = TypeRenamer {
-        model: root_model,
-        local: &empty,
-        global: &global_names,
-    };
-    DefaultVisitor::visit_block(root_block, &mut root_renamer);
+    {
+        let mut root_block = mem::take(&mut graph.module_mut(root).block);
+        let empty = HashMap::new();
+        rename_block(graph, root, &empty, &global_mapping, &mut root_block);
+        graph.module_mut(root).block = root_block;
+    }
 
     Ok(hoisted_statements)
 }
 
-fn collect_dependencies(
-    block: &mut Block,
-    model: &SemanticModel,
-    module: Option<String>,
-) -> Result<Vec<String>, BundleError> {
-    struct Collector<'a> {
-        model: &'a SemanticModel,
-        module: Option<String>,
-        dependencies: Vec<String>,
-        error: Option<BundleError>,
-    }
-
-    impl Collector<'_> {
-        fn check(&mut self, call: &FunctionCall) {
-            if self.error.is_some() {
-                return;
-            }
-            match classify_require_call(call, self.model) {
-                RequireCall::NotRequire => {}
-                RequireCall::Path { path } => self.dependencies.push(path),
-                RequireCall::NonLiteral => {
-                    self.error = Some(BundleError::NonLiteralRequire {
-                        module: self.module.clone(),
-                        line: require_call_line(call),
-                    });
-                }
-            }
-        }
-    }
-
-    impl NodeProcessor for Collector<'_> {
-        fn process_expression(&mut self, expression: &mut Expression) {
-            if let Expression::Call(call) = expression {
-                self.check(call);
-            }
-        }
-
-        fn process_statement(&mut self, statement: &mut Statement) {
-            if let Statement::Call(call) = statement {
-                self.check(call);
-            }
-        }
-    }
-
-    let mut collector = Collector {
-        model,
+fn rename_statement(
+    graph: &MultiModuleModel,
+    module: ModuleId,
+    local: &HashMap<TypeId, String>,
+    global: &HashMap<(ModuleId, TypeId), String>,
+    statement: &mut Statement,
+) {
+    let mut renamer = TypeRenamer {
+        graph,
         module,
-        dependencies: Vec::new(),
-        error: None,
+        local,
+        global,
     };
-    DefaultVisitor::visit_block(block, &mut collector);
-
-    match collector.error {
-        Some(error) => Err(error),
-        None => Ok(collector.dependencies),
-    }
+    DefaultVisitor::visit_statement(statement, &mut renamer);
 }
+
+fn rename_block(
+    graph: &MultiModuleModel,
+    module: ModuleId,
+    local: &HashMap<TypeId, String>,
+    global: &HashMap<(ModuleId, TypeId), String>,
+    block: &mut Block,
+) {
+    let mut renamer = TypeRenamer {
+        graph,
+        module,
+        local,
+        global,
+    };
+    DefaultVisitor::visit_block(block, &mut renamer);
+}
+
+// ----------------------------------------------------------------------
+// Loader construction
+// ----------------------------------------------------------------------
 
 struct LoaderConverter {
     load: String,
@@ -633,7 +576,7 @@ struct LoaderConverter {
 
 impl RequirePathConverter for LoaderConverter {
     fn convert(&self, path: &str) -> Option<Expression> {
-        let normalized = normalize_require_path(path, &self.base_directory);
+        let normalized = crate::modules::normalize_require_path(path, &self.base_directory);
         Some(
             FunctionCall::from_name(self.load.clone())
                 .with_argument(StringExpression::from_value(normalized))

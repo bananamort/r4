@@ -6,7 +6,7 @@ use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::semantic::SemanticModel;
 
 use super::convert::{convert_require, ConvertRequireError, RequirePathConverter};
-use super::{classify_require_call, RequireCall};
+use crate::modules::{classify_require_call, RequireCall};
 
 /// An error produced while applying path aliases.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -5,7 +5,7 @@ use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::semantic::SemanticModel;
 use crate::utils::expressions_as_statement;
 
-use super::{classify_require_call, require_call_line, RequireCall};
+use crate::modules::{classify_require_call, require_call_line, RequireCall};
 
 /// An error produced while converting `require` calls.
 #[derive(Clone, Debug, PartialEq, Eq)]

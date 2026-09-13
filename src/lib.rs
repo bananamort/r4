@@ -3,6 +3,7 @@
 mod ast_converter;
 pub mod cfg;
 pub mod generator;
+pub mod modules;
 pub mod nodes;
 mod parser;
 pub mod process;

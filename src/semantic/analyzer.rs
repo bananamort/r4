@@ -510,7 +510,7 @@ pub(super) fn line_of(identifier: &Identifier) -> Option<usize> {
 /// These names are always resolvable without a declaration; anything else must
 /// be declared, be a generic type parameter, or be reported under strict
 /// typing.
-pub(super) fn is_builtin_type_name(name: &str) -> bool {
+pub fn is_builtin_type_name(name: &str) -> bool {
     matches!(
         name,
         "any"

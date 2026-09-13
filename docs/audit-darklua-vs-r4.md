@@ -480,6 +480,45 @@ without a configuration file or filesystem coupling:
   as code generation (`DenseLuaGenerator`), so minification never mutates
   tokens or trivia.
 
+### Multi-module architecture
+
+Multi-file analysis is split into three layers with clean boundaries:
+
+- **Semantic layer** (`semantic::MultiModuleModel`) owns the syntax trees and
+  their single-file `SemanticModel`s, an explicit `ModuleInterface` per module
+  (exported values and `TypeId`s) and `ImportBinding`s that bind a local alias
+  symbol directly to a target module. Cross-module queries
+  (`resolve_imported_value`, `resolve_imported_type`, `modules_exporting_type`)
+  resolve by identity and never consult a name dictionary. Export extraction
+  supports inline returned tables, tables built by mutation (`t.k = v`,
+  `function t.f()`), single-value returns, and `export type` declarations.
+  This layer is free of paths, I/O and code generation.
+- **Resolution layer** (`modules::ModuleResolver`) owns everything
+  path-related: a `ModuleProvider`, relative-path normalization, `require`
+  classification, cycle detection and topological ordering. It parses each
+  discovered file, delegates analysis to `SemanticAnalyzer`, and builds the
+  `MultiModuleModel`, including binding alias imports to the modules the
+  resolver resolved.
+- **Bundler** (`rules::require::bundle_modules`) is a pure consumer. It inlines
+  modules in topological order, hoists and renames exported types through the
+  graph's identities, rewrites `require` calls with the loader, and validates
+  cross-module type references.
+
+Strict cross-module rules: a type reference resolves only through an imported
+module's interface; a reference to a type exported by an unimported module is
+`BundleError::UnimportedType`, and a name exported by several imported modules
+is `ModuleError::AmbiguousImportedType`. A value field access through an
+import must be a declared export (`ModuleError::UnknownExport`), and a symbol
+that is not an import alias is `UnknownImportAlias`. Lexical shadowing wins: a
+module-local type with the same name as an imported export is never retargeted.
+New names are minted by `NameGenerator`, which reserves every value symbol,
+type symbol and host global across every bundled module.
+
+Scope arenas remain per module (the multi-tree container links them through
+import bindings rather than merging them into one flat arena). This keeps
+standalone `SemanticAnalyzer`/`SemanticModel` analysis lightweight and
+unchanged while still providing identity-based cross-module resolution.
+
 ### Scope notes (outside the audited items)
 
 All open items from this audit are implemented. The notes below record
