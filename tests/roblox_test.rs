@@ -85,6 +85,24 @@ fn bundles_find_first_child_instance_requires() {
 }
 
 #[test]
+fn bundles_luau_self_requires() {
+    let output = bundle(
+        "local a = require('./pkg/a')\nreturn a.value",
+        &[
+            (
+                "pkg/a",
+                "local util = require('@self/util')\nreturn { value = util.value }",
+            ),
+            ("pkg/util", "return { value = 5 }"),
+        ],
+    )
+    .expect("@self requires must bundle");
+
+    assert!(output.contains("['pkg/util']"), "{output}");
+    assert!(!output.contains("require("), "{output}");
+}
+
+#[test]
 fn rejects_unsupported_data_model_require() {
     let error = bundle(
         "local a = require('./pkg/a')\nreturn a",

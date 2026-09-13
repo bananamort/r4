@@ -611,7 +611,8 @@ equivalent is simply skipped.
   externally tagged enums.
 - **Filesystem and Roblox requires.** `modules::FileSystemModuleProvider`
   resolves `<root>/<key>.lua|.luau` and folder modules (`<root>/<key>/init.lua`),
-  rejecting keys that escape the root. `classify_require_call` recognizes
+  rejecting keys that escape the root, and `normalize_require_path` supports the
+  Luau RFC `@self` prefix next to `./`/`../`. `classify_require_call` recognizes
   Roblox/Luau instance requires (`require(script.Parent.Util)`,
   `:FindFirstChild`/`:WaitForChild`) and `resolve_instance_path` maps them to
   module keys using the Rojo file layout; the resolver, alias binding, bundler

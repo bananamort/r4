@@ -468,11 +468,28 @@ pub(crate) fn parent_directory(path: &str) -> String {
 
 /// Normalizes a relative `require` path against the directory of the module
 /// that contains it.
+///
+/// Supports the Luau RFC `@self` prefix, which is relative to the requiring
+/// module's own directory, alongside the classic `./` and `../` prefixes.
 pub(crate) fn normalize_require_path(path: &str, base_directory: &str) -> String {
+    if let Some(rest) = path.strip_prefix("@self") {
+        if rest.is_empty() {
+            return base_directory.to_owned();
+        }
+        if let Some(rest) = rest.strip_prefix('/') {
+            return join_relative(rest, base_directory);
+        }
+        return path.to_owned();
+    }
+
     if !path.starts_with("./") && !path.starts_with("../") {
         return path.to_owned();
     }
 
+    join_relative(path, base_directory)
+}
+
+fn join_relative(path: &str, base_directory: &str) -> String {
     let mut segments: Vec<&str> = if base_directory.is_empty() {
         Vec::new()
     } else {
