@@ -170,6 +170,17 @@ impl AnnotationError {
             AnnotationError::UnknownIdentifier { .. } => "annotation/unknown-identifier",
         }
     }
+
+    /// Converts this error into a structured diagnostic.
+    pub fn to_diagnostic(&self) -> crate::diagnostic::Diagnostic {
+        crate::diagnostic::Diagnostic::error(self.to_string()).with_code(self.code())
+    }
+}
+
+impl From<AnnotationError> for crate::diagnostic::Diagnostic {
+    fn from(error: AnnotationError) -> Self {
+        error.to_diagnostic()
+    }
 }
 
 /// A side table of annotations keyed by structural node address.

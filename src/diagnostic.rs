@@ -373,6 +373,31 @@ pub static DIAGNOSTIC_CATALOG: &[DiagnosticDescriptor] = &[
     ),
     DiagnosticDescriptor::new("query/missing-span", Severity::Error, "Missing token span"),
     DiagnosticDescriptor::new("compile/unknown-tree", Severity::Error, "Unknown tree"),
+    DiagnosticDescriptor::new(
+        "annotation/unknown-block",
+        Severity::Error,
+        "Unknown annotation block",
+    ),
+    DiagnosticDescriptor::new(
+        "annotation/unknown-statement",
+        Severity::Error,
+        "Unknown annotation statement",
+    ),
+    DiagnosticDescriptor::new(
+        "annotation/unknown-expression",
+        Severity::Error,
+        "Unknown annotation expression",
+    ),
+    DiagnosticDescriptor::new(
+        "annotation/missing-condition",
+        Severity::Error,
+        "Missing annotation condition",
+    ),
+    DiagnosticDescriptor::new(
+        "annotation/unknown-identifier",
+        Severity::Error,
+        "Unknown annotation identifier",
+    ),
 ];
 
 /// Returns the descriptor for a diagnostic code, if it is cataloged.

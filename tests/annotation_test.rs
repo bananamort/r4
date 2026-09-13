@@ -144,6 +144,31 @@ fn manages_annotations() {
 }
 
 #[test]
+fn annotation_codes_are_cataloged_and_diagnostic_ready() {
+    for code in [
+        "annotation/unknown-block",
+        "annotation/unknown-statement",
+        "annotation/unknown-expression",
+        "annotation/missing-condition",
+        "annotation/unknown-identifier",
+    ] {
+        assert!(
+            r4::descriptor_for(code).is_some(),
+            "missing descriptor {code}"
+        );
+    }
+
+    let error = AnnotationError::UnknownIdentifier {
+        binding: BindingId::symbol(7),
+    };
+    let diagnostic = error.to_diagnostic();
+    assert_eq!(diagnostic.code, Some("annotation/unknown-identifier"));
+    r4::DiagnosticFormatter::new("return 0")
+        .render(&diagnostic)
+        .expect("the diagnostic renders");
+}
+
+#[test]
 fn session_validates_annotations_against_the_current_tree() {
     let mut session = Session::parse("local x = 1\nreturn x").expect("valid code");
     let root = identity(session.block());
