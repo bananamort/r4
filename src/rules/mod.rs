@@ -12,10 +12,12 @@ mod name_generator;
 
 pub mod canonicalize;
 pub mod desugar;
+pub mod inject;
 pub mod rename_variables;
 pub mod require;
 mod session;
 
+pub use inject::{inject_global_values, InjectGlobalValueError};
 pub use name_generator::NameGenerator;
 pub use session::{Session, SessionError};
 

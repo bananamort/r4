@@ -26,13 +26,15 @@ pub struct NameGenerator {
 }
 
 impl NameGenerator {
-    /// Builds a generator reserved against every model symbol and host global.
+    /// Builds a generator reserved against every model symbol, type symbol and
+    /// host global.
     pub fn new(model: &SemanticModel) -> Self {
         let mut reserved: HashSet<String> = model
             .symbols
             .iter()
             .map(|symbol| symbol.name.clone())
             .collect();
+        reserved.extend(model.types.iter().map(|symbol| symbol.name.clone()));
         reserved.extend(DEFAULT_GLOBALS.iter().map(|name| (*name).to_owned()));
         reserved.extend(ROBLOX_GLOBALS.iter().map(|name| (*name).to_owned()));
 

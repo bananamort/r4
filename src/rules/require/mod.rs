@@ -6,9 +6,11 @@
 //! of it. A local or parameter named `require` is never converted, which
 //! eliminates darklua's Claim D bug by construction.
 
+mod alias;
 mod bundler;
 mod convert;
 
+pub use alias::{apply_path_aliases, AliasError, AliasRequireConverter};
 pub use bundler::{bundle_modules, BundleError, MemoryModuleProvider, ModuleProvider};
 pub use convert::{convert_require, ConvertRequireError, RequirePathConverter};
 

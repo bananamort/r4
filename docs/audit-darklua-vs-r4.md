@@ -451,6 +451,35 @@ worst case. This is bounded by the language's goto usage in practice; shrinking
 it further would require a cursor-based visibility representation and a change
 to the public `visible_symbols` fields.
 
+### Compiler-as-a-service API expansion
+
+The programmatic API now covers the remaining functional darklua capabilities
+without a configuration file or filesystem coupling:
+
+- **Semantic constant injection** — `rules::inject_global_values(block, model,
+  values)` replaces reads of configured globals with literal values. Every
+  occurrence resolves through the `SemanticModel`, so shadowed locals,
+  parameters and captures are never touched, globals that are written are left
+  alone, and values with no literal representation are rejected up front with
+  `InjectGlobalValueError::UnrepresentableValue`.
+- **Exported-type hoisting** — `rules::require::bundle_modules` hoists each
+  module's `export type` declarations (plus the local types they depend on)
+  into the root scope using fresh `NameGenerator` names that reserve every
+  value symbol, type symbol and host global across the bundle. References are
+  retargeted through the module models (a shadowing local type keeps its
+  name), cross-module references are retargeted to the hoisted type, and two
+  modules exporting the same type name is a typed
+  `BundleError::DuplicateExportedType`.
+- **Path aliases** — `rules::require::apply_path_aliases` and
+  `AliasRequireConverter` map `@pkg/...` prefixes to normalized paths through
+  the existing `RequirePathConverter` trait. Malformed, duplicate and
+  recursive mappings are typed errors, and an aliased require with no mapping
+  is `AliasError::UnresolvedAlias` rather than a silent skip.
+- **Generator-level minification** — `Session::generate`,
+  `Session::generate_minified` and `Session::generate_with` expose formatting
+  as code generation (`DenseLuaGenerator`), so minification never mutates
+  tokens or trivia.
+
 ### Scope notes (outside the audited items)
 
 All open items from this audit are implemented. The notes below record

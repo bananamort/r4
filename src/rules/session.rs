@@ -13,6 +13,8 @@ use crate::nodes::Block;
 use crate::parser::{Parser, ParserError};
 use crate::semantic::{SemanticAnalyzer, SemanticError, SemanticModel};
 
+use crate::generator::{DenseLuaGenerator, LuaGenerator, ReadableLuaGenerator};
+
 /// An error produced by a [`Session`].
 #[derive(Debug)]
 pub enum SessionError<E = Infallible> {
@@ -85,6 +87,30 @@ impl Session {
     #[inline]
     pub fn into_block(self) -> Block {
         self.block
+    }
+
+    /// Renders the current block with the readable generator.
+    pub fn generate(&self) -> String {
+        let mut generator = ReadableLuaGenerator::default();
+        generator.write_block(&self.block);
+        generator.into_string()
+    }
+
+    /// Renders the current block with the dense (minified) generator.
+    ///
+    /// Minification is a property of code generation, not of the AST: the
+    /// dense generator emits only the semantic tree, so comments, whitespace
+    /// and formatting trivia are dropped without any token-mutating rule.
+    pub fn generate_minified(&self) -> String {
+        let mut generator = DenseLuaGenerator::default();
+        generator.write_block(&self.block);
+        generator.into_string()
+    }
+
+    /// Renders the current block with a caller-provided generator.
+    pub fn generate_with<G: LuaGenerator>(&self, mut generator: G) -> String {
+        generator.write_block(&self.block);
+        generator.into_string()
     }
 
     /// Applies a pass that does not need semantic information and invalidates
