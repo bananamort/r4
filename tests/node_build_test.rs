@@ -248,11 +248,17 @@ fn literal_expression_numeric_conversions() {
 
 #[test]
 fn token_operations_traverse_attribute_groups() {
-    let group = AttributeGroup::new(AttributeGroupElement::new("a")).with_attribute(
-        AttributeGroupElement::new("b").with_arguments(AttributeArguments::String(
-            StringExpression::from_value("s"),
-        )),
-    );
+    let mut literal = LiteralTable::from_entries(Vec::new());
+    literal.append_field(Identifier::new("key"), LiteralExpression::from(true));
+    literal.append_array_value(LiteralExpression::nil());
+    let group =
+        AttributeGroup::new(AttributeGroupElement::new("a"))
+            .with_attribute(AttributeGroupElement::new("b").with_arguments(
+                AttributeArguments::String(StringExpression::from_value("s")),
+            ))
+            .with_attribute(
+                AttributeGroupElement::new("c").with_arguments(AttributeArguments::Table(literal)),
+            );
     let attributes = Attributes::new().with_attribute(Attribute::Group(group));
     let mut block = function_with(attributes);
 

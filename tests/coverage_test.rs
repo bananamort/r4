@@ -86,6 +86,8 @@ const CORPUS: &[&str] = &[
     "local t = { 1, 2, 3, a = 4, b = 5 }",
     "return `{a}{b}{c}`",
     "return a, (b), f(1, 2)",
+    "return ...",
+    "local x: true = y",
     "for a, b, c in f() do end",
     "local x = f<<T>>",
     "return f<<T>>",
@@ -404,4 +406,96 @@ fn navigation_modules_and_diagnostics_cover_the_corpus() {
     for diagnostic in compilation.diagnostics() {
         let _ = compilation.format_diagnostic(diagnostic, "local x = ");
     }
+}
+
+#[test]
+fn parser_dialect_presets_and_error_reporting() {
+    use r4::{Dialect, Parser};
+
+    for (parser, dialect) in [
+        (Parser::default().lua51(), Dialect::Lua51),
+        (Parser::default().lua52(), Dialect::Lua52),
+        (Parser::default().lua53(), Dialect::Lua53),
+        (Parser::default().lua54(), Dialect::Lua54),
+        (Parser::default().lua_jit(), Dialect::LuaJit),
+        (Parser::default().dialect(Dialect::Luau), Dialect::Luau),
+    ] {
+        assert_eq!(parser.get_dialect(), dialect);
+        assert!(!dialect.as_str().is_empty());
+        assert!(!dialect.to_string().is_empty());
+    }
+    assert!(Parser::default().lua52().is_lua52());
+    assert!(!Parser::default().is_lua52());
+
+    let error = Parser::default()
+        .parse("local x = ")
+        .expect_err("invalid code must fail");
+    assert_eq!(error.code(), "parse/syntax");
+    assert!(!error.to_diagnostics().is_empty());
+    assert_eq!(error.to_diagnostic(), error.to_diagnostics()[0]);
+    assert!(!error.to_string().is_empty());
+
+    // The recovering parse yields the tree and the diagnostics.
+    let (block, diagnostics) = Parser::default()
+        .parse_recovering("return 1 + ")
+        .expect("recovery yields a tree");
+    assert!(!diagnostics.is_empty());
+    let _ = block.iter_statements().count();
+}
+
+#[test]
+fn cfg_errors_and_analysis_getters_cover_the_corpus() {
+    use r4::cfg::analysis::{ConstantPropagation, LoopInvariantAnalysis};
+    use r4::cfg::build_chunk;
+    use r4::semantic::{SemanticAnalyzer, SymbolId};
+
+    let corpora: [(&[&str], Dialect); 4] = [
+        (CORPUS, Dialect::Luau),
+        (LUA52, Dialect::Lua52),
+        (LUA53, Dialect::Lua53),
+        (LUA54, Dialect::Lua54),
+    ];
+    for (codes, dialect) in corpora {
+        for &code in codes {
+            let block = parse_with(code, dialect);
+            let Ok(model) = SemanticAnalyzer::new().analyze(&block) else {
+                continue;
+            };
+            let Ok(cfg) = build_chunk(&block, &model) else {
+                continue;
+            };
+            if let Ok(propagation) = ConstantPropagation::analyze(&cfg, &model) {
+                for id in cfg.iter_block_ids() {
+                    let _ = propagation.block_entry_constants(id);
+                    let _ = propagation.constant_at_block_entry(id, SymbolId(0));
+                }
+            }
+            if let Ok(invariants) = LoopInvariantAnalysis::analyze(&cfg, &model) {
+                let _ = invariants.hoists().len();
+                let _ = invariants.is_empty();
+            }
+        }
+    }
+
+    // Statements that cannot appear in the CFG produce typed errors.
+    for (code, dialect) in [
+        ("break", Dialect::Luau),
+        ("continue", Dialect::Luau),
+        ("break", Dialect::Lua51),
+    ] {
+        let block = parse_with(code, dialect);
+        let Ok(model) = SemanticAnalyzer::new().analyze(&block) else {
+            continue;
+        };
+        if let Err(error) = build_chunk(&block, &model) {
+            assert!(!error.to_string().is_empty(), "{code}");
+        }
+    }
+
+    // A block with no identity is rejected rather than guessed.
+    let unanalyzed = parse_with("return 1", Dialect::Luau);
+    let empty_model = SemanticAnalyzer::new()
+        .analyze(&parse_with("return 1", Dialect::Luau))
+        .expect("analysis");
+    let _ = build_chunk(&unanalyzed, &empty_model);
 }

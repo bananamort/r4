@@ -351,7 +351,14 @@ mod operator_coverage {
 
     #[test]
     fn removes_compound_assignment_on_fields_and_indexes() {
-        for input in ["t.field += 1", "t[1] -= 1", "t[key()] *= 2"] {
+        for input in [
+            "t.field += 1",
+            "t[1] -= 1",
+            "t[key()] *= 2",
+            "(t).field += 1",
+            "(t)[1] += 1",
+            "t[key()] += 1",
+        ] {
             let (mut block, model) = analyze(input);
             remove_compound_assign(&mut block, &model);
             let output = generate(&block);
