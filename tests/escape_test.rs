@@ -151,3 +151,47 @@ fn nested_field_read_is_recorded() {
     let mut block = block;
     assert_eq!(remove_dead_table_stores(&mut block, &model), 0);
 }
+
+#[test]
+fn escapes_via_every_control_flow_statement() {
+    for code in [
+        "local t = {}\nfor k, v in pairs(t) do end",
+        "local t = {}\nfor i = 1, 2 do sink(t) end",
+        "local t = {}\nif c then sink(t) end",
+        "local t = {}\nwhile c do sink(t) end",
+        "local t = {}\nrepeat sink(t) until c",
+        "local t = {}\ndo sink(t) end",
+        "local t = {}\nlocal n = 0\nn += 1\nsink(t)",
+    ] {
+        let (block, model) = analyze(code);
+        let analysis = EscapeAnalysis::analyze(&block, &model);
+        let t = symbol_named(&model, "t");
+        assert!(analysis.escapes(t), "`{code}` must escape");
+        assert!(
+            !analysis.is_confined_table(&model, t),
+            "`{code}` must not be confined"
+        );
+    }
+}
+
+#[test]
+fn tables_stay_confined_across_every_control_flow_statement() {
+    for code in [
+        "local t = {}\nt.x = 1\nfor k, v in pairs(other) do t.y = k end\nreturn 0",
+        "local t = {}\nt.x = 1\nfor i = 1, 2 do t.y = i end\nreturn 0",
+        "local t = {}\nt.x = 1\nif c then t.y = 1 end\nreturn 0",
+        "local t = {}\nt.x = 1\nwhile c do t.y = 1 end\nreturn 0",
+        "local t = {}\nt.x = 1\nrepeat t.y = 1 until c\nreturn 0",
+        "local t = {}\nt.x = 1\ndo t.y = 1 end\nreturn 0",
+        "local t = {}\nt.x = 1\nlocal n = 0\nn += 1\nreturn 0",
+    ] {
+        let (block, model) = analyze(code);
+        let analysis = EscapeAnalysis::analyze(&block, &model);
+        let t = symbol_named(&model, "t");
+        assert!(analysis.is_table(t), "`{code}` must be a table");
+        assert!(
+            analysis.is_confined_table(&model, t),
+            "`{code}` must stay confined"
+        );
+    }
+}

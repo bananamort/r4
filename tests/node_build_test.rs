@@ -123,3 +123,75 @@ fn built_attributes_generate_and_can_be_stripped() {
     assert!(output.contains("function f()"), "{output}");
     assert!(!output.contains('@'), "{output}");
 }
+
+#[test]
+fn attributes_collection_accessors() {
+    use r4::nodes::{Attribute, NamedAttribute};
+
+    let mut attributes = Attributes::new();
+    assert!(attributes.is_empty());
+    assert_eq!(attributes.len(), 0);
+    assert!(!attributes.has_attribute("native"));
+
+    attributes.append_attribute(Attribute::Name(NamedAttribute::new("native")));
+    assert_eq!(attributes.len(), 1);
+    assert!(!attributes.is_empty());
+    assert!(attributes.has_attribute("native"));
+    assert!(!attributes.has_attribute("deprecated"));
+    assert_eq!(attributes.iter_attributes().count(), 1);
+
+    // A group is reachable by name through the collection.
+    attributes.append_attribute(Attribute::Group(AttributeGroup::new(
+        AttributeGroupElement::new("config"),
+    )));
+    assert!(attributes.has_attribute("config"));
+
+    attributes.filter_attributes(|attribute| matches!(attribute, Attribute::Group(_)));
+    assert_eq!(attributes.iter_attributes().count(), 1);
+    assert!(attributes.has_attribute("config"));
+    assert!(!attributes.has_attribute("native"));
+
+    attributes.clear_attributes();
+    assert!(attributes.is_empty());
+}
+
+#[test]
+fn literal_expression_float_conversion_rejects_invalid_values() {
+    assert!(LiteralExpression::try_from(f64::NAN).is_err());
+    assert!(LiteralExpression::try_from(f64::INFINITY).is_err());
+    assert!(LiteralExpression::try_from(-1.0).is_err());
+
+    assert!(matches!(
+        LiteralExpression::try_from(0.0).expect("zero"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::try_from(0.001).expect("small value"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::try_from(1000.0).expect("round large value"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::try_from(1.5).expect("normal value"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::try_from(2.5).expect("normal value"),
+        LiteralExpression::Number(_)
+    ));
+
+    assert!(matches!(
+        LiteralExpression::from(false),
+        LiteralExpression::False(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::nil(),
+        LiteralExpression::Nil(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::from(1u8),
+        LiteralExpression::Number(_)
+    ));
+}

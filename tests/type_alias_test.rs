@@ -85,3 +85,25 @@ fn scope_lookup_expands_aliases() {
     assert_eq!(model.resolve_type_in_scope(scope, "A"), Some(a));
     assert_eq!(model.resolve_type_in_scope_expanded(scope, "A"), Some(b));
 }
+
+#[test]
+fn type_function_parameters_and_generics_are_analyzed() {
+    // A type function introduces a function scope with its parameters and
+    // generic type parameters. Its own name is a type-level function, not a
+    // lexically declared type: the reference implementation does not declare it
+    // as a symbol either, so it must not appear in `model.types`.
+    let (_, model) = analyze("type function id<T>(value: T): T\n  return value\nend\nreturn 1");
+
+    assert!(
+        model
+            .symbols
+            .iter()
+            .any(|symbol| symbol.name == "value"
+                && symbol.kind == r4::semantic::SymbolKind::Parameter),
+        "the type function parameter must be declared as a parameter"
+    );
+    assert!(
+        !model.types.iter().any(|symbol| symbol.name == "id"),
+        "the type function name is not a lexical type"
+    );
+}

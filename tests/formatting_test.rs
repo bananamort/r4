@@ -247,3 +247,29 @@ fn token_passes_cover_type_nodes() {
         let _ = generator.into_string();
     }
 }
+
+#[test]
+fn token_passes_cover_literal_and_type_literal_tokens() {
+    let code =
+        "local x: true = y -- type literal\nreturn true, false, nil, ... -- value literals\n";
+    for pass in ["comments", "spaces", "shift", "replace"] {
+        let mut block = parse(code);
+        match pass {
+            "comments" => remove_comments(&mut block),
+            "spaces" => remove_spaces(&mut block),
+            "shift" => shift_token_line(&mut block, 1),
+            "replace" => replace_referenced_tokens(&mut block, code),
+            other => panic!("unknown pass {other}"),
+        }
+        let mut generator = TokenBasedLuaGenerator::new(code);
+        generator.write_block(&block);
+        let _ = generator.into_string();
+    }
+
+    // The comment attached to a literal token must be removable by the filter.
+    let mut block = parse(code);
+    remove_comments_where(&mut block, |trivia| trivia.read(code).contains("type"));
+    let output = generate(code, &block);
+    assert!(output.contains("type literal"), "{output}");
+    assert!(!output.contains("value literals"), "{output}");
+}
