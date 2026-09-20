@@ -27,15 +27,13 @@ fn fold(evaluator: &Evaluator, expression: &Expression) -> Option<Expression> {
             if let Some(truthy) =
                 evaluate(evaluator, binary.left()).and_then(|value| value.is_truthy())
             {
-                return Some(match (binary.operator(), truthy) {
-                    (BinaryOperator::And, true) | (BinaryOperator::Or, false) => {
-                        binary.right().clone()
-                    }
-                    (BinaryOperator::And, false) | (BinaryOperator::Or, true) => {
-                        binary.left().clone()
-                    }
-                    _ => unreachable!("only and/or reach this branch"),
-                });
+                return match binary.operator() {
+                    BinaryOperator::And if truthy => Some(binary.right().clone()),
+                    BinaryOperator::And => Some(binary.left().clone()),
+                    BinaryOperator::Or if truthy => Some(binary.left().clone()),
+                    BinaryOperator::Or => Some(binary.right().clone()),
+                    _ => None,
+                };
             }
         }
     }

@@ -531,7 +531,12 @@ impl TableType {
                 {
                     match self.entries.remove(remove_index) {
                         TableEntryType::Indexer(indexer) => Some(indexer),
-                        TableEntryType::Property(_) | TableEntryType::Literal(_) => unreachable!(),
+                        other => {
+                            // The entry was located as an indexer above; if that
+                            // ever changes, restore it rather than dropping it.
+                            self.entries.insert(remove_index, other);
+                            None
+                        }
                     }
                 } else {
                     None

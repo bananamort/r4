@@ -390,6 +390,7 @@ fn referenced_types(model: &crate::semantic::SemanticModel, r#type: &Type) -> Ve
 
 struct ExtractedDeclaration {
     id: TypeId,
+    name: String,
     exported: bool,
     statement: Statement,
 }
@@ -435,6 +436,7 @@ fn hoist_exported_types(
                 })?;
                 declarations.push(ExtractedDeclaration {
                     id,
+                    name,
                     exported: declaration.is_exported(),
                     statement,
                 });
@@ -479,10 +481,7 @@ fn hoist_exported_types(
         let mut flags = vec![false; declarations.len()];
         for &index in &hoisted {
             let declaration = &declarations[index];
-            let name = match &declaration.statement {
-                Statement::TypeDeclaration(statement) => statement.get_name().get_name().clone(),
-                _ => unreachable!("only type declarations are extracted"),
-            };
+            let name = declaration.name.clone();
             let fresh = names.generate_with_prefix(format!("__R4_TYPE_{name}"));
             global_mapping.insert((module_id, declaration.id), fresh.clone());
             mapping.insert(declaration.id, fresh);

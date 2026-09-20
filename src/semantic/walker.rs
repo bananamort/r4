@@ -150,8 +150,10 @@ impl AnalyzerState {
                     self.walk_scoped_block(else_block)?;
                 }
             }
-            Statement::Label(_) => {
-                unreachable!("labels are recorded by `walk_block_statements`")
+            Statement::Label(label) => {
+                // Labels are normally recorded by `walk_block_statements`; handle
+                // them here too so the walk is total.
+                self.record_label(label, false)?;
             }
             Statement::LocalAssign(assign) => {
                 // Values are resolved before the locals are declared, so that

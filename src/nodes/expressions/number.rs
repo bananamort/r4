@@ -497,14 +497,14 @@ impl FromStr for NumberExpression {
                         HexNumber::new(number, is_uppercase)
                     }
                     .into()
-                } else if notation == 'b' || notation == 'B' {
+                } else {
+                    // The guard above admits only `x`/`X`/`b`/`B`; `x`/`X` is
+                    // handled above, so this is the binary case.
                     let filtered = filter_underscore(value.get(position + 1..).unwrap());
                     let number = u64::from_str_radix(&filtered, 2)
                         .map_err(|_| Self::Err::InvalidBinaryNumber)?;
 
                     BinaryNumber::new(number, is_uppercase).into()
-                } else {
-                    unreachable!()
                 }
             }
             _ => {

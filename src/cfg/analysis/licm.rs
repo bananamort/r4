@@ -115,7 +115,9 @@ impl LoopInvariantAnalysis {
             };
             let mut blocks: HashSet<BlockId> = HashSet::new();
             for latch in latches {
-                blocks.extend(dominators.natural_loop_blocks(header, *latch));
+                if let Some(blocks_of_latch) = dominators.try_natural_loop_blocks(header, *latch) {
+                    blocks.extend(blocks_of_latch.iter().copied());
+                }
             }
             planned.push((blocks.len(), origin, latches.clone(), blocks));
         }

@@ -890,7 +890,9 @@ fn dominator_tree_detects_natural_while_loops() {
     assert_eq!(tree.back_edges()[0].latch, body);
     assert_eq!(tree.back_edges()[0].header, header);
 
-    let blocks = tree.natural_loop_blocks(header, body);
+    let blocks = tree
+        .try_natural_loop_blocks(header, body)
+        .expect("a natural loop");
     assert!(blocks.contains(&header));
     assert!(blocks.contains(&body));
     assert!(!blocks.contains(&cfg.entry));
@@ -907,7 +909,9 @@ fn dominator_tree_detects_repeat_loops() {
     let condition = jump_target(&cfg, body);
 
     assert!(tree.is_loop_header(body));
-    let blocks = tree.natural_loop_blocks(body, condition);
+    let blocks = tree
+        .try_natural_loop_blocks(body, condition)
+        .expect("a natural loop");
     assert!(blocks.contains(&body));
     assert!(blocks.contains(&condition));
     assert_eq!(blocks.len(), 2);
@@ -925,19 +929,20 @@ fn dominator_tree_detects_for_loops() {
     };
 
     assert!(tree.is_loop_header(header));
-    let blocks = tree.natural_loop_blocks(header, body);
+    let blocks = tree
+        .try_natural_loop_blocks(header, body)
+        .expect("a natural loop");
     assert!(blocks.contains(&header));
     assert!(blocks.contains(&body));
     assert!(!blocks.contains(&exit));
 }
 
 #[test]
-#[should_panic(expected = "not a natural loop back edge")]
-fn natural_loop_blocks_rejects_non_back_edges() {
+fn natural_loop_blocks_returns_none_for_non_back_edges() {
     let (cfg, _) = build("return 1");
     let tree = DominatorTree::analyze(&cfg);
 
-    tree.natural_loop_blocks(cfg.entry, cfg.exit);
+    assert_eq!(tree.try_natural_loop_blocks(cfg.entry, cfg.exit), None);
 }
 
 #[test]

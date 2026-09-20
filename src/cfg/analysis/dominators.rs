@@ -162,23 +162,6 @@ impl DominatorTree {
         self.natural_loops.get(&(header, latch))
     }
 
-    /// Returns the exact natural loop of the back edge `latch -> header`.
-    ///
-    /// The loop is `{ header } ∪ { w | header strictly dominates w and w can
-    /// reach latch without going through header }`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `latch -> header` is not a back edge of the analyzed graph.
-    /// Use [`Self::try_natural_loop_blocks`] to query without a precondition.
-    pub fn natural_loop_blocks(&self, header: BlockId, latch: BlockId) -> HashSet<BlockId> {
-        self.try_natural_loop_blocks(header, latch)
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!("edge {latch:?} -> {header:?} is not a natural loop back edge")
-            })
-    }
-
     /// Returns the dominator subtree of a block in pre-order, including the
     /// block itself.
     pub fn dominator_subtree(&self, block: BlockId) -> Vec<BlockId> {
