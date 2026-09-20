@@ -15,6 +15,7 @@ mod parser;
 pub mod process;
 pub mod rules;
 pub mod semantic;
+pub mod syntax_factory;
 pub mod utils;
 
 pub use annotation::{AnnotationError, NodeAddress, SyntaxAnnotation, SyntaxAnnotations};
@@ -27,3 +28,4 @@ pub use diagnostic::{
 pub use equivalence::Equivalent;
 pub use navigation::{IndexEntry, NavigationError, NodeId, NodeKind, SyntaxIndex};
 pub use parser::{AnalyzedParseError, Dialect, Parser, ParserError};
+pub use syntax_factory::SyntaxFactory;
