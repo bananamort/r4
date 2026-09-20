@@ -618,3 +618,34 @@ fn typed_function_and_generic_declaration_forms_drive_the_visitors() {
         let _ = r4::process::collect_trivia(&read_only);
     }
 }
+
+#[test]
+fn long_and_escaped_strings_drive_the_generators() {
+    let long = "a".repeat(300);
+    let long_values = (1..=120)
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let long_expression = format!(
+        "{}0",
+        (1..=80).map(|i| format!("a{i}+")).collect::<String>()
+    );
+    let codes = [
+        format!("return \"{long}\""),
+        "return \"\\n\\t\\\"\\\\\"".to_owned(),
+        "return \"\\x41\\65\\u{1F600}\"".to_owned(),
+        "return [[long\nbracket]]".to_owned(),
+        "return [==[nested ]] here]==]".to_owned(),
+        format!("return {{{long_values}}}"),
+        format!("local x = {long_expression} return x"),
+        "while true do break end".to_owned(),
+        "while true do continue end".to_owned(),
+        "for i = 1, 10 do if i then break end end".to_owned(),
+        "repeat continue until true".to_owned(),
+        "return function(...) return ... end".to_owned(),
+    ];
+    for code in codes {
+        let block = parse_with(&code, Dialect::Luau);
+        assert_generates(&block, &code, Dialect::Luau);
+    }
+}
