@@ -155,3 +155,46 @@ mod test {
         );
     }
 }
+
+#[cfg(test)]
+mod argument_side_effects {
+    use super::*;
+    use crate::rules::test_support::{analyze_with_tokens, generate, parse};
+
+    #[test]
+    fn preserves_multiple_argument_side_effects() {
+        let (mut block, model) = analyze_with_tokens("assert(a.b, compute())\nreturn 1");
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(output.contains("a.b"), "{output}");
+        assert!(output.contains("compute()"), "{output}");
+        parse(&output);
+    }
+
+    #[test]
+    fn preserves_table_argument_side_effects() {
+        let (mut block, model) = analyze_with_tokens("assert{ key = compute() }\nreturn 1");
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(output.contains("compute()"), "{output}");
+        parse(&output);
+    }
+
+    #[test]
+    fn drops_side_effect_free_string_arguments() {
+        let (mut block, model) = analyze_with_tokens("assert 'literal'\nreturn 1");
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("assert"), "{output}");
+        assert!(!output.contains("literal"), "{output}");
+    }
+}

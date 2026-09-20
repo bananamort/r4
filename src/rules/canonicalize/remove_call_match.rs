@@ -245,3 +245,56 @@ mod test {
         assert!(generate(&block).contains("foo()"));
     }
 }
+
+#[cfg(test)]
+mod argument_side_effects {
+    use super::*;
+    use crate::nodes::Prefix;
+    use crate::rules::test_support::{analyze_with_tokens, generate, parse};
+
+    struct DropFoo;
+
+    impl CallMatcher for DropFoo {
+        fn matches(&self, call: &FunctionCall, model: &SemanticModel) -> bool {
+            match call.get_prefix() {
+                Prefix::Identifier(identifier) => {
+                    identifier_resolves_to_global(model, identifier, "foo")
+                }
+                _ => false,
+            }
+        }
+
+        fn compute_result(
+            &self,
+            _call: &FunctionCall,
+            _reserved: &HashMap<&'static str, String>,
+        ) -> Option<Expression> {
+            None
+        }
+    }
+
+    #[test]
+    fn preserves_multiple_expression_argument_side_effects() {
+        let (mut block, model) = analyze_with_tokens("local x = foo(a.b, c.d)\nreturn x");
+
+        let removed = remove_call_matches(&mut block, &model, &DropFoo);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(output.contains("a.b"), "{output}");
+        assert!(output.contains("c.d"), "{output}");
+        parse(&output);
+    }
+
+    #[test]
+    fn drops_calls_without_side_effects() {
+        let (mut block, model) = analyze_with_tokens("local x = foo(1, 2)\nreturn x");
+
+        let removed = remove_call_matches(&mut block, &model, &DropFoo);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("foo"), "{output}");
+        parse(&output);
+    }
+}

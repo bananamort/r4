@@ -12,8 +12,6 @@
 //! The traversal is read-only and never guesses: it reports exactly the trivia
 //! the parser attached, in source order, without duplicates.
 
-use std::collections::HashSet;
-
 use crate::nodes::{
     Block, Expression, LastStatement, Prefix, Statement, Token, Trivia, Type, Variable,
 };
@@ -27,23 +25,15 @@ pub fn for_each_trivia(block: &Block, f: &mut impl FnMut(&Trivia)) {
     }
 }
 
-/// Collects every piece of trivia in `block`, deduplicated and in source order.
+/// Collects every piece of trivia in `block`, in source order.
 ///
-/// A node can be reached through more than one traversal path, so the token
-/// walk may visit the same token twice; each token is visited once here by
-/// identity, so its trivia is collected exactly once. Distinct tokens are never
-/// merged, even when their trivia have identical content.
-///
-/// Trivia without source positions (synthesized by a pass) sort last and keep
-/// their traversal order. Deduplication is linear in the number of tokens.
+/// The traversal visits each token exactly once, so every piece of trivia is
+/// returned exactly once and distinct trivia are never merged, even when their
+/// content is identical. Trivia without source positions (synthesized by a
+/// pass) sort last and keep their traversal order.
 pub fn collect_trivia(block: &Block) -> Vec<Trivia> {
-    let mut seen = HashSet::new();
     let mut trivia = Vec::new();
     for_each_token(block, &mut |token| {
-        let identity = token as *const Token as usize;
-        if !seen.insert(identity) {
-            return;
-        }
         for piece in token
             .iter_leading_trivia()
             .chain(token.iter_trailing_trivia())
@@ -60,12 +50,12 @@ pub fn collect_trivia(block: &Block) -> Vec<Trivia> {
     trivia
 }
 
-/// Passes every token in `block` to `f`.
+/// Passes every token in `block` to `f`, each exactly once.
 ///
-/// A token can be reached through more than one path (a node the read-only
-/// visitor surfaces as well as its owner's token walk), so `f` may observe the
-/// same token more than once. [`collect_trivia`] removes the duplicates; callers
-/// that need a unique token stream should collect and deduplicate.
+/// The read-only visitor surfaces the syntax children while each node's
+/// generated [`for_each_token`](crate::nodes::Block::for_each_token) surfaces
+/// the token holders the visitor does not, so the two are disjoint and no token
+/// is visited twice.
 pub(crate) fn for_each_token(block: &Block, f: &mut impl FnMut(&Token)) {
     Walk::visit_block(block, &mut TokenWalk { f });
 }
@@ -132,7 +122,7 @@ impl<F: FnMut(&Token)> ImmutableProcessor for TokenWalk<'_, F> {
             Expression::Number(node) => node.for_each_token(self.f),
             Expression::Parenthese(node) => node.for_each_token(self.f),
             Expression::String(node) => node.for_each_token(self.f),
-            Expression::Table(node) => node.for_each_token(self.f),
+            Expression::Table(_) => {}
             Expression::TypeCast(node) => node.for_each_token(self.f),
             Expression::TypeInstantiation(node) => node.for_each_token(self.f),
             Expression::Unary(node) => node.for_each_token(self.f),
@@ -158,20 +148,12 @@ impl<F: FnMut(&Token)> ImmutableProcessor for TokenWalk<'_, F> {
         }
     }
 
-    fn process_identifier(&mut self, identifier: &crate::nodes::Identifier) {
-        identifier.for_each_token(self.f);
-    }
-
     fn process_function_call(&mut self, call: &crate::nodes::FunctionCall) {
         call.get_arguments().for_each_token(self.f);
     }
 
     fn process_table(&mut self, table: &crate::nodes::TableExpression) {
         table.for_each_token(self.f);
-    }
-
-    fn process_typed_identifier(&mut self, identifier: &crate::nodes::TypedIdentifier) {
-        identifier.for_each_token(self.f);
     }
 
     fn process_attributes(&mut self, attributes: &crate::nodes::Attributes) {
@@ -197,10 +179,6 @@ impl<F: FnMut(&Token)> ImmutableProcessor for TokenWalk<'_, F> {
             Type::Intersection(node) => node.for_each_token(self.f),
             Type::Union(node) => node.for_each_token(self.f),
         }
-    }
-
-    fn process_type_name(&mut self, type_name: &crate::nodes::TypeName) {
-        type_name.for_each_token(self.f);
     }
 }
 
@@ -411,6 +389,32 @@ mod test {
 
         assert_read_only_matches("::label:: -- label\ngoto label", Parser::default().lua52());
         assert_read_only_matches(
+            "local x <const> = 1 -- attributed",
+            Parser::default().lua54(),
+        );
+    }
+    fn assert_unique_tokens(code: &str, parser: Parser) {
+        let block = parser
+            .preserve_tokens()
+            .parse(code)
+            .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+        let mut seen = std::collections::HashSet::new();
+        let mut duplicates = 0usize;
+        for_each_token(&block, &mut |token| {
+            if !seen.insert(token as *const Token as usize) {
+                duplicates += 1;
+            }
+        });
+        assert_eq!(duplicates, 0, "duplicate token visits for `{code}`");
+    }
+
+    #[test]
+    fn read_only_walk_visits_each_token_once() {
+        for code in CORPUS {
+            assert_unique_tokens(code, Parser::default());
+        }
+        assert_unique_tokens("::label:: -- label\ngoto label", Parser::default().lua52());
+        assert_unique_tokens(
             "local x <const> = 1 -- attributed",
             Parser::default().lua54(),
         );

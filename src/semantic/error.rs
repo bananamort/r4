@@ -320,3 +320,107 @@ impl std::error::Error for SemanticError {}
 
 /// A successful semantic analysis result.
 pub type SemanticResult<T> = Result<T, SemanticError>;
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn semantic_error_codes_display_and_diagnostics() {
+        let cases = [
+            (
+                SemanticError::undeclared("x", Some(1)),
+                "semantic/undeclared-symbol",
+            ),
+            (
+                SemanticError::duplicate_label("l", Some(1), Some(2)),
+                "semantic/duplicate-label",
+            ),
+            (
+                SemanticError::undefined_label("l", Some(3)),
+                "semantic/undefined-label",
+            ),
+            (
+                SemanticError::goto_into_local_scope("l", "x", Some(4)),
+                "semantic/goto-into-local-scope",
+            ),
+            (
+                SemanticError::unresolved_type("T", None),
+                "semantic/unresolved-type",
+            ),
+        ];
+
+        for (error, code) in cases {
+            assert_eq!(error.code(), code);
+            assert!(!error.to_string().is_empty());
+
+            let with_span = error.clone().with_span(Some(TextSpan::new(0, 1)));
+            let diagnostic = with_span.to_diagnostic();
+            assert_eq!(diagnostic.code, Some(code));
+            assert!(diagnostic.span.is_some());
+
+            // The `From` conversion produces the same diagnostic.
+            let from: Diagnostic = error.clone().into();
+            assert_eq!(from.code, Some(code));
+
+            // Without a span the diagnostic has none.
+            assert!(error.to_diagnostic().span.is_none());
+        }
+    }
+
+    #[test]
+    fn semantic_query_error_codes_display_and_diagnostics() {
+        let identity = BlockIdentity(0);
+        let cases = [
+            (
+                SemanticQueryError::UnidentifiedBlock,
+                "query/unidentified-block",
+            ),
+            (
+                SemanticQueryError::UnknownBlock { identity },
+                "query/unknown-block",
+            ),
+            (
+                SemanticQueryError::ForeignBlock { identity },
+                "query/foreign-block",
+            ),
+            (
+                SemanticQueryError::NoEnclosingScope {
+                    identity,
+                    kind: ScopeKind::Function,
+                },
+                "query/no-enclosing-scope",
+            ),
+            (
+                SemanticQueryError::UnboundIdentifier {
+                    name: "x".to_owned(),
+                },
+                "query/unbound-identifier",
+            ),
+            (
+                SemanticQueryError::UnboundLabel {
+                    name: "l".to_owned(),
+                },
+                "query/unbound-label",
+            ),
+            (
+                SemanticQueryError::UnboundType {
+                    name: "T".to_owned(),
+                },
+                "query/unbound-type",
+            ),
+            (
+                SemanticQueryError::UnboundOccurrence {
+                    name: "y".to_owned(),
+                },
+                "query/unbound-occurrence",
+            ),
+        ];
+
+        for (error, code) in cases {
+            assert_eq!(error.code(), code);
+            assert!(!error.to_string().is_empty());
+            assert_eq!(error.to_diagnostic().code, Some(code));
+        }
+    }
+}

@@ -80,3 +80,67 @@ fn first_prefix_token(prefix: &Prefix) -> Option<&Token> {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::Parser;
+
+    #[test]
+    fn finds_the_first_token_for_every_statement_kind() {
+        for code in [
+            "x = 1",
+            "do end",
+            "f()",
+            "x += 1",
+            "function f() end",
+            "for k, v in t do end",
+            "if a then end",
+            "local x = 1",
+            "local function f() end",
+            "for i = 1, 2 do end",
+            "repeat until true",
+            "while true do end",
+            "type T = number",
+            "export type T = number",
+            "type function f(x) return x end",
+            "export type function f(x) return x end",
+        ] {
+            let block = Parser::default()
+                .preserve_tokens()
+                .parse(code)
+                .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+            let statement = block.first_statement().expect("a statement");
+            assert!(
+                first_statement_token(statement).is_some(),
+                "no first token for `{code}`"
+            );
+        }
+
+        for code in ["::label::\ngoto label", "goto label\n::label::"] {
+            let block = Parser::default()
+                .lua52()
+                .preserve_tokens()
+                .parse(code)
+                .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+            let statement = block.first_statement().expect("a statement");
+            assert!(
+                first_statement_token(statement).is_some(),
+                "no first token for `{code}`"
+            );
+        }
+
+        // Prefix forms reached through a call statement.
+        for code in ["a.b.c(1)", "a[1]()", "(f)()"] {
+            let block = Parser::default()
+                .preserve_tokens()
+                .parse(code)
+                .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+            let statement = block.first_statement().expect("a statement");
+            assert!(
+                first_statement_token(statement).is_some(),
+                "no first token for `{code}`"
+            );
+        }
+    }
+}

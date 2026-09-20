@@ -149,3 +149,101 @@ fn formatting_passes_keep_the_last_statement_untouched() {
     // A trivially true assertion to keep the type in scope.
     let _ = LastStatement::new_break();
 }
+
+#[test]
+fn token_passes_cover_every_node_kind() {
+    // A rich program drives each token-bearing node through every token pass, so
+    // the per-node token operations are all exercised.
+    let code = r#"
+        -- leading comment
+        local t = { a = 1, [b] = 2, 3 } -- table
+        local function f(x, ...)
+            if x then
+                return x + 1
+            elseif x == 2 then
+                return 2
+            else
+                return 0
+            end
+        end
+        for i = 1, 10 do print(i) end
+        for k, v in pairs(t) do print(k, v) end
+        while true do break end
+        repeat until true
+        do local y = 1 end
+        local s = `interp {x}`
+        obj:method(1)
+        t.field = t[1] + #t
+        local a: number = 1
+        type T = { a: number }
+        type function id(x) return x end
+        return f(1)
+    "#;
+
+    for pass in ["comments", "spaces", "shift", "replace"] {
+        let mut block = parse(code);
+        match pass {
+            "comments" => remove_comments(&mut block),
+            "spaces" => remove_spaces(&mut block),
+            "shift" => shift_token_line(&mut block, -1),
+            "replace" => replace_referenced_tokens(&mut block, code),
+            other => panic!("unknown pass {other}"),
+        }
+        let mut generator = TokenBasedLuaGenerator::new(code);
+        generator.write_block(&block);
+        let _ = generator.into_string();
+    }
+
+    // Labels and goto carry their own tokens.
+    let lua52 = "::start:: -- label\ngoto start -- goto\n";
+    for pass in ["comments", "spaces", "replace"] {
+        let mut block = Parser::default()
+            .lua52()
+            .preserve_tokens()
+            .parse(lua52)
+            .expect("valid Lua 5.2");
+        match pass {
+            "comments" => remove_comments(&mut block),
+            "spaces" => remove_spaces(&mut block),
+            "replace" => replace_referenced_tokens(&mut block, lua52),
+            other => panic!("unknown pass {other}"),
+        }
+        let mut generator = TokenBasedLuaGenerator::new(lua52);
+        generator.write_block(&block);
+        let _ = generator.into_string();
+    }
+}
+
+#[test]
+fn token_passes_cover_type_nodes() {
+    let code = r#"
+        local t: { [string]: number, x: boolean } = {} -- table type
+        local f: (number, string) -> boolean = g -- function type
+        local s: "literal" = x -- string type
+        local a: { number } = t -- array type
+        local o: number? = nil -- optional type
+        local u: number | string = 1 -- union
+        local i: number & string = 1 -- intersection
+        local v: (...number) -> () = f -- variadic pack
+        local z = f<<T, U>>() -- type instantiation
+        type T<A, B = string> = { a: A } -- generics
+        type U = typeof(x) -- typeof
+        type V = (number) -- parenthese
+        type W = T.Field -- type field
+        return t
+    "#;
+
+    for pass in ["comments", "spaces", "shift", "replace"] {
+        let mut block = parse(code);
+        match pass {
+            "comments" => remove_comments(&mut block),
+            "spaces" => remove_spaces(&mut block),
+            "shift" => shift_token_line(&mut block, 2),
+            "replace" => replace_referenced_tokens(&mut block, code),
+            other => panic!("unknown pass {other}"),
+        }
+        let mut generator = TokenBasedLuaGenerator::new(code);
+        generator.write_block(&block);
+        let _ = generator.into_string();
+    }
+}

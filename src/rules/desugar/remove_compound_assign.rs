@@ -319,3 +319,47 @@ mod test {
         );
     }
 }
+
+#[cfg(test)]
+mod operator_coverage {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate, parse};
+
+    #[test]
+    fn removes_every_compound_operator() {
+        for (input, token) in [
+            ("x += 1", "+="),
+            ("x -= 1", "-="),
+            ("x *= 2", "*="),
+            ("x /= 2", "/="),
+            ("x %= 2", "%="),
+            ("x ^= 2", "^="),
+            ("x ..= 'a'", "..="),
+            ("x //= 2", "//="),
+        ] {
+            let (mut block, model) = analyze(input);
+            remove_compound_assign(&mut block, &model);
+            let output = generate(&block);
+            assert!(
+                !output.contains(token),
+                "`{input}` left `{token}`: {output}"
+            );
+            assert!(output.contains('='), "`{input}` -> {output}");
+            parse(&output);
+        }
+    }
+
+    #[test]
+    fn removes_compound_assignment_on_fields_and_indexes() {
+        for input in ["t.field += 1", "t[1] -= 1", "t[key()] *= 2"] {
+            let (mut block, model) = analyze(input);
+            remove_compound_assign(&mut block, &model);
+            let output = generate(&block);
+            assert!(
+                !output.contains("+=") && !output.contains("-=") && !output.contains("*="),
+                "`{input}` -> {output}"
+            );
+            parse(&output);
+        }
+    }
+}
