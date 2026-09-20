@@ -580,6 +580,7 @@ pub fn append_text_comment(block: &mut Block, text: &str, location: AppendLocati
     }
 
     let comment = format_comment(text);
+    let comment_kind = comment_trivia_kind(&comment);
     let shift_lines = comment.lines().count();
 
     shift_token_line(block, shift_lines as isize);
@@ -587,15 +588,23 @@ pub fn append_text_comment(block: &mut Block, text: &str, location: AppendLocati
     match location {
         AppendLocation::Start => {
             let token = block.mutate_first_token();
-            token.insert_leading_trivia(0, TriviaKind::Comment.with_content(comment));
+            token.insert_leading_trivia(0, comment_kind.with_content(comment));
             token.insert_leading_trivia(1, TriviaKind::EndOfLine.with_content("\n"));
         }
         AppendLocation::End => {
             block
                 .mutate_last_token()
-                .push_trailing_trivia(TriviaKind::Comment.with_content(comment));
+                .push_trailing_trivia(comment_kind.with_content(comment));
         }
     }
+}
+
+/// Returns the trivia kind for text produced by [`format_comment`].
+///
+/// [`format_comment`] always produces a comment, so a failure here is a bug.
+fn comment_trivia_kind(comment: &str) -> TriviaKind {
+    TriviaKind::classify_comment(comment)
+        .expect("format_comment always produces a single- or multi-line comment")
 }
 
 /// Appends the contents of a file as a comment at the start or end of `block`.

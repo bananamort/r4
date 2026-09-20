@@ -39,7 +39,7 @@ fn trivia_is_deduplicated_and_source_ordered() {
 
     let comments: Vec<_> = trivia
         .iter()
-        .filter(|piece| piece.kind() == TriviaKind::Comment)
+        .filter(|piece| piece.kind().is_comment())
         .collect();
     assert_eq!(comments.len(), 2, "each comment appears exactly once");
 
@@ -58,7 +58,7 @@ fn trivia_read_fails_fast_on_an_invalid_range() {
     let trivia = collect_trivia(&block);
     let comment = trivia
         .iter()
-        .find(|piece| piece.kind() == TriviaKind::Comment)
+        .find(|piece| piece.kind().is_comment())
         .expect("a comment");
     // A source that is too short for the recorded range is a typed error.
     assert!(matches!(
@@ -203,7 +203,7 @@ fn trivia_traversal_reaches_every_token_holder() {
     let trivia = collect_trivia(&block);
     let comments: Vec<String> = trivia
         .iter()
-        .filter(|piece| piece.kind() == TriviaKind::Comment)
+        .filter(|piece| piece.kind().is_comment())
         .map(|piece| piece.try_read_with(source).unwrap_or("").to_owned())
         .collect();
 
@@ -214,4 +214,22 @@ fn trivia_traversal_reaches_every_token_holder() {
         );
     }
     assert_eq!(comments.len(), 5, "{comments:?}");
+}
+
+#[test]
+fn classifies_comment_and_shebang_kinds() {
+    let sources = [
+        ("#!/usr/bin/lua\nreturn 1", TriviaKind::Shebang),
+        ("-- line\nreturn 1", TriviaKind::SingleLineComment),
+        ("--[[ block ]]\nreturn 1", TriviaKind::MultiLineComment),
+        ("--[==[ nested ]==]\nreturn 1", TriviaKind::MultiLineComment),
+    ];
+    for (source, expected) in sources {
+        let block = parse_with_tokens(source);
+        let trivia = collect_trivia(&block);
+        assert!(
+            trivia.iter().any(|piece| piece.kind() == expected),
+            "expected {expected:?} in {trivia:?} for `{source}`"
+        );
+    }
 }

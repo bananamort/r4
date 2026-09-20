@@ -47,9 +47,19 @@ impl SyntaxFactory {
         Token::from_content(content)
     }
 
-    /// Creates a comment trivia.
-    pub fn comment(text: impl Into<Cow<'static, str>>) -> Trivia {
-        TriviaKind::Comment.with_content(text)
+    /// Creates a single-line comment trivia.
+    pub fn single_line_comment(text: impl Into<Cow<'static, str>>) -> Trivia {
+        TriviaKind::SingleLineComment.with_content(text)
+    }
+
+    /// Creates a multi-line comment trivia.
+    pub fn multi_line_comment(text: impl Into<Cow<'static, str>>) -> Trivia {
+        TriviaKind::MultiLineComment.with_content(text)
+    }
+
+    /// Creates a shebang trivia.
+    pub fn shebang(text: impl Into<Cow<'static, str>>) -> Trivia {
+        TriviaKind::Shebang.with_content(text)
     }
 
     /// Creates a whitespace trivia.

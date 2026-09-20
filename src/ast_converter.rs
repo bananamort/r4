@@ -2623,8 +2623,9 @@ impl<'a> AstConverter<'a> {
         use tokenizer::TokenKind;
 
         let trivia = match token.token_kind() {
-            TokenKind::MultiLineComment => TriviaKind::Comment,
-            TokenKind::SingleLineComment => TriviaKind::Comment,
+            TokenKind::MultiLineComment => TriviaKind::MultiLineComment,
+            TokenKind::SingleLineComment => TriviaKind::SingleLineComment,
+            TokenKind::Shebang => TriviaKind::Shebang,
             TokenKind::Whitespace => {
                 if token.to_string().contains('\n') {
                     TriviaKind::EndOfLine

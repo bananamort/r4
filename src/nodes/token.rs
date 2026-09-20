@@ -90,8 +90,12 @@ impl std::error::Error for TriviaError {}
 /// An enum to represent source code text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TriviaKind {
-    /// A comment.
-    Comment,
+    /// A shebang line (`#!...`).
+    Shebang,
+    /// A single-line comment (`-- ...`).
+    SingleLineComment,
+    /// A multi-line comment (`--[[ ... ]]`).
+    MultiLineComment,
     /// Whitespace that does not contain a line break.
     Whitespace,
     /// A line break: whitespace containing at least one newline.
@@ -99,10 +103,39 @@ pub enum TriviaKind {
 }
 
 impl TriviaKind {
+    /// Returns whether this trivia is a comment.
+    ///
+    /// A shebang is not a comment: it is executable metadata and is preserved
+    /// by comment removal.
+    #[inline]
+    pub const fn is_comment(self) -> bool {
+        matches!(
+            self,
+            TriviaKind::SingleLineComment | TriviaKind::MultiLineComment
+        )
+    }
+
     /// Returns whether this trivia is whitespace (spaces or a line break).
     #[inline]
     pub const fn is_whitespace(self) -> bool {
         matches!(self, TriviaKind::Whitespace | TriviaKind::EndOfLine)
+    }
+
+    /// Returns the trivia kind for a piece of comment text.
+    ///
+    /// A shebang starts with `#!`; a multi-line comment starts with `--[[` or
+    /// `--[=`; anything else that starts with `--` is a single-line comment.
+    /// Returns `None` for text that is not a comment.
+    pub fn classify_comment(text: &str) -> Option<TriviaKind> {
+        if text.starts_with("#!") {
+            return Some(TriviaKind::Shebang);
+        }
+        let body = text.strip_prefix("--")?;
+        if body.starts_with("[[") || body.starts_with("[=") {
+            Some(TriviaKind::MultiLineComment)
+        } else {
+            Some(TriviaKind::SingleLineComment)
+        }
     }
 
     /// Creates a new trivia with line number reference information.
@@ -392,9 +425,9 @@ impl Token {
     /// Clears all comments from the tokens in this node.
     pub fn clear_comments(&mut self) {
         self.leading_trivia
-            .retain(|trivia| trivia.kind() != TriviaKind::Comment);
+            .retain(|trivia| !trivia.kind().is_comment());
         self.trailing_trivia
-            .retain(|trivia| trivia.kind() != TriviaKind::Comment);
+            .retain(|trivia| !trivia.kind().is_comment());
     }
 
     /// Clears all whitespaces information from the tokens in this node.
@@ -422,9 +455,9 @@ impl Token {
     #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         self.leading_trivia
-            .retain(|trivia| trivia.kind() != TriviaKind::Comment || filter(trivia));
+            .retain(|trivia| !trivia.kind().is_comment() || filter(trivia));
         self.trailing_trivia
-            .retain(|trivia| trivia.kind() != TriviaKind::Comment || filter(trivia));
+            .retain(|trivia| !trivia.kind().is_comment() || filter(trivia));
     }
 
     #[allow(dead_code)]

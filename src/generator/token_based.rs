@@ -76,7 +76,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
             return;
         }
 
-        let is_comment = matches!(trivia.kind(), TriviaKind::Comment);
+        let is_comment = trivia.kind().is_comment();
         let is_line_comment = is_comment && is_single_line_comment(content);
         let is_multiline_comment = is_comment && !is_line_comment;
 
@@ -87,11 +87,8 @@ impl<'a> TokenBasedLuaGenerator<'a> {
         self.push_str(content);
 
         match trivia.kind() {
-            TriviaKind::Comment => {
-                if is_line_comment {
-                    self.currently_commenting = true;
-                }
-            }
+            TriviaKind::SingleLineComment => self.currently_commenting = true,
+            TriviaKind::MultiLineComment | TriviaKind::Shebang => {}
             TriviaKind::Whitespace | TriviaKind::EndOfLine => {
                 if self.currently_commenting && content.contains('\n') {
                     self.currently_commenting = false
@@ -2897,7 +2894,7 @@ mod test {
     fn inserts_a_new_line_after_a_comment_for_a_token() {
         let statement = RepeatStatement::new(Block::default(), true).with_tokens(RepeatTokens {
             repeat: Token::from_content("repeat")
-                .with_trailing_trivia(TriviaKind::Comment.with_content("-- hello")),
+                .with_trailing_trivia(TriviaKind::SingleLineComment.with_content("-- hello")),
             until: Token::from_content("until"),
         });
 
@@ -2934,8 +2931,9 @@ mod test {
             Expression::Identifier(identifier) => {
                 let name = identifier.mutate_name();
                 let new_token = {
-                    Token::from_content(name.to_owned())
-                        .with_trailing_trivia(TriviaKind::Comment.with_content("--new comment"))
+                    Token::from_content(name.to_owned()).with_trailing_trivia(
+                        TriviaKind::SingleLineComment.with_content("--new comment"),
+                    )
                 };
                 identifier.set_token(new_token);
             }
@@ -2962,8 +2960,10 @@ mod test {
     #[test]
     fn break_long_comments_on_new_lines() {
         let token = Token::from_content("")
-            .with_leading_trivia(TriviaKind::Comment.with_content("-- first line"))
-            .with_leading_trivia(TriviaKind::Comment.with_content("--[[\nnext comment ]]"));
+            .with_leading_trivia(TriviaKind::SingleLineComment.with_content("-- first line"))
+            .with_leading_trivia(
+                TriviaKind::MultiLineComment.with_content("--[[\nnext comment ]]"),
+            );
         let block = Block::default().with_tokens(BlockTokens {
             semicolons: Default::default(),
             last_semicolon: Default::default(),

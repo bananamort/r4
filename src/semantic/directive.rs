@@ -12,7 +12,7 @@
 
 use std::fmt;
 
-use crate::nodes::{Block, Trivia, TriviaError, TriviaKind};
+use crate::nodes::{Block, Trivia, TriviaError};
 use crate::process::collect_trivia;
 
 /// A structured `--!` directive.
@@ -154,7 +154,7 @@ impl Trivia {
     /// directives. A comment that starts with `--!` but has no name is a typed
     /// error; the recorded range is read fallibly against `source`.
     pub fn directive(&self, source: &str) -> Result<Option<Directive>, DirectiveError> {
-        if self.kind() != TriviaKind::Comment {
+        if !self.kind().is_comment() {
             return Ok(None);
         }
         let text = self.try_read_with(source)?;
