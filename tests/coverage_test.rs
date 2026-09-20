@@ -1000,7 +1000,20 @@ fn readable_and_dense_generators_wrap_long_signatures_and_tables() {
         .map(|i| format!("parameter_number_{i}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let long_chain = (1..=30)
+        .map(|i| format!("field_{i}"))
+        .collect::<Vec<_>>()
+        .join(".");
+    let long_arguments = (1..=20)
+        .map(|i| format!("argument_number_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let cases = vec![
+        format!("return {long_chain}(1, 2, 3)"),
+        format!("return {long_chain}:method({long_arguments})"),
+        format!("return outer(inner({long_arguments}))"),
+        format!("return {long_chain}[1](2)"),
+        format!("local x = {long_chain} + 1\nreturn x"),
         format!("local function f({long_params}) end"),
         format!("function f({long_params}, ...) end"),
         format!("local f = function({long_params}) return 1 end"),
