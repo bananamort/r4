@@ -554,6 +554,7 @@ fn attribute_argument_nodes_drive_visitors_and_generators() {
     tuple.push(LiteralExpression::from(
         r4::nodes::StringExpression::from_value("text"),
     ));
+    tuple.push(LiteralExpression::from(LiteralTable::default()));
 
     let mut literal = LiteralTable::from_entries(Vec::new());
     literal.append_field(
@@ -562,6 +563,10 @@ fn attribute_argument_nodes_drive_visitors_and_generators() {
     );
     literal.append_array_value(LiteralExpression::Nil(None));
     literal.append_array_value(LiteralExpression::from(false));
+    literal.append_array_value(LiteralExpression::from(
+        r4::nodes::StringExpression::from_value("nested"),
+    ));
+    literal.append_array_value(LiteralExpression::from(LiteralTable::default()));
 
     let group = AttributeGroup::new(
         AttributeGroupElement::new("tuple").with_arguments(AttributeArguments::Tuple(tuple)),
@@ -1074,4 +1079,21 @@ fn partial_tokens_synthesize_keywords_and_commas() {
         None,
     ));
     assert!(output.contains("export"), "{output}");
+}
+
+#[test]
+fn type_instantiation_pack_arguments_are_rejected_clearly() {
+    for code in ["return f<<T, U>>", "return f<<(number), string>>"] {
+        let _ = parse_with(code, Dialect::Luau);
+    }
+    for code in ["return f<<A...>>", "return f<<(number), A...>>"] {
+        let error = Parser::default()
+            .dialect(Dialect::Luau)
+            .parse(code)
+            .expect_err("a type pack argument is not representable");
+        assert!(
+            !error.to_string().contains("internal conversion stack"),
+            "`{code}`: {error}"
+        );
+    }
 }

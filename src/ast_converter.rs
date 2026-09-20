@@ -2002,6 +2002,23 @@ impl<'a> AstConverter<'a> {
                     }
                 },
                 ast::Suffix::TypeInstantiation(type_instantiation) => {
+                    // Type-instantiation arguments are stored as plain types, so
+                    // a type pack argument (e.g. `f<<T...>>`) cannot be
+                    // represented. Report it directly instead of letting the
+                    // conversion stack underflow.
+                    if let Some(pack) = type_instantiation.types().iter().find(|type_info| {
+                        matches!(
+                            type_info,
+                            ast::luau::TypeInfo::GenericPack { .. }
+                                | ast::luau::TypeInfo::VariadicPack { .. }
+                                | ast::luau::TypeInfo::Variadic { .. }
+                        )
+                    }) {
+                        return Err(ConvertError::TypeInfo {
+                            type_info: pack.to_string(),
+                        });
+                    }
+
                     let mut type_expression = TypeInstantiationExpression::new(
                         prefix,
                         self.pop_types(type_instantiation.types().len())?,
