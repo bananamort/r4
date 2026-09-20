@@ -115,3 +115,15 @@ fn filesystem_provider_reports_unreadable_modules() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn filesystem_provider_builder_methods() {
+    let provider = FileSystemModuleProvider::with_extension("/tmp/r4-root", "lua");
+    assert_eq!(provider.extension(), "lua");
+
+    let provider = provider.with_extensions(["lua", "luau"]);
+    assert!(provider.extensions().len() >= 2);
+
+    let provider = provider.with_module_folders(["init", "index"]);
+    let _ = provider.candidate_paths("pkg/util");
+}

@@ -105,3 +105,19 @@ fn custom_serialize_errors_are_reported() {
     let error = convert_data(Failing).expect_err("a custom error is reported");
     assert_eq!(error.message(), "custom failure");
 }
+
+#[test]
+fn converts_every_scalar_serialize_method() {
+    assert_eq!(convert_data(1i8).expect("i8"), "return 1");
+    assert_eq!(convert_data(1i16).expect("i16"), "return 1");
+    assert_eq!(convert_data(1i32).expect("i32"), "return 1");
+    assert_eq!(convert_data(1i64).expect("i64"), "return 1");
+    assert_eq!(convert_data(1u8).expect("u8"), "return 1");
+    assert_eq!(convert_data(1u16).expect("u16"), "return 1");
+    assert_eq!(convert_data(1u32).expect("u32"), "return 1");
+    assert_eq!(convert_data(1u64).expect("u64"), "return 1");
+    assert!(!convert_data(1.5f32).expect("f32").is_empty());
+    assert!(!convert_data(1.5f64).expect("f64").is_empty());
+    assert!(!convert_data('c').expect("char").is_empty());
+    assert!(!convert_data("text").expect("str").is_empty());
+}

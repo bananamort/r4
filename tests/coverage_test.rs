@@ -243,16 +243,31 @@ fn every_evaluable_expression_shape_is_evaluated() {
         "return if true then f() else g()",
         "return (a).b.c",
         "return ((f))()",
+        "return (a)",
+        "return 'a' .. 1",
+        "return 1 .. 'a'",
+        "return if a then f() elseif b then g() elseif c then h() else i()",
+        "return if unknown then 1 else 2",
     ] {
         let block = parse_with(code, Dialect::Luau);
         for statement in block.iter_statements() {
             let _ = statement;
         }
         if let Some(r4::nodes::LastStatement::Return(statement)) = block.get_last_statement() {
+            let lookup = |identifier: &r4::nodes::Identifier| match identifier.get_name().as_str() {
+                "a" => Some(r4::process::LuaValue::Number(1.0)),
+                "true" => Some(r4::process::LuaValue::True),
+                "false" => Some(r4::process::LuaValue::False),
+                _ => None,
+            };
             for expression in statement.iter_expressions() {
                 let _ = evaluator.evaluate(expression);
+                let _ = evaluator.evaluate_with(expression, &lookup);
                 let _ = evaluator.is_pure(expression);
                 let _ = evaluator.has_side_effects(expression);
+                let _ = evaluator.has_side_effects_with(expression, &|_| true);
+                let _ = evaluator.has_side_effects_with(expression, &|_| false);
+                let _ = evaluator.can_return_multiple_values(expression);
             }
         }
     }
@@ -498,4 +513,64 @@ fn cfg_errors_and_analysis_getters_cover_the_corpus() {
         .analyze(&parse_with("return 1", Dialect::Luau))
         .expect("analysis");
     let _ = build_chunk(&unanalyzed, &empty_model);
+}
+
+#[test]
+fn attribute_argument_nodes_drive_visitors_and_generators() {
+    use r4::nodes::{
+        Attribute, AttributeArguments, AttributeGroup, AttributeGroupElement,
+        AttributeTupleArguments, Attributes, Block, FunctionStatement, LiteralExpression,
+        LiteralTable, Statement,
+    };
+
+    let mut tuple = AttributeTupleArguments::default();
+    tuple.push(LiteralExpression::from(1u32));
+    tuple.push(LiteralExpression::from(true));
+    tuple.push(LiteralExpression::from(
+        r4::nodes::StringExpression::from_value("text"),
+    ));
+
+    let mut literal = LiteralTable::from_entries(Vec::new());
+    literal.append_field(
+        r4::nodes::Identifier::new("k"),
+        LiteralExpression::from(1u32),
+    );
+    literal.append_array_value(LiteralExpression::Nil(None));
+    literal.append_array_value(LiteralExpression::from(false));
+
+    let group = AttributeGroup::new(
+        AttributeGroupElement::new("tuple").with_arguments(AttributeArguments::Tuple(tuple)),
+    )
+    .with_attribute(
+        AttributeGroupElement::new("table").with_arguments(AttributeArguments::Table(literal)),
+    )
+    .with_attribute(AttributeGroupElement::new("string").with_arguments(
+        AttributeArguments::String(r4::nodes::StringExpression::from_value("s")),
+    ));
+
+    let mut block = Block::new(
+        vec![Statement::Function(Box::new(
+            FunctionStatement::from_name("f", Block::default())
+                .with_attributes(Attributes::new().with_attribute(Attribute::Group(group))),
+        ))],
+        None,
+    );
+
+    DefaultVisitor::visit_block(&mut block, &mut Count);
+    DefaultPostVisitor::visit_block(&mut block, &mut Count);
+    Walk::visit_block(&block, &mut Count);
+    let _ = r4::process::collect_trivia(&block);
+    r4::rules::remove_comments(&mut block);
+    r4::rules::remove_spaces(&mut block);
+    r4::process::detokenize(&mut block);
+
+    let mut readable = ReadableLuaGenerator::default();
+    readable.write_block(&block);
+    let _ = readable.into_string();
+    let mut dense = DenseLuaGenerator::default();
+    dense.write_block(&block);
+    let _ = dense.into_string();
+    let mut token_based = TokenBasedLuaGenerator::new("");
+    token_based.write_block(&block);
+    let _ = token_based.into_string();
 }

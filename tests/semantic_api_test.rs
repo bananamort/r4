@@ -159,3 +159,58 @@ fn escape_analysis_records_field_and_index_writes() {
     // `Dialect` is referenced to keep the import meaningful across the corpus.
     let _ = Dialect::Lua52;
 }
+
+#[test]
+fn module_error_codes_and_diagnostics() {
+    use r4::diagnostic::Diagnostic;
+
+    let errors = [
+        ModuleError::UnboundExport {
+            name: "x".to_owned(),
+        },
+        ModuleError::UnknownExport {
+            module: "m".to_owned(),
+            name: "y".to_owned(),
+        },
+        ModuleError::UnknownImportAlias {
+            module: "m".to_owned(),
+            name: "z".to_owned(),
+        },
+        ModuleError::UnknownImportedType {
+            module: "m".to_owned(),
+            name: "T".to_owned(),
+        },
+        ModuleError::AmbiguousImportedType {
+            name: "T".to_owned(),
+            modules: vec!["a".to_owned()],
+        },
+    ];
+    for error in errors {
+        assert!(error.code().starts_with("module/"));
+        let diagnostic: Diagnostic = error.to_diagnostic();
+        assert!(diagnostic.code.is_some());
+    }
+
+    let graph = MultiModuleModel::new();
+    assert!(!format!("{graph:?}").is_empty());
+}
+
+#[test]
+fn escape_analysis_records_dynamic_and_field_reads() {
+    for (code, dynamic) in [
+        ("local t = {}\nlocal v = t[k]\nreturn v", true),
+        ("local t = {}\nlocal v = t.field\nreturn v", false),
+    ] {
+        let (block, model) = Parser::default()
+            .parse_analyzed(code)
+            .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"));
+        let analysis = EscapeAnalysis::analyze(&block, &model);
+        let t = model
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "t")
+            .expect("the local must exist")
+            .id;
+        assert_eq!(analysis.has_dynamic_read(t), dynamic, "`{code}`");
+    }
+}
