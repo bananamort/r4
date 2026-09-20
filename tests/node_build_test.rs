@@ -264,3 +264,53 @@ fn token_operations_traverse_attribute_groups() {
     r4::rules::shift_token_line(&mut block, 1);
     r4::rules::replace_referenced_tokens(&mut block, "function f() end");
 }
+
+#[test]
+fn literal_expression_remaining_conversions() {
+    use r4::nodes::{BinaryNumber, Expression, HexNumber};
+
+    assert!(matches!(
+        LiteralExpression::try_from(1i16).expect("i16"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::try_from(1i8).expect("i8"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::from(HexNumber::new(0x10, false)),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::from(BinaryNumber::new(0b1010, false)),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::from(Option::<LiteralExpression>::None),
+        LiteralExpression::Nil(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::from(Some(LiteralExpression::nil())),
+        LiteralExpression::Nil(_)
+    ));
+    assert!(matches!(
+        Expression::from(LiteralExpression::nil()),
+        Expression::Nil(_)
+    ));
+}
+
+#[test]
+fn attribute_group_filtering_and_comment_filtering() {
+    let mut group = AttributeGroup::new(AttributeGroupElement::new("keep"))
+        .with_attribute(AttributeGroupElement::new("drop"));
+    group.filter_attributes(|element| element.name().get_name() == "keep");
+    assert_eq!(group.iter_attributes().count(), 1);
+    group.filter_mut_attributes(|_| false);
+    assert_eq!(group.iter_attributes().count(), 0);
+
+    // `remove_comments_where` must reach group attributes.
+    let group = AttributeGroup::new(AttributeGroupElement::new("a"));
+    let mut block = function_with(Attributes::new().with_attribute(Attribute::Group(group)));
+    r4::rules::remove_comments_where(&mut block, |_| true);
+    r4::rules::remove_comments_where(&mut block, |_| false);
+}
