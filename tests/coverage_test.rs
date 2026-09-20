@@ -257,6 +257,13 @@ fn every_evaluable_expression_shape_is_evaluated() {
         "return if false then 1 elseif true then 2 else 3",
         "return `{\"a\" .. \"b\"}`",
         "return if false then 1 elseif false then 2 else 3",
+        "return f(), f(1, ...), f'str', f{1}",
+        "return f{ g() }, f{ [g()] = h() }",
+        "return if false then f() elseif a then g() else h()",
+        "return if false then 1 elseif true then f() else g()",
+        "return (a)[b()]",
+        "return a[b()].c",
+        "return f{1, 2, a = 3}",
     ] {
         let block = parse_with(code, Dialect::Luau);
         for statement in block.iter_statements() {

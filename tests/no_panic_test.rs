@@ -234,3 +234,16 @@ fn transformed_trees_reanalyze_with_consistent_invariants() {
         );
     }
 }
+
+#[test]
+fn upstream_parser_panic_becomes_a_typed_error() {
+    // full_moon 2.2.0 panics while parsing Luau bitwise operators in an
+    // expression position. The r4 parser wraps the third-party parser, so the
+    // panic must surface as a typed `ParserError` instead of aborting.
+    for code in ["return 3 & 1", "return 2 | 1", "return 5 ~ 3"] {
+        let error = Parser::default()
+            .parse(code)
+            .expect_err("the upstream parser cannot handle bitwise operators");
+        assert!(!error.to_string().is_empty(), "`{code}`");
+    }
+}
