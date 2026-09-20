@@ -29,19 +29,26 @@ pub fn for_each_trivia(block: &Block, f: &mut impl FnMut(&Trivia)) {
 
 /// Collects every piece of trivia in `block`, deduplicated and in source order.
 ///
-/// Tokens without source positions (synthesized by a pass) sort last and keep
-/// their traversal order. Deduplication is linear in the number of trivia.
+/// A node can be reached through more than one traversal path, so the token
+/// walk may visit the same token twice; each token is visited once here by
+/// identity, so its trivia is collected exactly once. Distinct tokens are never
+/// merged, even when their trivia have identical content.
+///
+/// Trivia without source positions (synthesized by a pass) sort last and keep
+/// their traversal order. Deduplication is linear in the number of tokens.
 pub fn collect_trivia(block: &Block) -> Vec<Trivia> {
     let mut seen = HashSet::new();
     let mut trivia = Vec::new();
     for_each_token(block, &mut |token| {
+        let identity = token as *const Token as usize;
+        if !seen.insert(identity) {
+            return;
+        }
         for piece in token
             .iter_leading_trivia()
             .chain(token.iter_trailing_trivia())
         {
-            if seen.insert(TriviaKey::of(piece)) {
-                trivia.push(piece.clone());
-            }
+            trivia.push(piece.clone());
         }
     });
     trivia.sort_by_key(|piece| {
@@ -51,41 +58,6 @@ pub fn collect_trivia(block: &Block) -> Vec<Trivia> {
         )
     });
     trivia
-}
-
-/// A hashable identity for a piece of trivia.
-///
-/// Positioned trivia (parsed from source) are identified by their recorded
-/// range; synthesized trivia are identified by their content.
-#[derive(Hash, PartialEq, Eq)]
-enum TriviaKey {
-    Positioned {
-        kind: crate::nodes::TriviaKind,
-        start: usize,
-        end: usize,
-        line: usize,
-    },
-    Content {
-        kind: crate::nodes::TriviaKind,
-        content: String,
-    },
-}
-
-impl TriviaKey {
-    fn of(piece: &Trivia) -> Self {
-        match (piece.get_start(), piece.get_end()) {
-            (Some(start), Some(end)) => TriviaKey::Positioned {
-                kind: piece.kind(),
-                start,
-                end,
-                line: piece.get_line_number().unwrap_or(usize::MAX),
-            },
-            _ => TriviaKey::Content {
-                kind: piece.kind(),
-                content: piece.try_read().unwrap_or("").to_owned(),
-            },
-        }
-    }
 }
 
 /// Passes every token in `block` to `f`.

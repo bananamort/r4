@@ -265,3 +265,28 @@ fn token_read_fails_fast_on_an_invalid_range() {
     let token = r4::nodes::Token::from_content("local");
     assert_eq!(token.try_read_with("").expect("synthesized token"), "local");
 }
+
+#[test]
+fn distinct_synthesized_trivia_are_not_collapsed() {
+    use r4::rules::{append_text_comment, AppendLocation};
+
+    let mut block = Parser::default()
+        .preserve_tokens()
+        .parse("return 1")
+        .expect("valid code");
+    // Two synthesized comments with identical text must both survive: they are
+    // distinct pieces of trivia, not two visits of the same trivia.
+    append_text_comment(&mut block, "same text", AppendLocation::Start);
+    append_text_comment(&mut block, "same text", AppendLocation::End);
+
+    let trivia = collect_trivia(&block);
+    let comments: Vec<_> = trivia
+        .iter()
+        .filter(|piece| piece.kind().is_comment())
+        .collect();
+    assert_eq!(
+        comments.len(),
+        2,
+        "distinct synthesized comments must not be collapsed: {comments:?}"
+    );
+}

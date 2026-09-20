@@ -252,3 +252,22 @@ fn dialect_specific_trees_are_equivalent_without_tokens() {
         assert!(tokenful.is_equivalent_to(&tokenless), "{code}");
     }
 }
+
+#[test]
+fn literal_spelling_is_semantic_not_lexical() {
+    // r4's AST stores a literal's value, not its token text, so two spellings of
+    // the same number or string are structurally equivalent. This is deliberate:
+    // equivalence is about meaning.
+    assert!(with_tokens("return 1").is_equivalent_to(&with_tokens("return 1.0")));
+    assert!(with_tokens("return 'a'").is_equivalent_to(&with_tokens("return \"a\"")));
+
+    // Numbers of different length have different token ranges, so even the
+    // token-inclusive comparison distinguishes them.
+    assert_ne!(with_tokens("return 1"), with_tokens("return 1.0"));
+
+    // A same-length spelling differs only in the source text, which a token's
+    // range does not capture, so the token comparison also treats them as
+    // equal. Callers that need the exact spelling read it from the source (via
+    // `Token::read`); the token model intentionally stores ranges, not text.
+    assert_eq!(with_tokens("return 'a'"), with_tokens("return \"a\""));
+}
