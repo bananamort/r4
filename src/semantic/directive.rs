@@ -179,7 +179,7 @@ impl Directives {
     /// The traversal reads every piece of trivia, so a directive is found no
     /// matter where it is attached. Conflicting strictness directives are a
     /// typed error rather than a silent last-one-wins.
-    pub fn from_block(block: &mut Block, source: &str) -> Result<Self, DirectiveError> {
+    pub fn from_block(block: &Block, source: &str) -> Result<Self, DirectiveError> {
         let mut directives = Vec::new();
         for trivia in collect_trivia(block) {
             if let Some(directive) = trivia.directive(source)? {

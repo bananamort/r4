@@ -19,5 +19,5 @@ pub use immutable::{
 pub use node_counter::NodeCounter;
 pub use node_processor::{NodePostProcessor, NodeProcessor};
 pub use post_visitor::{DefaultPostVisitor, NodePostVisitor};
-pub use tokens::{collect_trivia, for_each_token, for_each_trivia};
+pub use tokens::{collect_trivia, for_each_trivia};
 pub use visitors::{DefaultVisitor, NodeVisitor};

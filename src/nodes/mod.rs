@@ -178,9 +178,8 @@ macro_rules! impl_token_fns {
         /// Passes every token attached to this node to `f`.
         ///
         /// Direct token fields and iterable token containers are visited, and
-        /// the listed `children` are visited recursively. Combine with
-        /// [`for_each_token`](crate::process::for_each_token) for a complete
-        /// token traversal of a tree.
+        /// the listed `children` are visited recursively. Use [`collect_trivia`](crate::process::collect_trivia)
+        /// for a deduplicated, source-ordered view of a tree's trivia.
         #[allow(dead_code)]
         pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
             $(

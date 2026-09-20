@@ -14,8 +14,8 @@ fn parse_with_tokens(code: &str) -> r4::nodes::Block {
 
 #[test]
 fn whitespace_is_classified_into_spaces_and_line_breaks() {
-    let mut block = parse_with_tokens("local x = 1\nreturn x");
-    let trivia = collect_trivia(&mut block);
+    let block = parse_with_tokens("local x = 1\nreturn x");
+    let trivia = collect_trivia(&block);
 
     assert!(
         trivia
@@ -34,8 +34,8 @@ fn whitespace_is_classified_into_spaces_and_line_breaks() {
 
 #[test]
 fn trivia_is_deduplicated_and_source_ordered() {
-    let mut block = parse_with_tokens("-- first\nlocal x = 1 -- trailing\nreturn x");
-    let trivia = collect_trivia(&mut block);
+    let block = parse_with_tokens("-- first\nlocal x = 1 -- trailing\nreturn x");
+    let trivia = collect_trivia(&block);
 
     let comments: Vec<_> = trivia
         .iter()
@@ -54,8 +54,8 @@ fn trivia_is_deduplicated_and_source_ordered() {
 
 #[test]
 fn trivia_read_fails_fast_on_an_invalid_range() {
-    let mut block = parse_with_tokens("-- comment\nreturn 1");
-    let trivia = collect_trivia(&mut block);
+    let block = parse_with_tokens("-- comment\nreturn 1");
+    let trivia = collect_trivia(&block);
     let comment = trivia
         .iter()
         .find(|piece| piece.kind() == TriviaKind::Comment)
@@ -134,9 +134,9 @@ fn directive_names_select_strictness() {
 #[test]
 fn collects_file_directives() {
     let source = "--!strict\n--!native\nlocal x = 1\nreturn x";
-    let mut block = parse_with_tokens(source);
+    let block = parse_with_tokens(source);
 
-    let directives = Directives::from_block(&mut block, source).expect("directives parse");
+    let directives = Directives::from_block(&block, source).expect("directives parse");
 
     assert_eq!(directives.len(), 2);
     assert_eq!(directives.strictness(), Some(Strictness::Strict));
@@ -146,10 +146,10 @@ fn collects_file_directives() {
 #[test]
 fn conflicting_strictness_is_an_error() {
     let source = "--!strict\n--!nonstrict\nreturn 1";
-    let mut block = parse_with_tokens(source);
+    let block = parse_with_tokens(source);
 
     let error =
-        Directives::from_block(&mut block, source).expect_err("conflicting strictness must fail");
+        Directives::from_block(&block, source).expect_err("conflicting strictness must fail");
 
     assert!(matches!(
         error,
@@ -164,8 +164,8 @@ fn conflicting_strictness_is_an_error() {
 #[test]
 fn strict_directive_enables_strict_checking() {
     let source = "--!strict\nreturn print";
-    let mut block = parse_with_tokens(source);
-    let directives = Directives::from_block(&mut block, source).expect("directives parse");
+    let block = parse_with_tokens(source);
+    let directives = Directives::from_block(&block, source).expect("directives parse");
 
     let analysis = SemanticAnalyzer::new()
         .with_directives(&directives)
@@ -177,8 +177,8 @@ fn strict_directive_enables_strict_checking() {
 #[test]
 fn nonstrict_directive_disables_strict_checking() {
     let source = "--!nonstrict\nreturn print";
-    let mut block = parse_with_tokens(source);
-    let directives = Directives::from_block(&mut block, source).expect("directives parse");
+    let block = parse_with_tokens(source);
+    let directives = Directives::from_block(&block, source).expect("directives parse");
 
     let analysis = SemanticAnalyzer::new()
         .strict_globals()
@@ -199,8 +199,8 @@ fn trivia_traversal_reaches_every_token_holder() {
     // Comments attached to non-expression positions (declarations, function
     // names, attributes, table entries, types) must all be found.
     let source = "--!strict\nlocal x: number = 1 -- decl\nlocal function f(a) return a end -- fn\nlocal t = { key = 1, [expr] = 2 } -- table\n@native function g() end -- attribute\nreturn t";
-    let mut block = parse_with_tokens(source);
-    let trivia = collect_trivia(&mut block);
+    let block = parse_with_tokens(source);
+    let trivia = collect_trivia(&block);
     let comments: Vec<String> = trivia
         .iter()
         .filter(|piece| piece.kind() == TriviaKind::Comment)

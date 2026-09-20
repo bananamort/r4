@@ -308,7 +308,7 @@ impl Token {
     ///
     /// The counterpart of [`for_each_token`](crate::nodes::Block::for_each_token)
     /// on a single token; used to drive
-    /// [`for_each_token`](crate::process::for_each_token) without special-casing
+    /// [`collect_trivia`](crate::process::collect_trivia) without special-casing
     /// leaf tokens.
     pub fn for_each_token<F: FnMut(&Token)>(&self, f: &mut F) {
         f(self);

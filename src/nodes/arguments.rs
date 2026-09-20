@@ -278,7 +278,8 @@ impl Arguments {
     pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
         match self {
             Arguments::Tuple(tuple) => tuple.for_each_token(f),
-            Arguments::String(_) | Arguments::Table(_) => {}
+            Arguments::String(string) => string.for_each_token(f),
+            Arguments::Table(table) => table.for_each_token(f),
         }
     }
 

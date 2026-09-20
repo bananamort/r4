@@ -704,9 +704,9 @@ previously missing:
   ordinary tokenless nodes, so a built tree is `is_equivalent_to` the parsed
   source.
 - **Trivia model** — `TriviaKind::EndOfLine` distinguishes line breaks from
-  inline whitespace; `process::for_each_token` / `collect_trivia` enumerate every
-  token and piece of trivia, including tokens on nodes the node visitors do not
-  surface; `Trivia::try_read_with` reads trivia fallibly; and structured `--!`
+  inline whitespace; the read-only `process::for_each_trivia` / `collect_trivia`
+  enumerate every piece of trivia (and `for_each_token` every token) including
+  tokens on nodes the node visitors do not surface; `Trivia::try_read_with` reads trivia fallibly; and structured `--!`
   directives (`Directive`/`Directives`/`Strictness`) are parsed exactly, with
   `--!strict` / `--!nonstrict` / `--!nocheck` feeding `SemanticOptions`.
   Conflicting strictness directives and malformed `--!` comments are typed
