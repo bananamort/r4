@@ -146,3 +146,17 @@ fn converts_map_keys_and_renders_errors() {
     assert_eq!(error.message(), "boom");
     assert_eq!(error.to_string(), "boom");
 }
+
+#[test]
+fn serializes_bytes_through_the_serializer() {
+    struct Bytes(&'static [u8]);
+
+    impl serde::Serialize for Bytes {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_bytes(self.0)
+        }
+    }
+
+    let output = convert_data(Bytes(b"ABC")).expect("bytes convert");
+    assert!(output.contains("string.char"), "{output}");
+}

@@ -497,3 +497,54 @@ fn interpolated_string_segment_methods() {
     let _ = collected;
     let _ = InterpolatedStringExpression::empty();
 }
+
+#[test]
+fn generic_parameters_with_defaults_methods() {
+    use r4::nodes::{
+        GenericParameter, GenericParametersWithDefaults, GenericTypePack,
+        GenericTypePackWithDefault, TypeVariableWithDefault,
+    };
+
+    let variable_default = || TypeVariableWithDefault::new(Identifier::new("T"), number("number"));
+    let pack = GenericTypePack::new("P");
+    let pack_default =
+        || GenericTypePackWithDefault::new(GenericTypePack::new("Q"), TypePack::default());
+
+    // A type variable with a default appends; mixing with a pack is rejected.
+    let mut parameters = GenericParametersWithDefaults::from_type_variable("A");
+    assert!(parameters.push_type_variable_with_default(variable_default()));
+    assert!(parameters.push_type_variable_with_default(variable_default()));
+    assert!(!parameters.push_generic_type_pack(pack.clone()));
+    assert!(parameters
+        .with_type_variable_with_default(variable_default())
+        .is_some());
+
+    // A generic type pack appends; mixing with a defaulted variable is rejected.
+    let mut packs = GenericParametersWithDefaults::from_type_variable("A");
+    assert!(packs.push_generic_type_pack(pack.clone()));
+    assert!(packs.push_generic_type_pack(GenericTypePack::new("R")));
+    assert!(!packs.push_type_variable_with_default(variable_default()));
+    assert!(packs.with_generic_type_pack(pack.clone()).is_some());
+
+    let mixed = GenericParametersWithDefaults::from_type_variable_with_default(variable_default());
+    assert!(mixed.with_generic_type_pack(pack.clone()).is_none());
+
+    // Type-pack defaults and the container accessors.
+    let mut with_defaults =
+        GenericParametersWithDefaults::from_generic_type_pack_with_default(pack_default());
+    with_defaults.push_generic_type_pack_with_default(pack_default());
+    with_defaults.push_type_variable("Y");
+    let _ = with_defaults.len();
+    let _ = with_defaults.is_empty();
+    let _ = with_defaults.get_tokens();
+    with_defaults = with_defaults.with_type_variable("X");
+    with_defaults = with_defaults.with_generic_type_pack_with_default(pack_default());
+    let _ = with_defaults.get_tokens();
+    let _ = GenericParametersWithDefaults::from_generic_type_pack(pack.clone());
+
+    // Conversions into `GenericParameter`.
+    let _ = GenericParameter::from(Identifier::new("T"));
+    let _ = GenericParameter::from(variable_default());
+    let _ = GenericParameter::from(pack);
+    let _ = GenericParameter::from(pack_default());
+}

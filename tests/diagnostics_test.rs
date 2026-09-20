@@ -188,3 +188,47 @@ fn diagnostic_builders_and_positions_are_covered() {
     let descriptor = r4::diagnostic::descriptor_for("custom/warning");
     let _ = descriptor;
 }
+
+#[test]
+fn diagnostic_descriptors_severities_and_format_errors() {
+    use r4::diagnostic::{
+        DiagnosticDescriptor, DiagnosticFormatError, LinePosition, LinePositionSpan, Severity,
+        TextSpan,
+    };
+    use r4::Diagnostic;
+
+    let descriptor = DiagnosticDescriptor::new("test/code", Severity::Warning, "A title");
+    assert_eq!(descriptor.code, "test/code");
+    assert_eq!(descriptor.severity, Severity::Warning);
+    assert_eq!(descriptor.title, "A title");
+
+    for severity in [Severity::Error, Severity::Warning, Severity::Info] {
+        assert!(!severity.to_string().is_empty());
+    }
+
+    let with_code = Diagnostic::error("boom").with_code("custom/code");
+    assert!(with_code.to_string().contains("[custom/code]"));
+
+    let with_location = Diagnostic::error("boom")
+        .with_span(TextSpan::new(0, 3))
+        .resolve_location("abcd");
+    assert!(with_location.to_string().contains("at "));
+
+    let with_bytes = Diagnostic::error("boom").with_span(TextSpan::new(1, 4));
+    assert!(with_bytes.to_string().contains("at bytes 1..4"));
+
+    for error in [
+        DiagnosticFormatError::UnknownCode {
+            code: "x".to_owned(),
+        },
+        DiagnosticFormatError::InvalidSpan {
+            span: TextSpan::new(0, 99),
+            source_len: 3,
+        },
+        DiagnosticFormatError::InvalidLocation {
+            location: LinePositionSpan::new(LinePosition::new(9, 9), LinePosition::new(9, 10)),
+        },
+    ] {
+        assert!(!error.to_string().is_empty());
+    }
+}

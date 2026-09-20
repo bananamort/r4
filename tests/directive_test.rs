@@ -290,3 +290,73 @@ fn distinct_synthesized_trivia_are_not_collapsed() {
         "distinct synthesized comments must not be collapsed: {comments:?}"
     );
 }
+
+#[test]
+fn directives_parse_and_render_errors() {
+    for strictness in [
+        Strictness::Strict,
+        Strictness::NonStrict,
+        Strictness::NoCheck,
+    ] {
+        assert!(!strictness.as_str().is_empty());
+    }
+
+    assert_eq!(
+        Directive::parse("--!strict").expect("parses"),
+        Some(Directive {
+            name: "strict".to_owned(),
+            value: None,
+        })
+    );
+    assert_eq!(
+        Directive::parse("--!native codegen")
+            .expect("parses")
+            .and_then(|directive| directive.value),
+        Some("codegen".to_owned())
+    );
+    assert!(Directive::parse("-- not a directive")
+        .expect("parses")
+        .is_none());
+    assert_eq!(Directive::parse("--!"), Err(DirectiveError::MissingName));
+
+    for error in [
+        DirectiveError::InvalidRange {
+            start: 0,
+            end: 9,
+            length: 3,
+        },
+        DirectiveError::MissingName,
+        DirectiveError::ConflictingStrictness {
+            first: Strictness::Strict,
+            second: Strictness::NoCheck,
+        },
+    ] {
+        assert!(error.code().starts_with("directive/"));
+        assert!(!error.to_string().is_empty());
+    }
+
+    let converted: DirectiveError = TriviaError::InvalidRange {
+        start: 0,
+        end: 1,
+        length: 2,
+    }
+    .into();
+    assert_eq!(converted.code(), "directive/invalid-range");
+
+    // A block-level conflict is detected and rendered.
+    let source = "--!strict\n--!nocheck\nreturn 1";
+    let block = parse_with_tokens(source);
+    let error = Directives::from_block(&block, source).expect_err("conflicting strictness");
+    assert_eq!(error.code(), "directive/conflicting-strictness");
+
+    // The resolved strictness and collection accessors.
+    let source = "--!nonstrict\nreturn 1";
+    let directives =
+        Directives::from_block(&parse_with_tokens(source), source).expect("directives");
+    assert_eq!(directives.len(), 1);
+    assert!(!directives.is_empty());
+    assert_eq!(directives.strictness(), Some(Strictness::NonStrict));
+    assert!(directives.get("nonstrict").is_some());
+    assert_eq!(directives.iter().count(), 1);
+    assert!(directives.get("missing").is_none());
+}

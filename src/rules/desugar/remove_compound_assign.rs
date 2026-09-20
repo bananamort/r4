@@ -358,6 +358,16 @@ mod operator_coverage {
             "(t).field += 1",
             "(t)[1] += 1",
             "t[key()] += 1",
+            "t[(a)] += 1",
+            "f()[1] += 1",
+            "t.a[1] += 1",
+            "t[1][2] += 1",
+            "f()[g()] += 1",
+            "t.a[g()] += 1",
+            "(t.a)[1] += 1",
+            "(1)[i] += 1",
+            "('s')[i] += 1",
+            "t[(a + b)] += 1",
         ] {
             let (mut block, model) = analyze(input);
             remove_compound_assign(&mut block, &model);
