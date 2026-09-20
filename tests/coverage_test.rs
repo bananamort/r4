@@ -583,3 +583,38 @@ fn attribute_argument_nodes_drive_visitors_and_generators() {
     token_based.write_block(&block);
     let _ = token_based.into_string();
 }
+
+#[test]
+fn typed_function_and_generic_declaration_forms_drive_the_visitors() {
+    for code in [
+        "type A<T = number> = T",
+        "type B<T... = (number)> = () -> ()",
+        "type C<T... = ...number> = () -> ()",
+        "type D<T... = U...> = () -> ()",
+        "type E<T, U...> = (T, U...) -> T",
+        "type function G<T>(x: T) return x end",
+        "local function f(a: number, b: string, ...: boolean): (number, string) return 1, '' end",
+        "local function g(...: A...): B... return ... end",
+        "function M.n(a: T): U end",
+        "function o:p(a: T): U end",
+        "local h: (number, ...string) -> boolean = f",
+        "local i: <T>(T) -> T = f",
+        "return function(a: number, ...: string): (number) return 1 end",
+        "local function j(a: number, ...: string): number return 1 end",
+        "function k<T>(a: T, ...: U...): V... end",
+        "return a[1](), (a)[1], a.b[1]",
+        "return f<<T, (U)>>",
+        "return f<<(number), string>>",
+        "type L = A<number>",
+        "type M = A<(number)>",
+        "type N = A<...number>",
+        "local o: (...number) -> ...string = f",
+    ] {
+        let mut block = parse_with(code, Dialect::Luau);
+        DefaultVisitor::visit_block(&mut block, &mut Count);
+        DefaultPostVisitor::visit_block(&mut block, &mut Count);
+        let read_only = parse_with(code, Dialect::Luau);
+        Walk::visit_block(&read_only, &mut Count);
+        let _ = r4::process::collect_trivia(&read_only);
+    }
+}
