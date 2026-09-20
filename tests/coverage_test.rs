@@ -102,6 +102,10 @@ const CORPUS: &[&str] = &[
     "local f: (number) -> (string, boolean) = g",
     "type J<A, B...> = (A, B...) -> A",
     "return f<<T, U>>",
+    "type K<T... = (number)> = () -> ()",
+    "type L<T... = ...number> = () -> ()",
+    "type M<T... = U...> = () -> ()",
+    "type N<T, U... = ...number> = (T, U...) -> T",
 ];
 
 const LUA52: &[&str] = &["::label::\ngoto label"];
@@ -953,4 +957,29 @@ fn for_each_trivia_walks_field_call_varargs_and_literals() {
         .with_attributes(Attributes::new().with_attribute(Attribute::Group(group)));
     let block = Block::new(vec![Statement::Function(Box::new(function))], None);
     r4::process::for_each_trivia(&block, &mut |_| {});
+}
+
+#[test]
+fn generator_spacing_and_line_break_helper_inputs() {
+    let long_minus = (1..=80).map(|i| format!("a{i} - ")).collect::<String>() + "0";
+    let long_concat = (1..=80).map(|i| format!("a{i} .. ")).collect::<String>() + "''";
+    let cases = vec![
+        "local a = 1\n(f)()".to_owned(),
+        "local b = f()\n(g)()".to_owned(),
+        "local c = {}\n(h).x = 1".to_owned(),
+        format!("return {long_minus}"),
+        format!("return {long_concat}"),
+        "local x = 1\nlocal y = 2\nlocal z = x == y".to_owned(),
+        "return function(...) return ... end".to_owned(),
+        "local t = { 1, 2, 3 }\nreturn t".to_owned(),
+        "return f{ 1, 2 }, f's'".to_owned(),
+        "return `a\\n{b}\\t`".to_owned(),
+        "return \"\\0\\1\\2\\7\\8\\9\\11\\12\\13\"".to_owned(),
+        "return \"a\\rb\\nc\\td\\\\e\\\"f\\'g\"".to_owned(),
+        "return [==[x]]y]==]".to_owned(),
+    ];
+    for code in cases {
+        let block = parse_with(&code, Dialect::Luau);
+        assert_generates(&block, &code, Dialect::Luau);
+    }
 }
