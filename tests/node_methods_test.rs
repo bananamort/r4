@@ -548,3 +548,60 @@ fn generic_parameters_with_defaults_methods() {
     let _ = GenericParameter::from(pack);
     let _ = GenericParameter::from(pack_default());
 }
+
+#[test]
+fn type_last_token_mutation_covers_every_variant() {
+    use r4::nodes::*;
+
+    let mut types: Vec<Type> = vec![
+        Type::True(None),
+        Type::False(None),
+        Type::Nil(None),
+        Type::String(StringType::new("\"s\"").expect("valid string type")),
+        Type::Array(ArrayType::new(number("number"))),
+        Type::Table(TableType::default()),
+        Type::TypeOf(ExpressionType::new(Expression::identifier("x"))),
+        TypeName::new("Base").into(),
+        TypeField::new("Mod", TypeName::new("T")).into(),
+        FunctionType::new(number("number")).into(),
+        OptionalType::new(number("number")).into(),
+        IntersectionType::new(number("a"), number("b")).into(),
+        UnionType::new(number("a"), number("b")).into(),
+        ParentheseType::new(number("number")).into(),
+    ];
+    for r#type in &mut types {
+        let _ = r#type.mutate_last_token();
+    }
+
+    // `true`/`false`/`nil` synthesize their token on first mutation.
+    for mut r#type in [Type::True(None), Type::False(None), Type::Nil(None)] {
+        let _ = r#type.mutate_last_token();
+        let _ = r#type.mutate_last_token();
+    }
+}
+
+#[test]
+fn type_declaration_token_methods() {
+    use r4::nodes::{
+        GenericParametersWithDefaults, GenericTypePack, GenericTypePackWithDefault,
+        TypeDeclarationStatement, TypePack,
+    };
+
+    let mut declaration = TypeDeclarationStatement::new("T", number("number"));
+    let _ = declaration.mutate_tokens();
+    declaration.clear_comments();
+    declaration.clear_whitespaces();
+    declaration.remove_tokens();
+    declaration.for_each_token(&mut |_| {});
+
+    // Generic type packs with defaults exercise the delegation arms.
+    let parameters = GenericParametersWithDefaults::from_generic_type_pack_with_default(
+        GenericTypePackWithDefault::new(GenericTypePack::new("A"), TypePack::default()),
+    );
+    let mut declaration =
+        TypeDeclarationStatement::new("U", number("number")).with_generic_parameters(parameters);
+    declaration.clear_comments();
+    declaration.clear_whitespaces();
+    declaration.remove_tokens();
+    let _ = format!("{declaration:?}");
+}

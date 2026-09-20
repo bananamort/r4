@@ -649,3 +649,24 @@ fn long_and_escaped_strings_drive_the_generators() {
         assert_generates(&block, &code, Dialect::Luau);
     }
 }
+
+#[test]
+fn comments_drive_trivia_conversion() {
+    for code in [
+        "-- leading\nlocal x = 1 -- trailing\nreturn x --[[ block ]]",
+        "local x = --[[inline]] 1\nreturn x",
+        "--- doc\n--!strict\nreturn 1",
+        "local t = { --[[a]] 1, --[[b]] 2 }",
+        "function --[[f]] f --[[p]] ( --[[arg]] a --[[endarg]] ) --[[body]] return a end",
+        "return --[[a]] 1 --[[b]] + --[[c]] 2",
+        "if --[[c]] a --[[then]] then --[[body]] return 1 end",
+        "local x = #{ --[[k]] a = 1 }",
+        "return `text { --[[v]] x } more`",
+        "for --[[i]] i = 1, --[[n]] 10 do end",
+        "while --[[c]] true do --[[b]] break end",
+    ] {
+        let tokens = parse_tokens(code, Dialect::Luau);
+        assert_generates(&tokens, code, Dialect::Luau);
+        DefaultVisitor::visit_block(&mut tokens.clone(), &mut Count);
+    }
+}
