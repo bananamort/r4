@@ -181,3 +181,64 @@ fn compilation_api_surface_is_covered() {
         .expect("recovery stores the tree");
     assert!(compilation.block(recovered).is_some());
 }
+
+#[test]
+fn compilation_cache_diagnostics_and_resolution_surface() {
+    use r4::diagnostic::{Diagnostic, TextSpan};
+    use r4::nodes::Token;
+    use r4::{Compilation, TreeId};
+
+    let mut compilation = Compilation::new();
+    assert!(compilation.is_empty());
+    assert_eq!(compilation.len(), 0);
+    assert_eq!(compilation.iter_ids().count(), 0);
+
+    let tree = compilation.add_tree("local x = 1\nreturn x").expect("tree");
+    assert_eq!(compilation.len(), 1);
+    assert!(!compilation.is_empty());
+    assert_eq!(compilation.iter_ids().collect::<Vec<_>>(), vec![tree]);
+    assert!(compilation.cache_len() >= 1);
+    compilation.clear_cache();
+    assert_eq!(compilation.cache_len(), 0);
+
+    // A parse failure records a diagnostic within its span.
+    let error = compilation.add_tree("local x = ").expect_err("invalid");
+    assert!(compilation
+        .diagnostics()
+        .iter()
+        .any(|diagnostic| diagnostic.code == error.code));
+    assert!(!compilation.diagnostics_in(TextSpan::new(0, 100)).is_empty());
+    let taken = compilation.take_diagnostics();
+    assert!(!taken.is_empty());
+    assert!(compilation.diagnostics().is_empty());
+    compilation.clear_diagnostics();
+
+    // Token diagnostics need token data.
+    let token = Token::from_content("x");
+    assert!(compilation.diagnostics_for_token(&token).is_err());
+
+    // Rendering a diagnostic, plus an out-of-range failure.
+    let diagnostic = Diagnostic::error("boom")
+        .with_span(TextSpan::new(0, 3))
+        .resolve_location("return x");
+    let rendered = compilation
+        .format_diagnostic(&diagnostic, "return x")
+        .expect("renders");
+    assert!(!rendered.is_empty());
+    let out_of_range = Diagnostic::error("boom").with_span(TextSpan::new(0, 99));
+    assert!(compilation
+        .format_diagnostic(&out_of_range, "short")
+        .is_err());
+
+    // Binding lookup and unknown-tree module resolution.
+    let block = compilation.block(tree).expect("block").clone();
+    let identifier = returned_identifier(&block).clone();
+    let _ = compilation.binding_of(tree, &identifier);
+
+    let provider = MemoryModuleProvider::new();
+    assert!(compilation
+        .resolve_modules(TreeId(9999), &provider)
+        .is_err());
+    let _ = compilation.model(tree);
+    let _ = compilation.source(tree);
+}

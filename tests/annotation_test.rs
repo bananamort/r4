@@ -201,3 +201,71 @@ fn session_validates_annotations_against_the_current_tree() {
         index: 0,
     }));
 }
+
+#[test]
+fn annotation_validation_and_errors() {
+    let (block, _model) = analyze("return 1");
+    let id = identity(&block);
+
+    let mut annotations = SyntaxAnnotations::new();
+    assert!(annotations.is_empty());
+    assert!(!annotations.contains(&NodeAddress::Block(id)));
+    annotations.insert(NodeAddress::Block(id), SyntaxAnnotation::new("keep"));
+    assert_eq!(annotations.len(), 1);
+    assert!(annotations.contains(&NodeAddress::Block(id)));
+    assert_eq!(annotations.get(&NodeAddress::Block(id)).len(), 1);
+    assert_eq!(annotations.iter().count(), 1);
+    assert!(annotations.validate(&block).is_ok());
+    assert_eq!(annotations.remove(&NodeAddress::Block(id)).len(), 1);
+    annotations.clear();
+    assert!(annotations.is_empty());
+
+    assert!(SyntaxAnnotation::empty().kind.is_none());
+    let payload = SyntaxAnnotation::with_data("kind", "data");
+    assert_eq!(payload.kind.as_deref(), Some("kind"));
+    assert_eq!(payload.data.as_deref(), Some("data"));
+
+    let cases = [
+        (
+            NodeAddress::Block(BlockIdentity(9999)),
+            "annotation/unknown-block",
+        ),
+        (
+            NodeAddress::Statement {
+                block: id,
+                index: 99,
+            },
+            "annotation/unknown-statement",
+        ),
+        (
+            NodeAddress::Expression {
+                block: id,
+                statement: 0,
+                index: 99,
+            },
+            "annotation/unknown-expression",
+        ),
+        (
+            NodeAddress::Condition {
+                block: id,
+                statement: 0,
+            },
+            "annotation/missing-condition",
+        ),
+        (
+            NodeAddress::Identifier(BindingId::symbol(9999)),
+            "annotation/unknown-identifier",
+        ),
+    ];
+    for (address, expected) in cases {
+        let mut annotations = SyntaxAnnotations::new();
+        annotations.insert(address, SyntaxAnnotation::new("x"));
+        let error = annotations.validate(&block).expect_err("must fail");
+        assert_eq!(error.code(), expected);
+        assert!(!error.to_string().is_empty());
+        let diagnostic = error.to_diagnostic();
+        assert!(diagnostic.code.is_some());
+        let converted: r4::diagnostic::Diagnostic = error.into();
+        assert!(converted.code.is_some());
+    }
+}
