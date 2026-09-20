@@ -195,3 +195,72 @@ fn literal_expression_float_conversion_rejects_invalid_values() {
         LiteralExpression::Number(_)
     ));
 }
+
+#[test]
+fn literal_expression_numeric_conversions() {
+    use r4::nodes::NumberExpression;
+
+    // Every integer/float conversion is available.
+    assert!(matches!(
+        LiteralExpression::from(1u8),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::from(1u16),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::from(1u32),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::try_from(1u64).expect("u64"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::try_from(1i64).expect("i64"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::try_from(1i32).expect("i32"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::try_from(1.5f32).expect("f32"),
+        LiteralExpression::Number(_)
+    ));
+    assert!(matches!(
+        LiteralExpression::from(NumberExpression::from(r4::nodes::DecimalNumber::new(3.0))),
+        LiteralExpression::Number(_)
+    ));
+
+    // Negative zero collapses to positive zero.
+    assert!(LiteralExpression::try_from(-0.0).is_ok());
+    // A round large value exercises the exponent-reduction loop.
+    assert!(LiteralExpression::try_from(1200.0).is_ok());
+    assert!(LiteralExpression::try_from(12300.0).is_ok());
+    // A subnormal/small value uses the exponent branch.
+    assert!(LiteralExpression::try_from(1e-5).is_ok());
+    // Negative and non-finite values are rejected.
+    assert!(LiteralExpression::try_from(-1.0).is_err());
+    assert!(LiteralExpression::try_from(f32::NAN).is_err());
+}
+
+#[test]
+fn token_operations_traverse_attribute_groups() {
+    let group = AttributeGroup::new(AttributeGroupElement::new("a")).with_attribute(
+        AttributeGroupElement::new("b").with_arguments(AttributeArguments::String(
+            StringExpression::from_value("s"),
+        )),
+    );
+    let attributes = Attributes::new().with_attribute(Attribute::Group(group));
+    let mut block = function_with(attributes);
+
+    // Every token operation must reach the group (and its elements/arguments).
+    r4::rules::remove_comments(&mut block);
+    r4::rules::remove_spaces(&mut block);
+    r4::process::detokenize(&mut block);
+    let _ = r4::process::collect_trivia(&block);
+    r4::rules::shift_token_line(&mut block, 1);
+    r4::rules::replace_referenced_tokens(&mut block, "function f() end");
+}

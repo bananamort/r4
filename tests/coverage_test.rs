@@ -1,0 +1,316 @@
+//! Drives every syntax subsystem (mutable visitor, post visitor, read-only
+//! visitor, converter, generators, evaluator) over a corpus that covers every
+//! node kind, so node-shaped code paths are exercised rather than assumed.
+
+use r4::generator::{
+    DenseLuaGenerator, LuaGenerator, ReadableLuaGenerator, TokenBasedLuaGenerator,
+};
+use r4::nodes::Block;
+use r4::process::{
+    DefaultPostVisitor, DefaultVisitor, Evaluator, ImmutableProcessor, ImmutableVisitor,
+    NodePostProcessor, NodePostVisitor, NodeProcessor, NodeVisitor, Walk,
+};
+use r4::{Dialect, Parser};
+
+/// Statements, expressions and types covering every node kind the parser accepts.
+const CORPUS: &[&str] = &[
+    "x = 1, 2",
+    "t.f = 1",
+    "t[1] = 1",
+    "x += 1",
+    "x -= 1",
+    "x *= 2",
+    "x /= 2",
+    "x %= 2",
+    "x ^= 2",
+    "x ..= 'a'",
+    "x //= 2",
+    "do local x = 1 end",
+    "function f(a, b, ...) return a end",
+    "function a.b.c(d) end",
+    "function a:b(c) return self end",
+    "for k, v in pairs(t) do end",
+    "for i = 1, 10, 2 do end",
+    "if a then b() elseif c then d() else e() end",
+    "local x, y = 1, 2",
+    "local function f() end",
+    "local x: number = 1",
+    "repeat until true",
+    "while true do break end",
+    "while true do continue end",
+    "type T = number",
+    "export type T = { a: number }",
+    "type T<A, B = string> = { a: A }",
+    "type function f(x) return x end",
+    "@native function f() end",
+    "return a, b",
+    "return",
+    "return a + b - c * d / e % f ^ g",
+    "return a and b or not c",
+    "return a == b ~= c < d <= e > f >= g",
+    "return a .. b",
+    "return -x, #t, not y",
+    "return f(), f(1, ...), f'str', f{1}",
+    "return obj:m(1)",
+    "return a.b.c[1]",
+    "return { 1, 2, a = 3, [b] = 4 }",
+    "return function(a) return a end",
+    "return if a then b else c",
+    "return (a)",
+    "return true, false, nil",
+    "return 0x10, 0b1010, 1e5, 1.5",
+    "return \"s\", [[long]]",
+    "return `interp {x} more`",
+    "return x :: number",
+    "return f<<T>>()",
+    "return t['field']",
+    "local x: { [string]: number, a: boolean } = t",
+    "local x: (number, string) -> boolean = f",
+    "local x: \"literal\" = s",
+    "local x: { number } = t",
+    "local x: number? = nil",
+    "local x: number | string = 1",
+    "local x: number & string = 1",
+    "local x: (...number) -> () = f",
+    "type U = typeof(x)",
+    "type V = (number)",
+    "type W = T.Field",
+    "export type function g(x) return x end",
+    "local x = f<<T>>",
+    "return f<<T>>",
+    "return if a then 1 elseif b then 2 else 3",
+    "type F = (number, ...string) -> boolean",
+    "type G<A...> = (A...) -> ()",
+    "local x: <T>(T) -> T = f",
+    "type H = { [string]: (number) -> () }",
+    "type I = (number) -> (...string)",
+    "return function(a, b, ...) return a end",
+    "return function<T>(x: T): T return x end",
+    "local f: (number) -> (string, boolean) = g",
+    "type J<A, B...> = (A, B...) -> A",
+    "return f<<T, U>>",
+];
+
+const LUA52: &[&str] = &["::label::\ngoto label"];
+const LUA53: &[&str] = &[
+    "return a & b",
+    "return a | b",
+    "return a ~ b",
+    "return a << b",
+    "return a >> b",
+    "return a // b",
+];
+const LUA54: &[&str] = &["local x <const> = 1", "local y <close> = f()"];
+
+fn parse_with(code: &str, dialect: Dialect) -> Block {
+    Parser::default()
+        .dialect(dialect)
+        .parse(code)
+        .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"))
+}
+
+fn parse_tokens(code: &str, dialect: Dialect) -> Block {
+    Parser::default()
+        .dialect(dialect)
+        .preserve_tokens()
+        .parse(code)
+        .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"))
+}
+
+struct Count;
+
+impl NodeProcessor for Count {}
+impl NodePostProcessor for Count {}
+impl ImmutableProcessor for Count {}
+
+fn assert_generates(block: &Block, code: &str, dialect: Dialect) {
+    let mut readable = ReadableLuaGenerator::default();
+    readable.write_block(block);
+    assert!(!readable.into_string().is_empty(), "readable `{code}`");
+
+    let mut dense = DenseLuaGenerator::default();
+    dense.write_block(block);
+    assert!(!dense.into_string().is_empty(), "dense `{code}`");
+
+    let tokens = parse_tokens(code, dialect);
+    let mut token_based = TokenBasedLuaGenerator::new(code);
+    token_based.write_block(&tokens);
+    assert!(
+        !token_based.into_string().is_empty(),
+        "token based `{code}`"
+    );
+
+    // Generating a tokenless tree exercises the token synthesis fallbacks.
+    let tokenless = parse_with(code, dialect);
+    let mut synthesized = TokenBasedLuaGenerator::new(code);
+    synthesized.write_block(&tokenless);
+    assert!(
+        !synthesized.into_string().is_empty(),
+        "synthesized tokens `{code}`"
+    );
+}
+
+#[test]
+fn every_node_kind_drives_the_visitors_generators_and_converter() {
+    let corpora: [(&[&str], Dialect); 4] = [
+        (CORPUS, Dialect::Luau),
+        (LUA52, Dialect::Lua52),
+        (LUA53, Dialect::Lua53),
+        (LUA54, Dialect::Lua54),
+    ];
+
+    for (codes, dialect) in corpora {
+        for &code in codes {
+            let mut block = parse_with(code, dialect);
+
+            // Mutable visitor: every node callback default is executed.
+            DefaultVisitor::visit_block(&mut block, &mut Count);
+            // Post visitor: every process_after_* default is executed.
+            DefaultPostVisitor::visit_block(&mut block, &mut Count);
+            // Read-only visitor: the whole tree is traversed.
+            let read_only = parse_with(code, dialect);
+            Walk::visit_block(&read_only, &mut Count);
+            // Token walk.
+            let _ = r4::process::collect_trivia(&read_only);
+
+            // Converters (tokenful and tokenless) and generators.
+            let _ = parse_tokens(code, dialect);
+            assert_generates(&block, code, dialect);
+        }
+    }
+}
+
+#[test]
+fn every_evaluable_expression_shape_is_evaluated() {
+    let evaluator = Evaluator::default();
+    for code in [
+        "return 1 + 2",
+        "return 2 * 3 - 4",
+        "return 10 / 4",
+        "return 2 ^ 3",
+        "return 7 % 3",
+        "return 1 < 2",
+        "return 1 <= 2",
+        "return 1 > 2",
+        "return 1 >= 2",
+        "return 1 == 1",
+        "return 1 ~= 2",
+        "return true and false",
+        "return true or false",
+        "return not true",
+        "return -3",
+        "return #'abc'",
+        "return 'a' .. 'b'",
+        "return if true then 1 else 2",
+        "return (5)",
+        "return nil",
+        "return true",
+        "return false",
+        "return 'text'",
+        "return a",
+        "return a.b",
+        "return a[1]",
+        "return f()",
+        "return ...",
+        "return function() end",
+        "return function(a) return a end",
+        "return x :: number",
+        "return f<<T>>",
+        "return f<<T, U>>",
+        "return (a).b",
+        "return (f)()",
+        "return (x)[1]",
+        "return a.b.c",
+        "return a[1][2]",
+        "return if a then 1 elseif b then 2 else 3",
+        "return if a then 1 elseif b then 2 elseif c then 3 else 4",
+        "return `value = {a} and {b}`",
+        "return `plain`",
+    ] {
+        let block = parse_with(code, Dialect::Luau);
+        for statement in block.iter_statements() {
+            let _ = statement;
+        }
+        if let Some(r4::nodes::LastStatement::Return(statement)) = block.get_last_statement() {
+            for expression in statement.iter_expressions() {
+                let _ = evaluator.evaluate(expression);
+                let _ = evaluator.is_pure(expression);
+                let _ = evaluator.has_side_effects(expression);
+            }
+        }
+    }
+}
+
+#[test]
+fn comment_filtering_covers_every_node_kind() {
+    use r4::rules::remove_comments_where;
+
+    let corpora: [(&[&str], Dialect); 4] = [
+        (CORPUS, Dialect::Luau),
+        (LUA52, Dialect::Lua52),
+        (LUA53, Dialect::Lua53),
+        (LUA54, Dialect::Lua54),
+    ];
+    for (codes, dialect) in corpora {
+        for &code in codes {
+            let mut block = parse_tokens(code, dialect);
+            // Keep everything: the filter runs for every token of every node.
+            remove_comments_where(&mut block, |_| true);
+            // Remove everything: the other branch of the filter.
+            remove_comments_where(&mut block, |_| false);
+        }
+    }
+}
+
+#[test]
+fn liveness_reads_every_prefix_and_variable_shape() {
+    use r4::cfg::analysis::Liveness;
+    use r4::cfg::build_chunk;
+    use r4::semantic::SemanticAnalyzer;
+
+    let code = "local t = {}\nlocal f = function() return 1 end\nlocal a = t.field\nlocal b = t[1]\nlocal c = f()\nlocal d = f<<T>>()\nt.field = a\nt[1] = b\nreturn a, b, c, d";
+    let block = Parser::default()
+        .parse(code)
+        .unwrap_or_else(|error| panic!("failed to parse: {error}"));
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("analysis succeeds");
+    let cfg = build_chunk(&block, &model).expect("cfg construction succeeds");
+    let liveness = Liveness::analyze(&cfg, &model).expect("liveness succeeds");
+
+    for id in cfg.iter_block_ids() {
+        let _ = liveness.is_live_in(id, r4::semantic::SymbolId(0));
+        let _ = liveness.is_live_out(id, r4::semantic::SymbolId(0));
+        let _ = liveness.live_in_symbols(id).count();
+        let _ = liveness.live_out_symbols(id).count();
+    }
+}
+
+#[test]
+fn token_operations_cover_every_node_kind() {
+    let corpora: [(&[&str], Dialect); 4] = [
+        (CORPUS, Dialect::Luau),
+        (LUA52, Dialect::Lua52),
+        (LUA53, Dialect::Lua53),
+        (LUA54, Dialect::Lua54),
+    ];
+    for (codes, dialect) in corpora {
+        for &code in codes {
+            let mut block = parse_tokens(code, dialect);
+            r4::rules::remove_comments(&mut block);
+            r4::rules::remove_spaces(&mut block);
+            let _ = r4::process::collect_trivia(&block);
+            r4::rules::shift_token_line(&mut block, 1);
+            r4::rules::replace_referenced_tokens(&mut block, code);
+            r4::rules::append_text_comment(&mut block, "note", r4::rules::AppendLocation::Start);
+            r4::rules::append_text_comment(
+                &mut block,
+                "multi\nline",
+                r4::rules::AppendLocation::End,
+            );
+
+            let mut detokenized = parse_tokens(code, dialect);
+            r4::process::detokenize(&mut detokenized);
+        }
+    }
+}

@@ -70,3 +70,38 @@ fn converts_externally_tagged_enums() {
         "return{Point={x=1,y=2}}"
     );
 }
+
+#[test]
+fn malformed_serialize_sequences_error_with_a_typed_error() {
+    use serde::ser::SerializeMap;
+
+    // A serializer that emits a map value without a preceding key breaks the
+    // serializer's invariants and must be reported, not silently accepted.
+    struct ValueWithoutKey;
+
+    impl serde::Serialize for ValueWithoutKey {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_value(&1)?;
+            map.end()
+        }
+    }
+
+    let error = convert_data(ValueWithoutKey).expect_err("a value without a key is invalid");
+    assert_eq!(error.message(), "a table key was expected");
+    assert!(!error.to_string().is_empty());
+}
+
+#[test]
+fn custom_serialize_errors_are_reported() {
+    struct Failing;
+
+    impl serde::Serialize for Failing {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("custom failure"))
+        }
+    }
+
+    let error = convert_data(Failing).expect_err("a custom error is reported");
+    assert_eq!(error.message(), "custom failure");
+}
