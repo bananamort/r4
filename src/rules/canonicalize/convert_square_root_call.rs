@@ -86,3 +86,29 @@ pub fn convert_square_root_call(block: &mut Block, model: &SemanticModel) {
     };
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn converts_square_root_calls_to_exponentiation() {
+        let (mut block, model) = analyze("return math.sqrt(4)");
+
+        convert_square_root_call(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return 4 ^ 0.5");
+    }
+
+    #[test]
+    fn converts_square_root_calls_on_values() {
+        let (mut block, model) = analyze("local x = math.sqrt(value)\nreturn x");
+
+        convert_square_root_call(&mut block, &model);
+
+        let output = generate(&block);
+        assert!(output.contains("value ^ 0.5"), "unexpected: {output}");
+        assert!(!output.contains("math.sqrt"), "unexpected: {output}");
+    }
+}

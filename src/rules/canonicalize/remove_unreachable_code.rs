@@ -266,3 +266,155 @@ impl NodeProcessor for Rewriter {
         block.set_statements(statements);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze_with_tokens, generate, parse};
+    use crate::semantic::SemanticAnalyzer;
+
+    #[test]
+    fn removes_code_after_an_infinite_loop() {
+        let (mut block, model) = analyze_with_tokens(
+            r#"
+            while true do
+                work()
+            end
+            after()
+            "#,
+        );
+
+        let removed = remove_unreachable_code(&mut block, &model)
+            .expect("unreachable code removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(output.contains("work()"), "unexpected: {output}");
+        assert!(!output.contains("after()"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn folds_constant_false_conditionals() {
+        let (mut block, model) = analyze_with_tokens(
+            r#"
+            local enabled = false
+            if enabled then
+                dead()
+            else
+                live()
+            end
+            "#,
+        );
+
+        let removed = remove_unreachable_code(&mut block, &model)
+            .expect("unreachable code removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("dead()"), "unexpected: {output}");
+        assert!(output.contains("live()"), "unexpected: {output}");
+        assert!(!output.contains("if enabled"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn folds_constant_true_conditionals() {
+        let (mut block, model) = analyze_with_tokens(
+            r#"
+            if true then
+                keep()
+            else
+                drop()
+            end
+            "#,
+        );
+
+        let removed = remove_unreachable_code(&mut block, &model)
+            .expect("unreachable code removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(output.contains("keep()"), "unexpected: {output}");
+        assert!(!output.contains("drop()"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn removes_false_while_loops() {
+        let (mut block, model) = analyze_with_tokens(
+            r#"
+            local running = false
+            while running do
+                work()
+            end
+            after()
+            "#,
+        );
+
+        let removed = remove_unreachable_code(&mut block, &model)
+            .expect("unreachable code removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("while"), "unexpected: {output}");
+        assert!(!output.contains("work()"), "unexpected: {output}");
+        assert!(output.contains("after()"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn removes_code_after_a_do_return() {
+        let (mut block, model) = analyze_with_tokens(
+            r#"
+            do
+                return 1
+            end
+            after()
+            "#,
+        );
+
+        let removed = remove_unreachable_code(&mut block, &model)
+            .expect("unreachable code removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(output.contains("return 1"), "unexpected: {output}");
+        assert!(!output.contains("after()"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn keeps_unknown_control_flow() {
+        let (mut block, model) = analyze_with_tokens(
+            r#"
+            if condition then
+                a()
+            else
+                b()
+            end
+            c()
+            "#,
+        );
+
+        let removed = remove_unreachable_code(&mut block, &model)
+            .expect("unreachable code removal must succeed with tokens");
+
+        assert_eq!(removed, 0);
+        let output = generate(&block);
+        assert!(output.contains("a()"), "unexpected: {output}");
+        assert!(output.contains("b()"), "unexpected: {output}");
+        assert!(output.contains("c()"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn works_without_token_data() {
+        let mut block = parse("local running = false\nwhile running do work() end\nafter()");
+        let model = SemanticAnalyzer::new()
+            .analyze(&block)
+            .expect("semantic analysis must succeed");
+
+        let removed = remove_unreachable_code(&mut block, &model)
+            .expect("token-less declarations must be resolved");
+
+        assert!(removed >= 1);
+        let output = generate(&block);
+        assert!(!output.contains("while"), "unexpected: {output}");
+        assert!(output.contains("after()"), "unexpected: {output}");
+    }
+}

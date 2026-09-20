@@ -172,3 +172,58 @@ pub fn remove_continue(block: &mut Block, model: &SemanticModel) {
     let mut processor = Processor::new(model);
     DefaultPostVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate, parse};
+
+    #[test]
+    fn desugars_continue_statements() {
+        let (mut block, model) = analyze(
+            r#"
+            for i = 1, 10 do
+                if i > 5 then
+                    continue
+                end
+                print(i)
+            end
+            "#,
+        );
+
+        remove_continue(&mut block, &model);
+
+        let output = generate(&block);
+        assert!(!output.contains("continue"), "unexpected: {output}");
+        parse(&output);
+    }
+
+    #[test]
+    fn avoids_existing_aggregate_identifiers() {
+        let (mut block, model) = analyze(
+            r#"
+            for i = 1, 10 do
+                if i > 5 then
+                    continue
+                end
+                local __R4_CONTINUE1 = 1
+                print(__R4_CONTINUE1)
+            end
+            "#,
+        );
+
+        remove_continue(&mut block, &model);
+
+        let output = generate(&block);
+        assert!(!output.contains("continue"), "unexpected: {output}");
+        assert!(
+            output.contains("local __R4_CONTINUE1 = 1"),
+            "the user local must keep its name: {output}"
+        );
+        assert!(
+            output.contains("local __R4_CONTINUE ="),
+            "the generated flag must avoid the user identifier: {output}"
+        );
+        parse(&output);
+    }
+}

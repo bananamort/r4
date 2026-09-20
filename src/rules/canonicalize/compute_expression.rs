@@ -87,3 +87,36 @@ pub fn compute_expression(block: &mut Block, _model: &SemanticModel) {
     };
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn folds_constant_arithmetic() {
+        let (mut block, model) = analyze("return 1 + 2");
+
+        compute_expression(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return 3");
+    }
+
+    #[test]
+    fn folds_constant_string_concatenation() {
+        let (mut block, model) = analyze("return 'a' .. 'b'");
+
+        compute_expression(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return 'ab'");
+    }
+
+    #[test]
+    fn folds_constant_if_expressions() {
+        let (mut block, model) = analyze("return if true then 1 else 2");
+
+        compute_expression(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return 1");
+    }
+}

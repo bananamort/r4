@@ -4101,4 +4101,18 @@ mod test {
             }),
         );
     }
+
+    #[test]
+    fn rejects_malformed_unicode_escape() {
+        // A surrogate code point is not a valid `char`; the converter must report
+        // a parse error rather than panicking.
+        let error = Parser::default()
+            .parse("return \"\\u{D800}\"")
+            .expect_err("a surrogate escape must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("invalid unicode scalar value"),
+            "unexpected error: {message}"
+        );
+    }
 }

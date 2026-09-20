@@ -69,3 +69,28 @@ pub fn convert_function_to_assignment(block: &mut Block, _model: &SemanticModel)
     let mut processor = Processor;
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn converts_function_statements_to_assignments() {
+        let (mut block, model) = analyze("function f(a) return a end");
+
+        convert_function_to_assignment(&mut block, &model);
+
+        let output = generate(&block);
+        assert!(output.contains("f = function(a)"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn keeps_dotted_targets() {
+        let (mut block, model) = analyze("function a.b.c(x) end");
+
+        convert_function_to_assignment(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"a.b.c = function(x) end");
+    }
+}

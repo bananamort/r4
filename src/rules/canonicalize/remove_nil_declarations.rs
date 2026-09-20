@@ -88,3 +88,18 @@ pub fn remove_nil_declarations(block: &mut Block, model: &SemanticModel) {
     };
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn removes_trailing_nil_declarations() {
+        let (mut block, model) = analyze("local x, y = 1, nil");
+
+        remove_nil_declarations(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"local x, y = 1");
+    }
+}

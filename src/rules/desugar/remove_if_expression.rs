@@ -87,3 +87,31 @@ pub fn remove_if_expression(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::nodes::Statement;
+    use crate::process::{Evaluator, LuaValue};
+    use crate::rules::test_support::{analyze, generate, parse};
+
+    #[test]
+    fn lowers_if_expressions() {
+        let (mut block, model) = analyze("local x = if true then 1 else 2");
+
+        remove_if_expression(&mut block, &model);
+
+        let output = generate(&block);
+        let generated = parse(&output);
+
+        let Statement::LocalAssign(assign) = generated
+            .first_statement()
+            .expect("the generated block starts with an assignment")
+        else {
+            panic!("expected a local assignment, got: {output}");
+        };
+
+        let value = assign.last_value().expect("the assignment has a value");
+        assert_eq!(Evaluator::default().evaluate(value), LuaValue::Number(1.0));
+    }
+}

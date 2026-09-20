@@ -1806,4 +1806,24 @@ mod test {
             field_index => FieldExpression::new(Identifier::new("var"), "field"),
         );
     }
+
+    #[test]
+    fn evaluates_arithmetic_constants() {
+        use crate::nodes::LastStatement;
+
+        let block = crate::Parser::default()
+            .parse("return 10 * 5 + 2")
+            .expect("the source must parse");
+        let Some(LastStatement::Return(statement)) = block.get_last_statement() else {
+            panic!("expected a return statement");
+        };
+        let expression = statement
+            .iter_expressions()
+            .next()
+            .expect("the return has an expression");
+
+        let value = Evaluator::default().evaluate(expression);
+        assert_eq!(value, LuaValue::Number(52.0));
+        assert_eq!(value.is_truthy(), Some(true));
+    }
 }

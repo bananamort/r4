@@ -95,3 +95,37 @@ impl NameGenerator {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::rename_variables::{DEFAULT_GLOBALS, ROBLOX_GLOBALS};
+    use crate::rules::test_support::analyze_with_tokens;
+
+    #[test]
+    fn avoids_model_symbols_and_host_globals() {
+        let (_, model) =
+            analyze_with_tokens("local a = 1\nlocal __R4_SELECT = 2\nreturn a + __R4_SELECT");
+
+        let mut generator = NameGenerator::new(&model);
+        let names: Vec<String> = (0..5).map(|_| generator.generate()).collect();
+
+        let unique: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), names.len(), "generated names must be unique");
+
+        for name in &names {
+            assert!(
+                !model.symbols.iter().any(|symbol| symbol.name == *name),
+                "generated `{name}` collides with a model symbol"
+            );
+            assert!(!DEFAULT_GLOBALS.contains(&name.as_str()));
+            assert!(!ROBLOX_GLOBALS.contains(&name.as_str()));
+        }
+
+        let prefixed = generator.generate_with_prefix("__R4_SELECT");
+        assert_ne!(
+            prefixed, "__R4_SELECT",
+            "the prefix collides with a model symbol"
+        );
+    }
+}

@@ -147,3 +147,78 @@ impl<C: RequirePathConverter> NodeProcessor for Processor<'_, C> {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::nodes::Expression;
+    use crate::rules::test_support::{analyze, generate};
+
+    struct IdentifierConverter;
+
+    impl RequirePathConverter for IdentifierConverter {
+        fn convert(&self, path: &str) -> Option<Expression> {
+            let name = path.trim_start_matches("./").replace(['/', '.'], "_");
+            Some(Expression::identifier(format!("module_{name}")))
+        }
+    }
+
+    #[test]
+    fn rejects_shadowed_require() {
+        for code in [
+            "local require = function(path) return path end\nreturn require('./x')",
+            "local function f(require) return require('./x') end",
+            "local require = require\nrequire = other\nreturn require('./x')",
+        ] {
+            let (mut block, model) = analyze(code);
+            let converted = convert_require(&mut block, &model, &IdentifierConverter)
+                .expect("shadowed require calls are never converted");
+
+            assert_eq!(converted, 0, "converted a shadowed require for `{code}`");
+            assert!(
+                generate(&block).contains("require("),
+                "the shadowed call must be left in place for `{code}`"
+            );
+        }
+    }
+
+    #[test]
+    fn converts_global_and_immutable_alias() {
+        for code in [
+            "return require('./x')",
+            "local require = require\nreturn require('./x')",
+        ] {
+            let (mut block, model) = analyze(code);
+            let converted = convert_require(&mut block, &model, &IdentifierConverter)
+                .expect("global require must convert");
+
+            assert_eq!(converted, 1, "failed to convert `{code}`");
+            let output = generate(&block);
+            assert!(output.contains("module_x"), "unexpected: {output}");
+            assert!(!output.contains("require("), "unexpected: {output}");
+        }
+    }
+
+    #[test]
+    fn converts_statement_calls() {
+        let (mut block, model) = analyze("require('./x')");
+        let converted = convert_require(&mut block, &model, &IdentifierConverter)
+            .expect("global require must convert");
+
+        assert_eq!(converted, 1);
+        let output = generate(&block);
+        assert!(output.contains("module_x"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn rejects_non_literal_arguments() {
+        let (mut block, model) = analyze("return require(path)");
+        let error = convert_require(&mut block, &model, &IdentifierConverter)
+            .expect_err("a dynamic require argument must be reported");
+
+        assert!(matches!(
+            error,
+            ConvertRequireError::NonLiteralRequireArgument { .. }
+        ));
+    }
+}

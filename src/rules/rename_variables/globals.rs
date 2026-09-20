@@ -105,3 +105,19 @@ pub const ROBLOX: [&str; 58] = [
     "workspace",
     "ypcall",
 ];
+
+#[cfg(test)]
+mod test {
+    use super::{DEFAULT, ROBLOX};
+
+    #[test]
+    fn exposes_the_host_global_sets() {
+        assert_eq!(DEFAULT.len(), 40);
+        assert_eq!(ROBLOX.len(), 58);
+
+        assert!(DEFAULT.contains(&"print"));
+        assert!(DEFAULT.contains(&"_VERSION"));
+        assert!(ROBLOX.contains(&"game"));
+        assert!(ROBLOX.contains(&"workspace"));
+    }
+}

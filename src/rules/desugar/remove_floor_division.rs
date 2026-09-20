@@ -87,3 +87,27 @@ pub fn remove_floor_division(block: &mut Block, model: &SemanticModel) {
         );
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn converts_floor_division() {
+        let (mut block, model) = analyze("return value // 2");
+
+        remove_floor_division(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return math.floor(value / 2)");
+    }
+
+    #[test]
+    fn converts_compound_floor_division() {
+        let (mut block, model) = analyze("value //= 2");
+
+        remove_floor_division(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"value = math.floor(value / 2)");
+    }
+}

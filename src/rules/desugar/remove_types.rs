@@ -84,3 +84,33 @@ pub fn remove_types(block: &mut Block, _model: &SemanticModel) {
     let mut processor = RemoveTypesProcessor::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn strips_local_type_annotations() {
+        let (mut block, model) = analyze("local x: number = 10");
+
+        remove_types(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"local x = 10");
+    }
+
+    #[test]
+    fn strips_function_parameter_and_return_types() {
+        let (mut block, model) =
+            analyze("local function add(a: number, b: number): number return a + b end");
+
+        remove_types(&mut block, &model);
+
+        let output = generate(&block);
+        assert!(!output.contains(':'), "types must be removed: {output}");
+        assert!(
+            output.contains("local function add(a, b)"),
+            "unexpected: {output}"
+        );
+    }
+}

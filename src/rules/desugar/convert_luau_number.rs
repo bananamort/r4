@@ -68,3 +68,27 @@ pub fn convert_luau_number_with_code(block: &mut Block, code: &str, _model: &Sem
     let mut processor = Processor { code: Some(code) };
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn converts_binary_literals() {
+        let (mut block, model) = analyze("return 0b1010");
+
+        convert_luau_number(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return 0xa");
+    }
+
+    #[test]
+    fn normalizes_hexadecimal_literals() {
+        let (mut block, model) = analyze("return 0x12EF");
+
+        convert_luau_number(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return 0x12ef");
+    }
+}

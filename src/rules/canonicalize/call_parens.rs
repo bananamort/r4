@@ -45,3 +45,18 @@ pub fn remove_call_parens(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn removes_call_parentheses_for_string_arguments() {
+        let (mut block, model) = analyze(r#"f("hello")"#);
+
+        remove_call_parens(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"f'hello'");
+    }
+}

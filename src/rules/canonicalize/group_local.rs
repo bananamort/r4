@@ -137,3 +137,23 @@ pub fn group_local(block: &mut Block, model: &SemanticModel) {
     let mut processor = GroupLocalProcessor { model };
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn groups_adjacent_local_assignments() {
+        let (mut block, model) = analyze(
+            r#"
+            local a = 1
+            local b = 2
+            "#,
+        );
+
+        group_local(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"local a, b = 1, 2");
+    }
+}

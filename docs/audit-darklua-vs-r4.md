@@ -1,8 +1,8 @@
 # Architectural Audit — `darklua-0.19.0` vs `r4`
 
 Date: 2026-09-12
-Last updated: remaining-open-items mission (mandatory models, type-name
-resolution, LICM, and model-first `require` conversion/bundling).
+Last updated: test-organization mission (recovered diagnostics, position-to-node
+navigation, standard-library purity, and darklua-style colocated rule tests).
 Scope: `references/darklua-0.19.0/src/` versus `r4`'s read-only analysis layers
 (`src/semantic/`, `src/cfg/`).
 
@@ -656,6 +656,28 @@ deliberate scope boundaries of the new features, not outstanding audit work.
   passes that synthesize identifiers (`remove_compound_assign`,
   `remove_continue`) and all standard-library rewrites resolve and allocate
   through the model.
+
+### Test organization (darklua parity)
+
+Rule behavior is tested next to the rule, mirroring darklua's colocated
+`#[cfg(test)] mod test` convention:
+
+- Every pass in `src/rules/{desugar,canonicalize}` (plus `rename_variables`
+  and `require`) has a colocated test module with behavior-descriptive names
+  and `insta` inline snapshots for exact generated output. Shared
+  parse/analyze/generate plumbing lives in `src/rules/test_support.rs`
+  (`#[cfg(test)]`).
+- The former grab-bag `tests/rules_test.rs` (a single flat list for every rule)
+  and `tests/smoke_test.rs` (parse round-trip, goto round-trip, constant
+  evaluator, unicode escape) no longer exist; their coverage moved to the rule
+  modules and to the integration tests that own the surface
+  (`tests/api_test.rs`, `tests/dialect_test.rs`, `src/parser.rs`,
+  `src/process/evaluator/mod.rs`).
+- Cross-pass integration tests stay in `tests/` (`differential_test.rs` for
+  darklua parity, `rules_model_test.rs`, `rules_semantics_test.rs`,
+  `formatting_test.rs`, `api_test.rs`, and the module/link/whole-program
+  suites), matching darklua's split between inline rule tests and
+  `tests/` integration tests.
 
 ### Structural semantic layer (token-free passes)
 

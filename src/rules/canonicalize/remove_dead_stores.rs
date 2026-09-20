@@ -205,3 +205,85 @@ impl NodeProcessor for DeadStoreRemover {
         block.set_statements(statements);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze_with_tokens, generate, parse};
+    use crate::semantic::SemanticAnalyzer;
+
+    #[test]
+    fn removes_overwritten_stores() {
+        let (mut block, model) = analyze_with_tokens("local x\nx = 1\nx = 2\nreturn x");
+
+        let removed = remove_dead_stores(&mut block, &model)
+            .expect("dead store removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("x = 1"), "unexpected: {output}");
+        assert!(output.contains("x = 2"), "unexpected: {output}");
+        parse(&output);
+    }
+
+    #[test]
+    fn keeps_conditional_stores() {
+        let (mut block, model) = analyze_with_tokens(
+            r#"
+            local x
+            if condition then
+                x = 1
+            else
+                x = 2
+            end
+            return x
+            "#,
+        );
+
+        let removed = remove_dead_stores(&mut block, &model)
+            .expect("dead store removal must succeed with tokens");
+        assert_eq!(removed, 0, "both stores reach the return");
+    }
+
+    #[test]
+    fn keeps_stores_to_captured_locals() {
+        let (mut block, model) = analyze_with_tokens(
+            r#"
+            local x
+            local function observe()
+                return x
+            end
+            x = 1
+            return observe
+            "#,
+        );
+
+        let removed = remove_dead_stores(&mut block, &model)
+            .expect("dead store removal must succeed with tokens");
+        assert_eq!(removed, 0, "a nested function can observe the store");
+    }
+
+    #[test]
+    fn keeps_side_effecting_stores() {
+        let (mut block, model) = analyze_with_tokens("local x\nx = compute()\nx = 2\nreturn x");
+
+        let removed = remove_dead_stores(&mut block, &model)
+            .expect("dead store removal must succeed with tokens");
+        assert_eq!(removed, 0, "the call must keep running");
+    }
+
+    #[test]
+    fn works_without_token_data() {
+        let mut block = parse("local x\nx = 1\nx = 2\nreturn x");
+        let model = SemanticAnalyzer::new()
+            .analyze(&block)
+            .expect("semantic analysis must succeed");
+
+        let removed =
+            remove_dead_stores(&mut block, &model).expect("token-less stores must be removable");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("x = 1"), "unexpected: {output}");
+    }
+}

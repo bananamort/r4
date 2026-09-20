@@ -129,3 +129,27 @@ pub fn convert_local_function_to_assignment(
         None => Ok(processor.converted),
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::parse;
+    use crate::semantic::SemanticAnalyzer;
+
+    #[test]
+    fn reports_a_foreign_model() {
+        let mut block = parse("local function f() end");
+        let other = parse("local function g() end");
+        let model = SemanticAnalyzer::new()
+            .analyze(&other)
+            .expect("the other block must analyze");
+
+        let error = convert_local_function_to_assignment(&mut block, &model)
+            .expect_err("a function that is not bound in the model must be reported");
+
+        assert!(matches!(
+            error,
+            ConvertLocalFunctionError::UnresolvedFunction { ref name } if name == "f"
+        ));
+    }
+}

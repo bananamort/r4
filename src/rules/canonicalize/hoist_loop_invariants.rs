@@ -241,3 +241,183 @@ impl NodeProcessor for LoopHoistMover {
         block.set_statements(result);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate, parse};
+    use crate::semantic::{SemanticAnalyzer, SymbolKind};
+
+    #[test]
+    fn hoists_pure_loop_invariants() {
+        let (mut block, model) = analyze(
+            r#"
+            local base = 1
+            while condition do
+                local offset = base + 2
+                use(offset)
+            end
+            "#,
+        );
+
+        let hoisted = hoist_loop_invariants(&mut block, &model)
+            .expect("hoisting must succeed with a matching model");
+
+        assert_eq!(hoisted, 1);
+        let output = generate(&block);
+        assert!(
+            !output.contains("offset"),
+            "the hoisted local must be renamed: {output}"
+        );
+        let declaration = output
+            .find("= base + 2")
+            .unwrap_or_else(|| panic!("the invariant must be declared: {output}"));
+        let loop_start = output
+            .find("while")
+            .unwrap_or_else(|| panic!("the loop must remain: {output}"));
+        assert!(
+            declaration < loop_start,
+            "the invariant must be hoisted before the loop: {output}"
+        );
+        assert_eq!(
+            output.matches("base + 2").count(),
+            1,
+            "the invariant must evaluate exactly once: {output}"
+        );
+
+        // Semantic oracle: the rewritten program analyzes and reads the hoisted
+        // local exactly once.
+        let reparsed = parse(&output);
+        let new_model = SemanticAnalyzer::new()
+            .analyze(&reparsed)
+            .expect("the hoisted program must analyze");
+        let locals: Vec<_> = new_model
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.kind == SymbolKind::Local)
+            .collect();
+        assert_eq!(locals.len(), 2, "base and the hoisted local: {output}");
+        assert!(
+            locals.iter().any(|symbol| symbol.read_count == 1),
+            "the hoisted local must be read: {output}"
+        );
+    }
+
+    #[test]
+    fn leaves_impure_expressions_in_place() {
+        for code in [
+            "while condition do local x = compute() use(x) end",
+            "while condition do local t = {} use(t) end",
+            "while condition do local v = object.field use(v) end",
+            "while condition do local s = `value {value}` use(s) end",
+        ] {
+            let (mut block, model) = analyze(code);
+            let hoisted = hoist_loop_invariants(&mut block, &model)
+                .expect("hoisting must succeed with a matching model");
+            assert_eq!(hoisted, 0, "impure expression hoisted for `{code}`");
+        }
+    }
+
+    #[test]
+    fn respects_loop_written_variables() {
+        let code = r#"
+            local total = 0
+            while condition do
+                total = total + 1
+                local x = total + 1
+                use(x)
+            end
+            "#;
+
+        let (mut block, model) = analyze(code);
+        let hoisted = hoist_loop_invariants(&mut block, &model)
+            .expect("hoisting must succeed with a matching model");
+
+        assert_eq!(
+            hoisted, 0,
+            "a variable written in the loop is not invariant"
+        );
+    }
+
+    #[test]
+    fn respects_for_iteration_variables() {
+        let (mut block, model) = analyze("for i = 1, 10 do local x = i + 1\nuse(x) end");
+
+        let hoisted = hoist_loop_invariants(&mut block, &model)
+            .expect("hoisting must succeed with a matching model");
+
+        assert_eq!(hoisted, 0, "the iteration variable changes every iteration");
+    }
+
+    #[test]
+    fn respects_closure_captures() {
+        let code = r#"
+            local base = 1
+            while condition do
+                local x = base + 1
+                local f = function() return x end
+                use(f)
+            end
+            "#;
+
+        let (mut block, model) = analyze(code);
+        let hoisted = hoist_loop_invariants(&mut block, &model)
+            .expect("hoisting must succeed with a matching model");
+
+        assert_eq!(hoisted, 0, "a captured local keeps per-iteration bindings");
+    }
+
+    #[test]
+    fn skips_conditional_blocks() {
+        let code = r#"
+            local base = 1
+            while condition do
+                if other then
+                    local x = base + 1
+                    use(x)
+                end
+            end
+            "#;
+
+        let (mut block, model) = analyze(code);
+        let hoisted = hoist_loop_invariants(&mut block, &model)
+            .expect("hoisting must succeed with a matching model");
+
+        assert_eq!(
+            hoisted, 0,
+            "a block that does not dominate every latch must not be hoisted"
+        );
+    }
+
+    #[test]
+    fn hoists_from_for_loop_bodies() {
+        let code = r#"
+            local step = 2
+            for i = 1, 10 do
+                local scaled = step * 2
+                use(scaled)
+            end
+            "#;
+
+        let (mut block, model) = analyze(code);
+        let hoisted = hoist_loop_invariants(&mut block, &model)
+            .expect("hoisting must succeed with a matching model");
+
+        assert_eq!(hoisted, 1);
+        let output = generate(&block);
+        let declaration = output
+            .find("= step * 2")
+            .unwrap_or_else(|| panic!("the invariant must be declared: {output}"));
+        let loop_start = output
+            .find("for")
+            .unwrap_or_else(|| panic!("the loop must remain: {output}"));
+        assert!(
+            declaration < loop_start,
+            "the invariant must be hoisted before the loop: {output}"
+        );
+        assert!(
+            !output.contains("local scaled"),
+            "the original declaration must be removed: {output}"
+        );
+    }
+}

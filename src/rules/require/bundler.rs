@@ -657,3 +657,111 @@ fn build_module_definition(modules: &str, path: &str, block: Block) -> Statement
 
     AssignStatement::from_variable(variable, Expression::from(function)).into()
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::modules::MemoryModuleProvider;
+    use crate::rules::test_support::{analyze, generate, parse};
+    use crate::semantic::SemanticAnalyzer;
+
+    #[test]
+    fn bundles_required_modules() {
+        let (mut block, model) = analyze("local math = require('./math')\nreturn math.add(1, 2)");
+        let mut provider = MemoryModuleProvider::new();
+        provider.insert(
+            "math",
+            "local function add(a, b) return a + b end\nreturn { add = add }",
+        );
+
+        let bundled = bundle_modules(&mut block, &model, &provider).expect("bundling must succeed");
+        assert_eq!(bundled, 1);
+
+        let output = generate(&block);
+        assert!(output.contains("__R4_MODULES"), "unexpected: {output}");
+        assert!(!output.contains("require("), "unexpected: {output}");
+        assert!(output.contains("['math']"), "unexpected: {output}");
+
+        let reparsed = parse(&output);
+        let new_model = SemanticAnalyzer::new()
+            .analyze(&reparsed)
+            .expect("bundled code must analyze");
+        assert!(
+            new_model.symbols.iter().any(|symbol| symbol.name == "math"),
+            "the module binding must still be declared: {output}"
+        );
+        assert!(
+            new_model
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "__R4_VALUE_math_add" && symbol.read_count >= 1),
+            "the exported value must be statically linked and read: {output}"
+        );
+    }
+
+    #[test]
+    fn bundles_nested_modules() {
+        let (mut block, model) = analyze("return require('./a')");
+        let mut provider = MemoryModuleProvider::new();
+        provider.insert("a", "return require('./b')");
+        provider.insert("b", "return 1");
+
+        let bundled = bundle_modules(&mut block, &model, &provider).expect("bundling must succeed");
+        assert_eq!(bundled, 2);
+
+        let output = generate(&block);
+        assert!(output.contains("['a']"), "unexpected: {output}");
+        assert!(output.contains("['b']"), "unexpected: {output}");
+        assert!(!output.contains("require("), "unexpected: {output}");
+    }
+
+    #[test]
+    fn reports_missing_modules() {
+        let (mut block, model) = analyze("return require('./missing')");
+        let provider = MemoryModuleProvider::new();
+        let error = bundle_modules(&mut block, &model, &provider)
+            .expect_err("a missing module must be reported");
+
+        assert!(matches!(
+            error,
+            BundleError::MissingModule { ref path } if path == "missing"
+        ));
+    }
+
+    #[test]
+    fn reports_cyclic_modules() {
+        let (mut block, model) = analyze("return require('./a')");
+        let mut provider = MemoryModuleProvider::new();
+        provider.insert("a", "return require('./b')");
+        provider.insert("b", "return require('./a')");
+
+        let error =
+            bundle_modules(&mut block, &model, &provider).expect_err("a cycle must be reported");
+
+        assert!(matches!(error, BundleError::CyclicRequire { .. }));
+    }
+
+    #[test]
+    fn reports_non_literal_requires() {
+        let (mut block, model) = analyze("return require(path)");
+        let provider = MemoryModuleProvider::new();
+        let error = bundle_modules(&mut block, &model, &provider)
+            .expect_err("a dynamic require must be reported");
+
+        assert!(matches!(
+            error,
+            BundleError::NonLiteralRequire { module: None, .. }
+        ));
+    }
+
+    #[test]
+    fn ignores_shadowed_require() {
+        let code = "local require = function(path) return path end\nreturn require('./x')";
+        let (mut block, model) = analyze(code);
+        let provider = MemoryModuleProvider::new();
+
+        let bundled = bundle_modules(&mut block, &model, &provider).expect("no require to bundle");
+        assert_eq!(bundled, 0);
+        assert!(generate(&block).contains("require("));
+    }
+}

@@ -1,6 +1,8 @@
 //! Tests for the parser dialect presets and Lua 5.3/5.4/LuaJIT syntax.
 
-use r4::generator::{DenseLuaGenerator, LuaGenerator};
+use r4::generator::{
+    DenseLuaGenerator, LuaGenerator, ReadableLuaGenerator, TokenBasedLuaGenerator,
+};
 use r4::nodes::{Expression, LastStatement, UnaryOperator};
 use r4::process::{Evaluator, LuaValue};
 use r4::{Dialect, Parser};
@@ -121,4 +123,29 @@ fn lua51_rejects_goto() {
 #[test]
 fn unary_operator_string_is_bitwise_not() {
     assert_eq!(UnaryOperator::BitwiseNot.to_str(), "~");
+}
+
+#[test]
+fn round_trips_goto_and_labels_in_lua52() {
+    let source = "goto done\n::done::\nreturn";
+    let parser = Parser::default().lua52();
+
+    let block = parser.parse(source).expect("the source must parse");
+    let mut generator = ReadableLuaGenerator::default();
+    generator.write_block(&block);
+    let output = generator.into_string();
+    assert!(output.contains("goto done"), "generated: {output}");
+    assert!(output.contains("::done::"), "generated: {output}");
+    parser
+        .parse(&output)
+        .expect("the generated source must parse again");
+
+    let block_with_tokens = Parser::default()
+        .lua52()
+        .preserve_tokens()
+        .parse(source)
+        .expect("the source must parse with tokens");
+    let mut token_generator = TokenBasedLuaGenerator::new(source);
+    token_generator.write_block(&block_with_tokens);
+    assert_eq!(token_generator.into_string(), source);
 }

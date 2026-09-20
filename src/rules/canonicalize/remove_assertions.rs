@@ -66,3 +66,92 @@ impl CallMatcher for AssertMatcher {
 pub fn remove_assertions(block: &mut Block, model: &SemanticModel) -> usize {
     remove_call_matches(block, model, &AssertMatcher)
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze_with_tokens, generate, parse};
+
+    #[test]
+    fn removes_assert_statements() {
+        let (mut block, model) = analyze_with_tokens("assert(true)\nreturn 1");
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("assert"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn rewrites_multi_argument_assert_with_select() {
+        let (mut block, model) = analyze_with_tokens("local x = assert(1, \"message\")\nreturn x");
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(output.contains("select(1, 1"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn keeps_shadowed_assert_calls() {
+        let (mut block, model) = analyze_with_tokens(
+            "local assert = function(value) return value end\nlocal x = assert(true)\nreturn x",
+        );
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 0, "a non-alias shadowing local must not match");
+        assert!(generate(&block).contains("assert(true)"));
+    }
+
+    #[test]
+    fn removes_assert_calls_through_a_read_only_alias() {
+        let (mut block, model) =
+            analyze_with_tokens("local assert = assert\nlocal x = assert(true)\nreturn x");
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 1, "a read-only alias must match");
+        let output = generate(&block);
+        assert!(output.contains("local x = true"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn allocates_a_collision_free_select_alias() {
+        let (mut block, model) = analyze_with_tokens(
+            "local __R4_SELECT = 1\nlocal select = function() end\nlocal x = assert(1, 2)\nreturn x + __R4_SELECT",
+        );
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(
+            output.contains("__R4_SELECT1 = select"),
+            "the alias must avoid the existing name: {output}"
+        );
+        assert!(
+            output.contains("__R4_SELECT1(1, 1, 2)"),
+            "the replacement must use the fresh alias: {output}"
+        );
+        parse(&output);
+    }
+
+    #[test]
+    fn single_argument_assert_does_not_reserve_select() {
+        let (mut block, model) = analyze_with_tokens(
+            "local select = function() end\nlocal x = assert(1)\nreturn x, select",
+        );
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(
+            !output.contains("__R4_"),
+            "no alias is needed for a single argument: {output}"
+        );
+    }
+}

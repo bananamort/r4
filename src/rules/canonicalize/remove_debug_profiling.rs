@@ -46,3 +46,30 @@ impl CallMatcher for DebugProfilingMatcher {
 pub fn remove_debug_profiling(block: &mut Block, model: &SemanticModel) -> usize {
     remove_call_matches(block, model, &DebugProfilingMatcher)
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze_with_tokens, generate};
+
+    #[test]
+    fn removes_profiling_calls_to_the_debug_global() {
+        let (mut block, model) = analyze_with_tokens("debug.profilebegin('x')");
+
+        let removed = remove_debug_profiling(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("profilebegin"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn keeps_profiling_calls_on_a_shadowed_debug() {
+        let (mut block, model) = analyze_with_tokens("local debug = {}\ndebug.profilebegin('x')");
+
+        let removed = remove_debug_profiling(&mut block, &model);
+
+        assert_eq!(removed, 0, "a shadowed debug table must not match");
+        assert!(generate(&block).contains("profilebegin"));
+    }
+}

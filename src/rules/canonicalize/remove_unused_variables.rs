@@ -206,3 +206,80 @@ impl Processor<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze_with_tokens, generate, parse};
+    use crate::semantic::SemanticAnalyzer;
+
+    #[test]
+    fn removes_unused_local_assignments() {
+        let (mut block, model) = analyze_with_tokens("local unused = 1\nreturn 2");
+
+        let removed = remove_unused_variables(&mut block, &model)
+            .expect("unused variable removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        assert_eq!(generate(&block).trim(), "return 2");
+    }
+
+    #[test]
+    fn preserves_side_effects_of_unused_initializers() {
+        let (mut block, model) = analyze_with_tokens("local unused = compute()\nreturn 2");
+
+        let removed = remove_unused_variables(&mut block, &model)
+            .expect("unused variable removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        assert_eq!(generate(&block).trim(), "compute()\n\nreturn 2");
+    }
+
+    #[test]
+    fn keeps_used_locals() {
+        let (mut block, model) = analyze_with_tokens("local used = 1\nreturn used");
+
+        let removed = remove_unused_variables(&mut block, &model)
+            .expect("unused variable removal must succeed with tokens");
+
+        assert_eq!(removed, 0);
+        assert_eq!(generate(&block).trim(), "local used = 1\n\nreturn used");
+    }
+
+    #[test]
+    fn removes_unused_local_functions() {
+        let (mut block, model) =
+            analyze_with_tokens("local function unused() return 1 end\nreturn 2");
+
+        let removed = remove_unused_variables(&mut block, &model)
+            .expect("unused variable removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        assert_eq!(generate(&block).trim(), "return 2");
+    }
+
+    #[test]
+    fn keeps_partially_used_multi_assignments() {
+        let (mut block, model) = analyze_with_tokens("local a, b = 1, 2\nreturn b");
+
+        let removed = remove_unused_variables(&mut block, &model)
+            .expect("unused variable removal must succeed with tokens");
+
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn works_without_token_data() {
+        let mut block = parse("local unused = 1\nreturn 2");
+        let model = SemanticAnalyzer::new()
+            .analyze(&block)
+            .expect("semantic analysis must succeed");
+
+        let removed = remove_unused_variables(&mut block, &model)
+            .expect("token-less declarations must be removable");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("unused"), "unexpected: {output}");
+    }
+}

@@ -63,3 +63,18 @@ pub fn remove_method_call(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn rewrites_method_calls_as_function_calls() {
+        let (mut block, model) = analyze("obj:method(1)");
+
+        remove_method_call(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"obj.method(obj, 1)");
+    }
+}

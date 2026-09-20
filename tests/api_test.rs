@@ -268,3 +268,28 @@ fn bundles_reject_duplicate_exported_type_names() {
         r4::rules::require::BundleError::DuplicateExportedType { ref name } if name == "Foo"
     ));
 }
+
+#[test]
+fn round_trips_source_through_the_readable_generator() {
+    let source = r#"
+        local x = 10 + 20
+        local function add(a, b)
+            return a + b
+        end
+        if x > 25 then
+            print("x is large:", x)
+        else
+            print("x is small")
+        end
+    "#;
+
+    let block = Parser::default()
+        .parse(source)
+        .expect("the source must parse");
+    assert!(block.iter_statements().count() >= 3);
+
+    let output = generate(&block);
+    assert!(output.contains("local x = 10 + 20"), "{output}");
+    assert!(output.contains("local function add(a, b)"), "{output}");
+    assert!(output.contains("if x > 25 then"), "{output}");
+}

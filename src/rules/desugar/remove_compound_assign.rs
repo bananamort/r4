@@ -289,3 +289,33 @@ pub fn remove_compound_assign(block: &mut Block, model: &SemanticModel) {
     let mut processor = Processor::new(model);
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn removes_compound_assignments() {
+        let (mut block, model) = analyze("x += 1");
+
+        remove_compound_assign(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"x = x + 1");
+    }
+
+    #[test]
+    fn evaluates_the_target_index_once() {
+        let (mut block, model) = analyze("t[index()] += 1");
+
+        remove_compound_assign(&mut block, &model);
+
+        let output = generate(&block);
+        assert!(output.contains("index()"), "unexpected: {output}");
+        assert_eq!(
+            output.matches("index()").count(),
+            1,
+            "the index expression must be evaluated only once: {output}"
+        );
+    }
+}

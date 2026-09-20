@@ -197,3 +197,30 @@ fn remove_interpolated_string_with_strategy(
         block.insert_statement(0, VariableAssignment::new(variables, values));
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn lowers_a_plain_interpolated_string() {
+        let (mut block, model) = analyze("return `hello`");
+
+        remove_interpolated_string(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return 'hello'");
+    }
+
+    #[test]
+    fn lowers_interpolation_with_tostring() {
+        let (mut block, model) = analyze("return `value = {value}`");
+
+        remove_interpolated_string(&mut block, &model);
+
+        insta::assert_snapshot!(
+            generate(&block).trim(),
+            @"return string.format('value = %s', tostring(value))"
+        );
+    }
+}

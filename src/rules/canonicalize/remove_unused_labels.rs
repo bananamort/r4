@@ -127,3 +127,64 @@ impl NodeProcessor for LabelRemover<'_> {
         block.set_statements(statements);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze_lua52_with_tokens, generate, parse_lua52};
+    use crate::semantic::SemanticAnalyzer;
+
+    #[test]
+    fn removes_unused_labels() {
+        let (mut block, model) = analyze_lua52_with_tokens("::unused::\nreturn 1");
+
+        let removed = remove_unused_labels(&mut block, &model)
+            .expect("unused label removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("::unused::"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn keeps_targeted_labels() {
+        let (mut block, model) = analyze_lua52_with_tokens("::again::\ngoto again");
+
+        let removed = remove_unused_labels(&mut block, &model)
+            .expect("unused label removal must succeed with tokens");
+
+        assert_eq!(removed, 0);
+        assert!(generate(&block).contains("::again::"));
+    }
+
+    #[test]
+    fn removes_unused_labels_in_nested_functions() {
+        let (mut block, model) = analyze_lua52_with_tokens(
+            r#"
+            local function f()
+                ::inner::
+                return 1
+            end
+            return f
+            "#,
+        );
+
+        let removed = remove_unused_labels(&mut block, &model)
+            .expect("unused label removal must succeed with tokens");
+        assert_eq!(removed, 1);
+    }
+
+    #[test]
+    fn removes_unused_labels_without_token_data() {
+        let mut block = parse_lua52("::unused::\nreturn 1");
+        let model = SemanticAnalyzer::new()
+            .analyze(&block)
+            .expect("semantic analysis must succeed");
+
+        let removed =
+            remove_unused_labels(&mut block, &model).expect("token-less labels must be removable");
+
+        assert_eq!(removed, 1);
+        assert!(!generate(&block).contains("::unused::"));
+    }
+}

@@ -10,6 +10,9 @@
 
 mod name_generator;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub mod canonicalize;
 pub mod desugar;
 pub mod formatting;
@@ -71,4 +74,46 @@ pub fn canonicalize(block: &mut Block, model: &SemanticModel) {
     canonicalize::remove_nil_declarations(block, model);
     canonicalize::remove_empty_do(block, model);
     canonicalize::remove_call_parens(block, model);
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{generate, parse};
+    use crate::semantic::SemanticAnalyzer;
+
+    #[test]
+    fn desugar_pipeline_lowers_a_luau_function() {
+        let mut block = parse(
+            r#"
+            local function clamp(value: number, minimum: number, maximum: number): number
+                if value < minimum then
+                    return minimum
+                end
+                return if value > maximum then maximum else value
+            end
+            local total: number = 0
+            for i = 1, 10 do
+                if i % 2 == 0 then
+                    continue
+                end
+                total += i
+            end
+            return clamp(total // 2, 0, 100)
+            "#,
+        );
+
+        desugar_to_lua51(&mut block).expect("the desugar pipeline must analyze successfully");
+        let model = SemanticAnalyzer::new()
+            .analyze(&block)
+            .expect("the desugared block must analyze");
+        canonicalize(&mut block, &model);
+
+        let output = generate(&block);
+        assert!(!output.contains("continue"), "unexpected: {output}");
+        assert!(!output.contains("//"), "unexpected: {output}");
+        assert!(output.contains("math.floor"), "unexpected: {output}");
+
+        parse(&output);
+    }
 }

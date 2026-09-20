@@ -26,3 +26,27 @@ pub fn remove_attribute(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor;
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn removes_function_attributes() {
+        let (mut block, model) = analyze("@native function f() end");
+
+        remove_attribute(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"function f() end");
+    }
+
+    #[test]
+    fn removes_attributes_from_function_expressions() {
+        let (mut block, model) = analyze("local f = @native function() end");
+
+        remove_attribute(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"local f = function() end");
+    }
+}

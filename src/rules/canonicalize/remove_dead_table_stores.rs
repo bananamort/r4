@@ -126,3 +126,29 @@ fn string_literal(expression: &Expression) -> Option<String> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze_with_tokens, generate};
+
+    #[test]
+    fn removes_stores_to_never_read_fields() {
+        let (mut block, model) = analyze_with_tokens("local t = {}\nt.a = 1\nreturn t.b");
+
+        let removed = remove_dead_table_stores(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("t.a = 1"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn keeps_stores_to_escaping_tables() {
+        let (mut block, model) = analyze_with_tokens("local t = {}\nt.a = 1\nreturn t");
+
+        let removed = remove_dead_table_stores(&mut block, &model);
+
+        assert_eq!(removed, 0, "an escaping table may be observed elsewhere");
+    }
+}

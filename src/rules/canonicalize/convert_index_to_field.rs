@@ -88,3 +88,28 @@ pub fn convert_index_to_field(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Converter::default();
     DefaultVisitor::visit_block(block, &mut processor);
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn converts_string_indexes_to_fields() {
+        let (mut block, model) = analyze(r#"return t["foo"]"#);
+
+        convert_index_to_field(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return t.foo");
+    }
+
+    #[test]
+    fn converts_index_table_entries_to_fields() {
+        let (mut block, model) = analyze(r#"return { ["key"] = 1, value = 2 }"#);
+
+        convert_index_to_field(&mut block, &model);
+
+        let output = generate(&block);
+        assert!(output.contains("key = 1"), "unexpected: {output}");
+    }
+}

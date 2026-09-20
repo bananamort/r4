@@ -187,3 +187,61 @@ impl<M: CallMatcher> NodeProcessor for Processor<'_, M> {
         self.removed += 1;
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::nodes::Prefix;
+    use crate::rules::test_support::{analyze_with_tokens, generate};
+
+    /// A matcher that removes calls to the global `foo`.
+    struct RemoveFoo;
+
+    impl CallMatcher for RemoveFoo {
+        fn matches(&self, call: &FunctionCall, model: &SemanticModel) -> bool {
+            match call.get_prefix() {
+                Prefix::Identifier(identifier) => {
+                    identifier_resolves_to_global(model, identifier, "foo")
+                }
+                _ => false,
+            }
+        }
+
+        fn compute_result(
+            &self,
+            _call: &FunctionCall,
+            _reserved: &HashMap<&'static str, String>,
+        ) -> Option<Expression> {
+            None
+        }
+    }
+
+    #[test]
+    fn removes_matching_calls() {
+        let (mut block, model) = analyze_with_tokens("foo()\nreturn 1");
+
+        let removed = remove_call_matches(&mut block, &model, &RemoveFoo);
+
+        assert_eq!(removed, 1);
+        assert!(!generate(&block).contains("foo"), "unexpected");
+    }
+
+    #[test]
+    fn matches_read_only_aliases() {
+        let (mut block, model) = analyze_with_tokens("local foo = foo\nfoo()\nreturn 1");
+
+        let removed = remove_call_matches(&mut block, &model, &RemoveFoo);
+
+        assert_eq!(removed, 1, "a read-only alias must resolve to the global");
+    }
+
+    #[test]
+    fn keeps_shadowed_calls() {
+        let (mut block, model) = analyze_with_tokens("local foo = function() end\nfoo()\nreturn 1");
+
+        let removed = remove_call_matches(&mut block, &model, &RemoveFoo);
+
+        assert_eq!(removed, 0, "a shadowing local must not match");
+        assert!(generate(&block).contains("foo()"));
+    }
+}

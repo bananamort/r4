@@ -35,3 +35,18 @@ pub fn remove_empty_do(block: &mut Block, _model: &SemanticModel) {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::rules::test_support::{analyze, generate};
+
+    #[test]
+    fn removes_nested_empty_do_statements() {
+        let (mut block, model) = analyze("do do end end");
+
+        remove_empty_do(&mut block, &model);
+
+        assert!(generate(&block).trim().is_empty());
+    }
+}
