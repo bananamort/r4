@@ -360,3 +360,34 @@ fn directives_parse_and_render_errors() {
     assert_eq!(directives.iter().count(), 1);
     assert!(directives.get("missing").is_none());
 }
+
+#[test]
+fn trivia_positions_and_errors() {
+    let source = "#!/usr/bin/lua\n-- comment\nreturn 1";
+    let block = parse_with_tokens(source);
+    let trivia = collect_trivia(&block);
+
+    assert!(
+        trivia
+            .iter()
+            .any(|piece| piece.kind() == TriviaKind::Shebang),
+        "the shebang must be classified"
+    );
+
+    for piece in &trivia {
+        let _ = piece.kind();
+        let _ = piece.get_line_number();
+        let _ = piece.get_start();
+        let _ = piece.get_end();
+        let _ = piece.try_read();
+        let _ = piece.try_read_with(source);
+        let _ = piece.read(source);
+    }
+
+    let error = TriviaError::InvalidRange {
+        start: 0,
+        end: 99,
+        length: 3,
+    };
+    assert!(!error.to_string().is_empty());
+}

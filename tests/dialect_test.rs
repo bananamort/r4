@@ -149,3 +149,20 @@ fn round_trips_goto_and_labels_in_lua52() {
     token_generator.write_block(&block_with_tokens);
     assert_eq!(token_generator.into_string(), source);
 }
+
+#[test]
+fn parser_error_kinds_render() {
+    let error = Parser::default()
+        .parse_analyzed("local x = ")
+        .expect_err("a syntax error must be reported");
+    assert!(!error.to_string().is_empty());
+    assert!(!format!("{error:?}").is_empty());
+
+    let panic_error = Parser::default()
+        .parse_analyzed("return 3 & 1")
+        .expect_err("the upstream panic must become an error");
+    assert!(
+        panic_error.to_string().contains("panicked"),
+        "{panic_error}"
+    );
+}

@@ -632,3 +632,80 @@ fn attribute_arguments_methods() {
         let _ = format!("{argument:?}");
     }
 }
+
+#[test]
+fn arguments_conversions_and_token_methods() {
+    use r4::nodes::{
+        Arguments, Expression, StringExpression, TableExpression, Token, TupleArguments,
+        TupleArgumentsTokens,
+    };
+
+    let opening_parenthese = || Token::from_content("(");
+    let closing_parenthese = || Token::from_content(")");
+
+    // String and table arguments convert to a one-element tuple.
+    let string = Arguments::String(StringExpression::from_value("s"));
+    assert_eq!(string.clone().to_expressions().len(), 1);
+    assert_eq!(TupleArguments::from(string.clone()).len(), 1);
+    assert_eq!(string.clone().with_argument(Expression::from(1.0)).len(), 2);
+
+    let table = Arguments::Table(TableExpression::default());
+    assert_eq!(table.clone().to_expressions().len(), 1);
+    assert_eq!(TupleArguments::from(table.clone()).len(), 1);
+    assert_eq!(table.clone().with_argument(Expression::from(1.0)).len(), 2);
+
+    // In-place mutation of a non-tuple converts it first.
+    let mut string = string;
+    string.push(Expression::from(3.0));
+    string.insert(1, Expression::from(4.0));
+    let _ = string.len();
+    let _ = string.is_empty();
+    let _ = string.mutate_last_token();
+    let mut table = table;
+    table.push(Expression::from(3.0));
+    table.insert(1, Expression::from(4.0));
+
+    // Tuple accessors and token passes.
+    let mut tuple = TupleArguments::default().with_argument(Expression::from(1.0));
+    tuple.push(Expression::from(2.0));
+    tuple.insert(0, Expression::from(0.0));
+    let _ = tuple.len();
+    let _ = tuple.is_empty();
+    let _ = tuple.iter_values().count();
+    let _ = tuple.iter_mut_values().count();
+    let _ = tuple.mutate_last_token();
+    let _ = tuple.get_tokens();
+    tuple.set_tokens(TupleArgumentsTokens {
+        opening_parenthese: opening_parenthese(),
+        closing_parenthese: closing_parenthese(),
+        commas: Vec::new(),
+    });
+    tuple.clear_comments();
+    tuple.clear_whitespaces();
+    tuple.remove_tokens();
+    tuple.for_each_token(&mut |_| {});
+    let _ = tuple.clone().to_expressions();
+    let _ = tuple.with_tokens(TupleArgumentsTokens {
+        opening_parenthese: opening_parenthese(),
+        closing_parenthese: closing_parenthese(),
+        commas: vec![Token::from_content(",")],
+    });
+    let collected: TupleArguments = vec![Expression::from(1.0)].into_iter().collect();
+    let _ = collected;
+}
+
+#[test]
+fn block_statement_operations() {
+    use r4::nodes::{Expression, ReturnStatement};
+
+    let mut block = Parser::default().parse("a()\nb()\nc()").expect("parse");
+    assert_eq!(block.statements_len(), 3);
+    assert_eq!(block.reverse_iter_statements().count(), 3);
+    block.truncate(2);
+    assert_eq!(block.statements_len(), 2);
+    let replaced = block.replace_last_statement(ReturnStatement::new(vec![Expression::from(1.0)]));
+    assert!(replaced.is_none());
+    block.clear_identity();
+    assert!(block.get_identity().is_none());
+    let _ = block.take_statements();
+}
