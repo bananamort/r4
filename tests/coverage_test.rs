@@ -1013,3 +1013,65 @@ fn readable_and_dense_generators_wrap_long_signatures_and_tables() {
         assert_generates(&block, &code, Dialect::Luau);
     }
 }
+
+#[test]
+fn partial_tokens_synthesize_keywords_and_commas() {
+    use r4::generator::TokenBasedLuaGenerator;
+    use r4::nodes::{
+        Block, Expression, IfBranch, IfStatement, IfStatementTokens, LastStatement,
+        ReturnStatement, Statement, Token, TypeDeclarationStatement, TypeDeclarationTokens,
+        TypeName, TypedIdentifier, VariableAssignment, VariableAssignmentTokens,
+    };
+
+    fn generate(block: &Block) -> String {
+        let mut generator = TokenBasedLuaGenerator::new("");
+        generator.write_block(block);
+        generator.into_string()
+    }
+
+    // If statement with tokens but no `else` token.
+    let mut statement = IfStatement::new(
+        vec![IfBranch::new(Expression::identifier("a"), Block::default())],
+        Some(Block::new(
+            Vec::new(),
+            Some(LastStatement::Return(ReturnStatement::new(vec![
+                Expression::from(1.0),
+            ]))),
+        )),
+    );
+    statement.set_tokens(IfStatementTokens {
+        r#if: Token::from_content("if"),
+        then: Token::from_content("then"),
+        end: Token::from_content("end"),
+        r#else: None,
+    });
+    let output = generate(&Block::new(vec![Statement::If(statement)], None));
+    assert!(output.contains("else"), "{output}");
+
+    // Local assignment with tokens but no separator commas.
+    let mut assign = VariableAssignment::new(
+        vec![TypedIdentifier::new("a"), TypedIdentifier::new("b")],
+        vec![Expression::from(1.0), Expression::from(2.0)],
+    );
+    assign.set_tokens(VariableAssignmentTokens {
+        keyword: Token::from_content("local"),
+        equal: Some(Token::from_content("=")),
+        variable_commas: Vec::new(),
+        value_commas: Vec::new(),
+    });
+    let output = generate(&Block::new(vec![Statement::LocalAssign(assign)], None));
+    assert!(output.contains("a,b"), "{output}");
+
+    // Exported type declaration with tokens but no `export` token.
+    let mut declaration = TypeDeclarationStatement::new("T", TypeName::new("number")).export();
+    declaration.set_tokens(TypeDeclarationTokens {
+        r#type: Token::from_content("type"),
+        equal: Token::from_content("="),
+        export: None,
+    });
+    let output = generate(&Block::new(
+        vec![Statement::TypeDeclaration(declaration)],
+        None,
+    ));
+    assert!(output.contains("export"), "{output}");
+}
