@@ -1511,3 +1511,63 @@ fn cfg_invariant_violations_are_detected() {
         .iter()
         .any(|v| matches!(v, InvariantViolation::TerminatorMismatch { .. })));
 }
+
+#[test]
+fn cfg_rejects_models_that_no_longer_match_the_tree() {
+    use r4::nodes::{Expression, Identifier, NumericForStatement};
+
+    // Extra goto record: the goto is removed after analysis.
+    let block = Parser::default()
+        .lua52()
+        .parse("::top::\ngoto top")
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
+
+    let mut without_goto = block.clone();
+    without_goto.remove_statement(1);
+    let error = build_chunk(&without_goto, &model).expect_err("extra goto record");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::MissingSemanticRecord { kind: "goto", .. }
+    ));
+
+    // Unresolved goto: the label is removed after analysis.
+    let mut without_label = block;
+    without_label.remove_statement(0);
+    let error = build_chunk(&without_label, &model).expect_err("unresolved goto");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::UnresolvedGoto { .. }
+    ));
+
+    // Extra label record: a label remains in the model but not in the tree.
+    let labeled = Parser::default()
+        .lua52()
+        .parse("::only::\nreturn 0")
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&labeled).expect("analyze");
+    let mut without_label = labeled;
+    without_label.remove_statement(0);
+    let error = build_chunk(&without_label, &model).expect_err("extra label record");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::MissingSemanticRecord { kind: "label", .. }
+    ));
+
+    // An unbound loop variable added after analysis.
+    let unbound = Parser::default().parse("return 0").expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&unbound).expect("analyze");
+    let mut mutated = unbound;
+    mutated.push_statement(Statement::NumericFor(Box::new(NumericForStatement::new(
+        Identifier::new("i"),
+        Expression::from(1.0),
+        Expression::from(10.0),
+        None,
+        Block::default(),
+    ))));
+    let error = build_chunk(&mutated, &model).expect_err("unbound loop variable");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::UnresolvedIdentifier { .. }
+    ));
+}
