@@ -617,6 +617,17 @@ fn attribute_arguments_methods() {
     tuple.push(LiteralExpression::nil());
     let tuple = tuple.with_value(LiteralExpression::from(true));
 
+    // Removing/adding values keeps the token commas in sync.
+    use r4::nodes::{Token, TupleArgumentsTokens};
+    let mut tokenful = AttributeTupleArguments::default().with_tokens(TupleArgumentsTokens {
+        opening_parenthese: Token::from_content("("),
+        closing_parenthese: Token::from_content(")"),
+        commas: vec![],
+    });
+    tokenful.push(LiteralExpression::nil());
+    tokenful.insert(0, LiteralExpression::from(true));
+    tokenful.push(LiteralExpression::from(false));
+
     let mut arguments: Vec<AttributeArguments> = vec![
         AttributeArguments::from(tuple),
         AttributeArguments::from(StringExpression::from_value("s")),
