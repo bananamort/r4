@@ -700,3 +700,106 @@ fn semantic_walker_handles_type_packs_and_annotations() {
             .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"));
     }
 }
+
+#[test]
+fn partially_tokened_nodes_fall_back_to_synthetic_symbols() {
+    use r4::generator::TokenBasedLuaGenerator;
+    use r4::nodes::{
+        Arguments, AssignStatement, AssignTokens, Block, Expression, FunctionCall,
+        FunctionCallTokens, Identifier, LastStatement, Prefix, ReturnStatement, ReturnTokens,
+        Statement, Token, TupleArguments, TypeInstantiationExpression, TypeInstantiationTokens,
+        TypeName, Variable,
+    };
+
+    fn generate(block: &Block) {
+        let mut generator = TokenBasedLuaGenerator::new("");
+        generator.write_block(block);
+        assert!(!generator.into_string().is_empty());
+    }
+
+    // Return with tokens but no separator commas.
+    let statement = ReturnStatement::new(vec![
+        Expression::from(1.0),
+        Expression::from(2.0),
+        Expression::from(3.0),
+    ])
+    .with_tokens(ReturnTokens {
+        r#return: Token::from_content("return"),
+        commas: Vec::new(),
+    });
+    generate(&Block::new(
+        Vec::new(),
+        Some(LastStatement::Return(statement)),
+    ));
+
+    // Assignment with tokens but no separator commas.
+    let assign = AssignStatement::new(
+        vec![Variable::new("a"), Variable::new("b")],
+        vec![Expression::from(1.0), Expression::from(2.0)],
+    )
+    .with_tokens(AssignTokens {
+        equal: Token::from_content("="),
+        variable_commas: Vec::new(),
+        value_commas: Vec::new(),
+    });
+    generate(&Block::new(vec![Statement::Assign(assign)], None));
+
+    // Method call with tokens but no colon.
+    let call = FunctionCall::new(
+        Prefix::from_name("obj"),
+        Arguments::Tuple(TupleArguments::default()),
+        Some(Identifier::new("method")),
+    )
+    .with_tokens(FunctionCallTokens {
+        colon: None,
+        type_instantiation_tokens: None,
+    });
+    generate(&Block::new(
+        Vec::new(),
+        Some(LastStatement::Return(ReturnStatement::new(vec![
+            Expression::from(call),
+        ]))),
+    ));
+
+    // Type instantiation with tokens but no separator commas.
+    let instantiation = TypeInstantiationExpression::new(
+        Prefix::from_name("f"),
+        vec![TypeName::new("T").into(), TypeName::new("U").into()],
+    )
+    .with_tokens(TypeInstantiationTokens {
+        first_opening_list: Token::from_content("<"),
+        second_opening_list: Token::from_content("<"),
+        first_closing_list: Token::from_content(">"),
+        second_closing_list: Token::from_content(">"),
+        commas: Vec::new(),
+    });
+    generate(&Block::new(
+        Vec::new(),
+        Some(LastStatement::Return(ReturnStatement::new(vec![
+            Expression::from(instantiation),
+        ]))),
+    ));
+}
+
+#[test]
+fn type_cast_with_parentheses_is_synthesized() {
+    use r4::generator::TokenBasedLuaGenerator;
+    use r4::nodes::{
+        Block, Expression, LastStatement, ReturnStatement, Token, TypeCastExpression, TypeName,
+    };
+
+    let inner = TypeCastExpression::new(Expression::from(1.0), TypeName::new("number"));
+    let outer = TypeCastExpression::new(Expression::from(inner), TypeName::new("number"))
+        .with_token(Token::from_content("::"));
+
+    let block = Block::new(
+        Vec::new(),
+        Some(LastStatement::Return(ReturnStatement::new(vec![
+            Expression::from(outer),
+        ]))),
+    );
+    let mut generator = TokenBasedLuaGenerator::new("");
+    generator.write_block(&block);
+    let output = generator.into_string();
+    assert!(output.contains("(1::number)::number"), "{output}");
+}
