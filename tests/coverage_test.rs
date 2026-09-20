@@ -988,3 +988,28 @@ fn generator_spacing_and_line_break_helper_inputs() {
         assert_generates(&block, &code, Dialect::Luau);
     }
 }
+
+#[test]
+fn readable_and_dense_generators_wrap_long_signatures_and_tables() {
+    let long_params = (1..=40)
+        .map(|i| format!("parameter_number_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cases = vec![
+        format!("local function f({long_params}) end"),
+        format!("function f({long_params}, ...) end"),
+        format!("local f = function({long_params}) return 1 end"),
+        format!("function f({long_params}): number return 1 end"),
+        "return { {}, {}, {}, {} }".to_owned(),
+        "return { a = {}, b = {}, c = {}, d = {} }".to_owned(),
+        "return { { { 1 } } }".to_owned(),
+        "return { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }".to_owned(),
+        "return { a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8 }".to_owned(),
+        "return { 1, 2, 3, a = 4, [5] = 6, 7, 8, 9, 10, 11, 12 }".to_owned(),
+        "local a = 1\nlocal b = a + 1\nlocal c = b + 1\nreturn a, b, c".to_owned(),
+    ];
+    for code in cases {
+        let block = parse_with(&code, Dialect::Luau);
+        assert_generates(&block, &code, Dialect::Luau);
+    }
+}

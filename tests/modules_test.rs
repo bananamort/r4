@@ -582,3 +582,99 @@ fn multi_module_model_accessors() {
     }
     let _ = graph.whole_program_index();
 }
+
+#[test]
+fn classifies_additional_require_shapes() {
+    use r4::modules::{classify_require_call, resolve_instance_path, InstanceSegment, RequireCall};
+    use r4::nodes::{Expression, FunctionCall, Statement};
+
+    fn call_and_model(code: &str) -> (FunctionCall, SemanticModel) {
+        let (block, model) = analyze(code);
+        for statement in block.iter_statements() {
+            if let Statement::LocalAssign(assign) = statement {
+                for value in assign.iter_values() {
+                    if let Expression::Call(call) = value {
+                        return ((**call).clone(), model);
+                    }
+                }
+            }
+        }
+        panic!("no call in `{code}`");
+    }
+
+    for (code, expected) in [
+        ("local x = require(1)", RequireCall::NonLiteral),
+        ("local x = require({})", RequireCall::NonLiteral),
+        ("local x = require(script[child])", RequireCall::NonLiteral),
+        (
+            "local x = require(script:Unknown('X'))",
+            RequireCall::NonLiteral,
+        ),
+        (
+            "local x = require(script:FindFirstChild())",
+            RequireCall::NonLiteral,
+        ),
+        ("local x = require(function() end)", RequireCall::NonLiteral),
+    ] {
+        let (call, model) = call_and_model(code);
+        assert_eq!(classify_require_call(&call, &model), expected, "`{code}`");
+    }
+
+    // A parenthesized instance path is still recognized.
+    let (call, model) = call_and_model("local x = require((script.Child))");
+    assert!(matches!(
+        classify_require_call(&call, &model),
+        RequireCall::Instance { .. }
+    ));
+
+    // `require "..."` with an unreadable string falls back to non-literal.
+    let (call, model) = call_and_model("local x = require '\\255'");
+    assert_eq!(
+        classify_require_call(&call, &model),
+        RequireCall::NonLiteral
+    );
+
+    for (key, segments) in [
+        ("a", vec![InstanceSegment::Parent]),
+        ("a", Vec::new()),
+        (
+            "a/b/c",
+            vec![InstanceSegment::Parent, InstanceSegment::Parent],
+        ),
+        (
+            "a",
+            vec![
+                InstanceSegment::Child("b".to_owned()),
+                InstanceSegment::Child("c".to_owned()),
+            ],
+        ),
+        ("a", vec![InstanceSegment::Service("X".to_owned())]),
+    ] {
+        let _ = resolve_instance_path(key, &segments);
+    }
+}
+
+#[test]
+fn multi_module_resolves_identifier_occurrences() {
+    use r4::nodes::{Expression, LastStatement};
+    use r4::semantic::{MultiModuleModel, SymbolRef};
+
+    let mut graph = MultiModuleModel::new();
+    let (block, model) = analyze("local x = 1\nreturn x");
+    let a = graph.add_module("a", block, model).expect("module a");
+
+    let Some(LastStatement::Return(statement)) = graph.module(a).block.get_last_statement() else {
+        panic!("expected a return statement");
+    };
+    let Some(Expression::Identifier(identifier)) = statement.iter_expressions().next() else {
+        panic!("expected an identifier");
+    };
+    assert!(matches!(
+        graph.resolve_identifier(a, identifier),
+        Some(SymbolRef::Local { .. })
+    ));
+
+    // An unresolved occurrence returns `None`.
+    let fresh = r4::nodes::Identifier::new("never");
+    assert_eq!(graph.resolve_identifier(a, &fresh), None);
+}
