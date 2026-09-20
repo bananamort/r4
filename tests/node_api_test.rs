@@ -220,3 +220,36 @@ fn attribute_group_token_mutations() {
     let group = AttributeGroup::new(AttributeGroupElement::new("a")).with_tokens(tokens);
     assert!(group.get_tokens().is_some());
 }
+
+#[test]
+fn table_type_modifiers_with_tokens() {
+    use r4::nodes::TablePropertyModifier;
+    use r4::Parser;
+
+    let block = Parser::default()
+        .preserve_tokens()
+        .parse("type T = { read a: number, write b: string }")
+        .expect("valid Luau");
+    let statement = block.iter_statements().next().expect("a statement");
+    let r4::nodes::Statement::TypeDeclaration(declaration) = statement else {
+        panic!("expected a type declaration");
+    };
+    let r4::nodes::Type::Table(mut table) = declaration.get_type().clone() else {
+        panic!("expected a table type");
+    };
+
+    for entry in table.iter_mut_entries() {
+        if let TableEntryType::Property(property) = entry {
+            // Setting the same modifier early-returns; a different one clears the
+            // recorded modifier token.
+            let existing = property.get_modifier().cloned();
+            if let Some(modifier) = existing {
+                property.set_modifier(modifier);
+            }
+            property.set_modifier(TablePropertyModifier::Read);
+            property.set_modifier(TablePropertyModifier::Write);
+            property.remove_modifier();
+            assert!(property.get_modifier().is_none());
+        }
+    }
+}
