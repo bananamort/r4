@@ -1354,3 +1354,29 @@ fn liveness_reads_fields_unions_primitives_and_generic_parameters() {
     let _ = liveness.is_live_out(cfg.entry, t);
     let _ = liveness.live_in_symbols(cfg.entry).count();
 }
+
+#[test]
+fn stale_models_are_rejected_by_the_cfg_builder() {
+    use r4::nodes::{GotoStatement, LabelStatement};
+
+    let block = Parser::default().parse("return 1").expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
+
+    // A goto added after analysis has no semantic record.
+    let mut with_goto = block.clone();
+    with_goto.push_statement(Statement::Goto(GotoStatement::from_name("missing")));
+    let error = build_chunk(&with_goto, &model).expect_err("a stale goto must be rejected");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::MissingSemanticRecord { kind: "goto", .. }
+    ));
+
+    // A label added after analysis has no semantic record.
+    let mut with_label = block;
+    with_label.push_statement(Statement::Label(LabelStatement::from_name("extra")));
+    let error = build_chunk(&with_label, &model).expect_err("a stale label must be rejected");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::MissingSemanticRecord { kind: "label", .. }
+    ));
+}
