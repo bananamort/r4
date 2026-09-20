@@ -392,6 +392,51 @@ fn classifies_require_call_shapes() {
         RequireCall::NotRequire
     );
 
+    // String-call syntax and index/parenthesized instance paths.
+    let (call, model) = call_and_model("local x = require \"a.b\"");
+    assert_eq!(
+        classify_require_call(&call, &model),
+        RequireCall::Path {
+            path: "a.b".to_owned()
+        }
+    );
+
+    let (call, model) = call_and_model("local x = require(script[\"Child\"])");
+    let RequireCall::Instance { segments } = classify_require_call(&call, &model) else {
+        panic!("expected an instance path");
+    };
+    assert!(segments.contains(&InstanceSegment::Child("Child".to_owned())));
+
+    // A statically-known string index extends the path; a dynamic one does not.
+    let (call, model) = call_and_model("local x = require(script[\"Child\"].Grandchild)");
+    let RequireCall::Instance { segments } = classify_require_call(&call, &model) else {
+        panic!("expected an instance path");
+    };
+    assert_eq!(
+        segments,
+        vec![
+            InstanceSegment::Child("Child".to_owned()),
+            InstanceSegment::Child("Grandchild".to_owned()),
+        ]
+    );
+    let (call, model) = call_and_model("local x = require(script[child].Grandchild)");
+    let _ = classify_require_call(&call, &model);
+
+    let (call, model) = call_and_model("local x = require((script).Child)");
+    let RequireCall::Instance { segments } = classify_require_call(&call, &model) else {
+        panic!("expected an instance path");
+    };
+    assert!(!segments.is_empty());
+
+    for code in [
+        "local x = require(script:FindFirstChild(\"Child\"))",
+        "local x = require(script:WaitForChild(\"Child\"))",
+        "local x = require(script.Parent.Parent)",
+    ] {
+        let (call, model) = call_and_model(code);
+        let _ = classify_require_call(&call, &model);
+    }
+
     let path = resolve_instance_path(
         "script",
         &[
@@ -400,6 +445,8 @@ fn classifies_require_call_shapes() {
         ],
     );
     assert!(path.is_some());
+    let _ = resolve_instance_path("script", &[InstanceSegment::Service("Players".to_owned())]);
+    let _ = resolve_instance_path("a/b", &[InstanceSegment::Parent]);
 }
 
 #[test]

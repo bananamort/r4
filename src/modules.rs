@@ -380,6 +380,15 @@ fn instance_segments(expression: &Expression) -> Option<Vec<InstanceSegment>> {
         }
         Expression::Call(call) => instance_call_segments(call),
         Expression::Parenthese(parenthese) => instance_segments(parenthese.inner_expression()),
+        Expression::Index(index) => {
+            let name = match index.get_index() {
+                Expression::String(string) => path_of_string(string)?,
+                _ => return None,
+            };
+            let mut segments = prefix_instance_segments(index.get_prefix())?;
+            segments.push(InstanceSegment::Child(name));
+            Some(segments)
+        }
         _ => None,
     }
 }

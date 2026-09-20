@@ -268,6 +268,11 @@ fn every_evaluable_expression_shape_is_evaluated() {
         "return (a)[b()]",
         "return a[b()].c",
         "return f{1, 2, a = 3}",
+        "return a and b or not c",
+        "return not a",
+        "return a and b",
+        "return a or b",
+        "return #t, -x",
     ] {
         let block = parse_with(code, Dialect::Luau);
         for statement in block.iter_statements() {

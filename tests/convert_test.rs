@@ -160,3 +160,89 @@ fn serializes_bytes_through_the_serializer() {
     let output = convert_data(Bytes(b"ABC")).expect("bytes convert");
     assert!(output.contains("string.char"), "{output}");
 }
+
+#[test]
+fn serializes_every_fallback_serialize_method() {
+    struct Unit;
+    impl serde::Serialize for Unit {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_unit()
+        }
+    }
+
+    struct UnitStruct;
+    impl serde::Serialize for UnitStruct {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_unit_struct("UnitStruct")
+        }
+    }
+
+    struct Newtype(i32);
+    impl serde::Serialize for Newtype {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_newtype_struct("Newtype", &self.0)
+        }
+    }
+
+    struct UnitVariant;
+    impl serde::Serialize for UnitVariant {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_unit_variant("Enum", 0, "Unit")
+        }
+    }
+
+    struct NewtypeVariant(i32);
+    impl serde::Serialize for NewtypeVariant {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_newtype_variant("Enum", 0, "Newtype", &self.0)
+        }
+    }
+
+    struct TupleVariant(i32, i32);
+    impl serde::Serialize for TupleVariant {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeTupleVariant;
+            let mut variant = serializer.serialize_tuple_variant("Enum", 0, "Tuple", 2)?;
+            variant.serialize_field(&self.0)?;
+            variant.serialize_field(&self.1)?;
+            variant.end()
+        }
+    }
+
+    struct TupleStruct(i32, i32);
+    impl serde::Serialize for TupleStruct {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeTupleStruct;
+            let mut tuple = serializer.serialize_tuple_struct("TupleStruct", 2)?;
+            tuple.serialize_field(&self.0)?;
+            tuple.serialize_field(&self.1)?;
+            tuple.end()
+        }
+    }
+
+    struct Named;
+    impl serde::Serialize for Named {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeStruct;
+            let mut structure = serializer.serialize_struct("Named", 1)?;
+            structure.serialize_field("value", &1)?;
+            structure.end()
+        }
+    }
+
+    assert_eq!(convert_data(Unit).expect("unit"), "return nil");
+    assert_eq!(convert_data(UnitStruct).expect("unit struct"), "return nil");
+    assert_eq!(convert_data(Newtype(1)).expect("newtype"), "return 1");
+    assert!(!convert_data(Some(1i32)).expect("some").is_empty());
+    assert!(!convert_data(UnitVariant).expect("unit variant").is_empty());
+    assert!(!convert_data(NewtypeVariant(1))
+        .expect("newtype variant")
+        .is_empty());
+    assert!(!convert_data(TupleVariant(1, 2))
+        .expect("tuple variant")
+        .is_empty());
+    assert!(!convert_data(TupleStruct(1, 2))
+        .expect("tuple struct")
+        .is_empty());
+    assert!(!convert_data(Named).expect("named struct").is_empty());
+}
