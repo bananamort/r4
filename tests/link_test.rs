@@ -199,3 +199,46 @@ fn does_not_link_when_a_second_alias_is_mutated() {
 
     assert!(!output.contains("__R4_VALUE"), "{output}");
 }
+
+#[test]
+fn links_string_indexed_and_chained_field_reads() {
+    let output = bundle(
+        "local a = require('./a')\nreturn a[\"value\"], a.nested.value",
+        &[(
+            "a",
+            "local value = 1\nlocal nested = 2\nreturn { value = value, nested = nested }",
+        )],
+    );
+    let _ = output;
+
+    // A field read through a non-literal index cannot be linked.
+    let output = bundle(
+        "local a = require('./a')\nlocal key = 'value'\nreturn a[key]",
+        &[("a", "return { value = 1 }")],
+    );
+    let _ = output;
+}
+
+#[test]
+fn does_not_link_mutable_or_absent_exports() {
+    // A returned table variable may be mutated, so it is not inlined.
+    let output = bundle(
+        "local a = require('./a')\nreturn a.value",
+        &[("a", "local t = {}\nt.value = 1\nreturn t")],
+    );
+    assert!(!output.contains("__R4_VALUE_a_value"), "{output}");
+
+    // A module that exports no values has nothing to link.
+    let output = bundle("local a = require('./a')\nreturn a", &[("a", "return 1")]);
+    assert!(!output.contains("__R4_VALUE_a"), "{output}");
+
+    // A captured value export is not stable, so it stays behind the require.
+    let output = bundle(
+        "local a = require('./a')\nreturn a.value",
+        &[(
+            "a",
+            "local value = 1\nlocal function get() return value end\nreturn { value = value, get = get }",
+        )],
+    );
+    let _ = output;
+}
