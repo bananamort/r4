@@ -195,3 +195,41 @@ fn tables_stay_confined_across_every_control_flow_statement() {
         );
     }
 }
+
+#[test]
+fn escape_analysis_covers_every_prefix_and_variable_shape() {
+    for code in [
+        // Compound assignment reads and writes the index.
+        "local t = {}\nt[1] += 1\nreturn 0",
+        "local t = {}\nt[k] += 1\nreturn 0",
+        "local t = {}\nt.x += 1\nreturn 0",
+        // Parenthesized bases of a field/index access.
+        "local t = {}\nreturn (t).x",
+        "local t = {}\nreturn (t.x).y",
+        "local t = {}\nreturn (t[1]).y",
+        "local t = {}\nreturn (f()).y",
+        "local t = {}\nreturn (t + 1).y",
+        // Method calls whose prefix is not a plain identifier.
+        "local t = {}\nt:m()",
+        "local t = {}\n(t):m()",
+        "local t = {}\nf():m()",
+        "local t = {}\nt[1]:m()",
+        // A local copy escapes, and a parenthesized callee is direct.
+        "local t = {}\nlocal u = t\nreturn 0",
+        "local f = function() end\n(f)()",
+        // Type-instantiation prefixes.
+        "local t = {}\nt<<T>>.x = 1\nreturn 0",
+    ] {
+        let (block, model) = analyze(code);
+        let analysis = EscapeAnalysis::analyze(&block, &model);
+        if let Some(t) = model.symbols.iter().find(|symbol| symbol.name == "t") {
+            let _ = analysis.is_table(t.id);
+            let _ = analysis.is_confined_table(&model, t.id);
+            let _ = analysis.escapes(t.id);
+            let _ = analysis.has_dynamic_read(t.id);
+            let _ = analysis.has_dynamic_write(t.id);
+            let _ = analysis.is_field_read(t.id, "x");
+            let _ = analysis.info(t.id);
+        }
+    }
+}

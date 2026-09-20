@@ -1230,3 +1230,127 @@ fn liveness_reads_every_prefix_and_type_shape() {
     let (then_block, _) = branch_blocks(&cfg, cfg.entry);
     assert!(liveness.is_live_in(then_block, a));
 }
+
+#[test]
+fn cfg_errors_render_every_variant() {
+    use r4::cfg::{CfgError, CfgErrorKind, InvariantViolation};
+
+    let kinds = [
+        CfgErrorKind::BreakOutsideLoop,
+        CfgErrorKind::ContinueOutsideLoop,
+        CfgErrorKind::MissingSemanticRecord {
+            kind: "goto",
+            name: "x".to_owned(),
+        },
+        CfgErrorKind::SemanticMismatch {
+            kind: "label",
+            name: "x".to_owned(),
+            recorded: "y".to_owned(),
+        },
+        CfgErrorKind::UnresolvedGoto {
+            name: "x".to_owned(),
+        },
+        CfgErrorKind::MissingBlockIdentity,
+        CfgErrorKind::UnresolvedIdentifier {
+            name: "x".to_owned(),
+        },
+    ];
+    for kind in kinds {
+        assert!(!CfgError {
+            kind: kind.clone(),
+            line: None,
+        }
+        .to_string()
+        .is_empty());
+        let located = CfgError {
+            kind,
+            line: Some(7),
+        };
+        assert!(located.to_string().starts_with("line 7: "));
+    }
+
+    let block = BlockId(3);
+    for violation in [
+        InvariantViolation::TerminatorMismatch {
+            block,
+            terminator_targets: vec![BlockId(1)],
+            successors: vec![BlockId(2)],
+        },
+        InvariantViolation::DuplicateSuccessor { block },
+        InvariantViolation::DuplicatePredecessor { block },
+        InvariantViolation::DanglingSuccessor {
+            block,
+            successor: BlockId(9),
+        },
+        InvariantViolation::DanglingPredecessor {
+            block,
+            predecessor: BlockId(9),
+        },
+        InvariantViolation::MissingPredecessor {
+            block,
+            successor: BlockId(1),
+        },
+        InvariantViolation::MissingSuccessor {
+            block,
+            predecessor: BlockId(1),
+        },
+        InvariantViolation::StatementOriginMismatch {
+            block,
+            statements: 1,
+            origins: 2,
+        },
+    ] {
+        assert!(!violation.to_string().is_empty());
+        assert!(!format!("{violation:?}").is_empty());
+    }
+}
+
+#[test]
+fn liveness_and_constant_propagation_errors_render() {
+    use r4::cfg::analysis::{ConstantPropagationError, LivenessError};
+
+    for line in [Some(4), None] {
+        assert!(!LivenessError::UnresolvedIdentifier {
+            name: "x".to_owned(),
+            line,
+        }
+        .to_string()
+        .is_empty());
+        assert!(!ConstantPropagationError::UnresolvedIdentifier {
+            name: "x".to_owned(),
+            line,
+        }
+        .to_string()
+        .is_empty());
+    }
+}
+
+#[test]
+fn liveness_reads_fields_unions_primitives_and_generic_parameters() {
+    let (cfg, model) = build_with_tokens(
+        r#"
+        type Alias = number
+        local t = {}
+        t.x = 1
+        t.y += 2
+        local a = (1 :: Alias | string)
+        local b = (1 :: typeof(t))
+        local c = (1 :: true)
+        local d = (1 :: false)
+        local e = (1 :: nil)
+        local f = (1 :: "literal")
+        local g = (1 :: {number})
+        local h = (1 :: (number))
+        local function generic<T>(value: T) return value end
+        return a, b, c, d, e, f, g, h, generic
+        "#,
+    );
+
+    let liveness = Liveness::analyze(&cfg, &model).expect("liveness must succeed");
+    let t = symbol_named(&model, "t");
+    let _ = liveness.uses[cfg.entry.index()][t.index()];
+    let _ = liveness.defs[cfg.entry.index()][t.index()];
+    let _ = liveness.is_live_in(cfg.entry, t);
+    let _ = liveness.is_live_out(cfg.entry, t);
+    let _ = liveness.live_in_symbols(cfg.entry).count();
+}

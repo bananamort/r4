@@ -121,3 +121,28 @@ fn converts_every_scalar_serialize_method() {
     assert!(!convert_data('c').expect("char").is_empty());
     assert!(!convert_data("text").expect("str").is_empty());
 }
+
+#[test]
+fn converts_map_keys_and_renders_errors() {
+    use r4::convert::ConvertDataError;
+    use serde::ser::Error as _;
+
+    // A valid identifier key becomes a field; anything else an index entry.
+    let map = BTreeMap::from([("valid".to_owned(), 1i64), ("not a name".to_owned(), 2i64)]);
+    let output = convert_data(map).expect("map converts");
+    assert!(output.contains("valid"));
+    assert!(output.contains("not a name"));
+
+    // Non-string keys become index entries.
+    let numeric = BTreeMap::from([(1i64, "a"), (2i64, "b")]);
+    let output = convert_data(numeric).expect("map converts");
+    assert!(output.contains("[1]"));
+
+    let expression =
+        to_expression(&BTreeMap::from([("k".to_owned(), 1i64)])).expect("expression converts");
+    assert!(!format!("{expression:?}").is_empty());
+
+    let error = ConvertDataError::custom("boom");
+    assert_eq!(error.message(), "boom");
+    assert_eq!(error.to_string(), "boom");
+}
