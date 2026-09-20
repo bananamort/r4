@@ -118,3 +118,87 @@ fn resolves_declarations_and_their_scopes() {
         Ok(r4::semantic::Binding::Symbol(_))
     ));
 }
+
+#[test]
+fn resolves_type_declarations_and_annotations() {
+    let (block, model) = analyze("type T = number\nlocal x: T = nil\nreturn x");
+
+    let mut type_name = None;
+    let mut annotation = None;
+    for statement in block.iter_statements() {
+        match statement {
+            Statement::TypeDeclaration(declaration) => {
+                type_name = Some(declaration.get_name().clone());
+            }
+            Statement::LocalAssign(assignment) => {
+                for variable in assignment.iter_variables() {
+                    if let Some(r4::nodes::Type::Name(name)) = variable.get_type() {
+                        annotation = Some(name.get_type_name().clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let type_name = type_name.expect("a type declaration");
+    let type_id = model
+        .try_declared_type(&type_name)
+        .expect("the declared type resolves");
+    assert_eq!(model.type_of(&type_name), Some(type_id));
+    assert_eq!(model.resolve_type_expanded(&type_name), Some(type_id));
+
+    let annotation = annotation.expect("a type annotation");
+    assert_eq!(model.type_of(&annotation), Some(type_id));
+    assert_eq!(model.try_declared_type(&annotation), Ok(type_id));
+
+    let _ = model.analysis_origin();
+
+    let unbound = Identifier::new("NeverDeclared");
+    assert!(matches!(
+        model.try_declared_type(&unbound),
+        Err(SemanticQueryError::UnboundType { .. })
+    ));
+}
+
+#[test]
+fn resolves_label_declarations() {
+    let block = Parser::default()
+        .lua52()
+        .parse("::top::\nlocal x = 1\ngoto top")
+        .expect("the labeled chunk parses");
+    let model = r4::semantic::SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("the labeled chunk analyzes");
+
+    let mut label_name = None;
+    for statement in block.iter_statements() {
+        if let Statement::Label(label) = statement {
+            label_name = Some(label.get_label().clone());
+        }
+    }
+
+    let label = label_name.expect("a label declaration");
+    let label_id = model
+        .try_declared_label(&label)
+        .expect("the label resolves");
+    assert_eq!(model.label_of(&label), Some(label_id));
+
+    // Goto occurrences are resolved through the goto binding list.
+    let binding = model
+        .goto_bindings
+        .iter()
+        .find(|binding| binding.site.name == "top")
+        .expect("the goto is bound");
+    assert_eq!(binding.label, label_id);
+    assert_eq!(binding.site.span, None);
+    assert_eq!(
+        model.goto_bindings_in_function(model.chunk_scope()).count(),
+        1
+    );
+
+    assert!(matches!(
+        model.try_declared_label(&Identifier::new("never")),
+        Err(SemanticQueryError::UnboundLabel { .. })
+    ));
+}

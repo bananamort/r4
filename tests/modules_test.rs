@@ -268,3 +268,202 @@ fn generate(block: &Block) -> String {
     generator.write_block(block);
     generator.into_string()
 }
+
+#[test]
+fn filesystem_provider_paths_and_accessors() {
+    use r4::modules::FileSystemModuleProvider;
+    use std::path::{Path, PathBuf};
+
+    let provider = FileSystemModuleProvider::with_extension("/tmp/r4-root", "lua");
+    assert_eq!(provider.root(), Path::new("/tmp/r4-root"));
+    assert_eq!(provider.extension(), "lua");
+    assert_eq!(provider.extensions(), ["lua".to_owned()]);
+
+    let provider = provider
+        .with_extensions(["lua", "luau"])
+        .with_module_folders(["init"]);
+    assert_eq!(provider.extensions().len(), 2);
+
+    // A key without a file extension is only tried with suffixes.
+    let candidates = provider.candidate_paths("pkg/util");
+    assert!(candidates.iter().all(|path| path.extension().is_some()));
+
+    // A key that already has an extension also tries the literal path first.
+    let literal = provider.candidate_paths("pkg/util.lua");
+    assert_eq!(
+        literal.first(),
+        Some(&PathBuf::from("/tmp/r4-root/pkg/util.lua"))
+    );
+
+    // Current-directory components are ignored; `..` escapes are rejected.
+    let _ = provider.candidate_paths("./pkg/./util");
+    assert!(provider.candidate_paths("../etc/passwd").is_empty());
+    assert!(provider.path_for("does/not/exist").is_none());
+}
+
+#[test]
+fn memory_provider_and_analysis_cache() {
+    use r4::modules::{AnalysisCache, AnalyzedModule, MemoryModuleProvider, ModuleProvider};
+
+    let mut provider = MemoryModuleProvider::new();
+    provider.insert("a", "return 1");
+    assert_eq!(
+        provider.load("a").expect("load succeeds"),
+        Some("return 1".to_owned())
+    );
+    assert_eq!(provider.load("missing").expect("load succeeds"), None);
+
+    let (block, model) = analyze("return 1");
+    let mut cache = AnalysisCache::new();
+    assert!(cache.is_empty());
+    let stored = cache.insert(AnalyzedModule {
+        source: "return 1".to_owned(),
+        block,
+        model,
+    });
+    assert_eq!(cache.len(), 1);
+    assert!(cache.get("return 1").is_some());
+    assert!(cache.get("other").is_none());
+    assert_eq!(stored.source, "return 1");
+    cache.clear();
+    assert!(cache.is_empty());
+}
+
+#[test]
+fn classifies_require_call_shapes() {
+    use r4::modules::{classify_require_call, resolve_instance_path, InstanceSegment, RequireCall};
+    use r4::nodes::{Expression, FunctionCall, Statement};
+
+    fn call_and_model(code: &str) -> (FunctionCall, SemanticModel) {
+        let (block, model) = analyze(code);
+        for statement in block.iter_statements() {
+            if let Statement::LocalAssign(assign) = statement {
+                for value in assign.iter_values() {
+                    if let Expression::Call(call) = value {
+                        return ((**call).clone(), model);
+                    }
+                }
+            }
+        }
+        panic!("no call in `{code}`");
+    }
+
+    let (call, model) = call_and_model("local x = require(\"a.b\")");
+    assert_eq!(
+        classify_require_call(&call, &model),
+        RequireCall::Path {
+            path: "a.b".to_owned()
+        }
+    );
+
+    let (call, model) = call_and_model("local x = require(script.Parent.Util)");
+    let RequireCall::Instance { segments } = classify_require_call(&call, &model) else {
+        panic!("expected an instance path");
+    };
+    assert!(!segments.is_empty());
+
+    let (call, model) = call_and_model("local x = require(game:GetService(\"Players\"))");
+    let RequireCall::Instance { segments } = classify_require_call(&call, &model) else {
+        panic!("expected a service path");
+    };
+    assert!(segments.contains(&InstanceSegment::Service("Players".to_owned())));
+
+    let (call, model) = call_and_model("local x = require(name)");
+    assert_eq!(
+        classify_require_call(&call, &model),
+        RequireCall::NonLiteral
+    );
+
+    let (call, model) = call_and_model("local x = require({})");
+    assert_eq!(
+        classify_require_call(&call, &model),
+        RequireCall::NonLiteral
+    );
+
+    let (call, model) = call_and_model("local x = require(\"a\", \"b\")");
+    assert_eq!(
+        classify_require_call(&call, &model),
+        RequireCall::NonLiteral
+    );
+
+    let (call, model) = call_and_model("local x = notrequire(\"a\")");
+    assert_eq!(
+        classify_require_call(&call, &model),
+        RequireCall::NotRequire
+    );
+
+    let path = resolve_instance_path(
+        "script",
+        &[
+            InstanceSegment::Parent,
+            InstanceSegment::Child("Util".to_owned()),
+        ],
+    );
+    assert!(path.is_some());
+}
+
+#[test]
+fn module_and_bundle_errors_render() {
+    use r4::modules::{ModuleLoadError, ResolveError};
+    use r4::rules::require::BundleError;
+
+    let load = ModuleLoadError::Read {
+        key: "a".to_owned(),
+        message: "io".to_owned(),
+    };
+    assert_eq!(load.code(), "module/read");
+    assert!(!load.to_string().is_empty());
+
+    let resolve_errors = [
+        ResolveError::MissingModule {
+            path: "a".to_owned(),
+        },
+        ResolveError::CyclicRequire {
+            path: "a".to_owned(),
+        },
+        ResolveError::NonLiteralRequire {
+            module: "a".to_owned(),
+            line: Some(3),
+        },
+        ResolveError::NonLiteralRequire {
+            module: "a".to_owned(),
+            line: None,
+        },
+        ResolveError::ModuleLoad {
+            error: load.clone(),
+        },
+    ];
+    for error in resolve_errors {
+        assert!(!error.code().is_empty());
+        assert!(!error.to_string().is_empty());
+        let _ = error.to_diagnostic();
+    }
+
+    let bundle_errors = [
+        BundleError::MissingModule {
+            path: "a".to_owned(),
+        },
+        BundleError::CyclicRequire {
+            path: "a".to_owned(),
+        },
+        BundleError::NonLiteralRequire {
+            module: Some("a".to_owned()),
+            line: Some(2),
+        },
+        BundleError::NonLiteralRequire {
+            module: None,
+            line: None,
+        },
+        BundleError::DuplicateExportedType {
+            name: "T".to_owned(),
+        },
+        BundleError::UnimportedType {
+            module: "a".to_owned(),
+            name: "T".to_owned(),
+        },
+        BundleError::ModuleLoad { error: load },
+    ];
+    for error in bundle_errors {
+        assert!(!error.to_string().is_empty());
+    }
+}

@@ -1204,3 +1204,29 @@ fn unreachable_break_outside_loop_is_still_rejected() {
         r4::cfg::CfgErrorKind::BreakOutsideLoop
     ));
 }
+
+#[test]
+fn liveness_reads_every_prefix_and_type_shape() {
+    let (cfg, model) = build_with_tokens(
+        r#"
+        local a = 1
+        if condition then
+            f()()
+            (f)()
+            f<<T>>()
+            a.b()
+            a[1]()
+            local b = (a :: {number})
+            local d = (a :: number?)
+            local e = (a :: A & B)
+            return a, b, d, e
+        end
+        return a
+        "#,
+    );
+
+    let liveness = Liveness::analyze(&cfg, &model).expect("liveness must succeed");
+    let a = symbol_named(&model, "a");
+    let (then_block, _) = branch_blocks(&cfg, cfg.entry);
+    assert!(liveness.is_live_in(then_block, a));
+}

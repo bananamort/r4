@@ -239,3 +239,261 @@ fn type_pack_and_union_methods() {
 fn parse_is_referenced() {
     let _ = Parser::default();
 }
+
+#[test]
+fn table_type_modifier_and_token_methods() {
+    use r4::nodes::{
+        StringType, TableEntryType, TableIndexTypeTokens, TableIndexerType,
+        TableLiteralPropertyType, TablePropertyModifier, TablePropertyType,
+        TablePropertyTypeTokens, TableType, TableTypeTokens, Token,
+    };
+
+    let read = TablePropertyModifier::Read;
+    let write = TablePropertyModifier::Write;
+
+    // Named property (`name: Type`).
+    let mut property = TablePropertyType::new("name", number("number"));
+    assert!(property.get_modifier().is_none());
+    property.set_modifier(read.clone());
+    property.set_modifier(read.clone()); // equal modifier: early return
+    assert_eq!(property.get_modifier(), Some(&read));
+    property = property.with_tokens(TablePropertyTypeTokens {
+        colon: Token::from_content(":"),
+        modifier: Some(Token::from_content("read")),
+    });
+    property.set_modifier(write.clone()); // clears the stale modifier token
+    property.set_modifier(write.clone());
+    property.set_modifier(read.clone());
+    assert!(property.get_tokens().is_some());
+    property.remove_modifier();
+    property.remove_modifier();
+    assert!(property.get_modifier().is_none());
+    let _ = property.get_identifier();
+    let _ = property.get_type();
+    let _ = property.mutate_type();
+
+    // String literal property (`"key": Type`).
+    let mut literal = TableLiteralPropertyType::new(
+        StringType::new("\"key\"").expect("valid string type"),
+        number("number"),
+    );
+    literal.set_modifier(read.clone());
+    literal.set_modifier(read.clone());
+    literal = literal.with_tokens(TableIndexTypeTokens {
+        opening_bracket: Token::from_content("["),
+        closing_bracket: Token::from_content("]"),
+        colon: Token::from_content(":"),
+        modifier: Some(Token::from_content("read")),
+    });
+    literal.set_modifier(write.clone());
+    literal.remove_modifier();
+    assert!(literal.get_tokens().is_some());
+    let _ = literal.get_string();
+    let _ = literal.mutate_string();
+    let _ = literal.get_type();
+    let _ = literal.mutate_type();
+
+    // Indexer (`[K]: V`).
+    let mut indexer = TableIndexerType::new(number("string"), number("number"));
+    indexer.set_modifier(read.clone());
+    indexer.set_modifier(read.clone());
+    let indexer = indexer.with_modifier(write.clone());
+    assert_eq!(indexer.get_modifier(), Some(&write));
+    let _ = indexer.get_key_type();
+    let _ = indexer.get_value_type();
+
+    // Entry dispatch for every variant.
+    for mut entry in [
+        TableEntryType::Property(property.clone()),
+        TableEntryType::Literal(literal.clone()),
+        TableEntryType::Indexer(TableIndexerType::new(number("string"), number("number"))),
+    ] {
+        entry.set_modifier(read.clone());
+        entry.set_modifier(read.clone());
+        entry.remove_modifier();
+        let _ = entry.get_modifier();
+        entry.clear_comments();
+        entry.clear_whitespaces();
+        entry.remove_tokens();
+        let mut count = 0;
+        entry.for_each_token(&mut |_| count += 1);
+        let _ = count;
+        let _ = entry.with_modifier(write.clone());
+    }
+
+    // The table type container.
+    let mut table = TableType::default();
+    assert!(table.is_empty());
+    table.push_property(TableEntryType::from(property.clone()));
+    assert_eq!(table.len(), 1);
+    let mut table = table.with_new_property("other", number("string"));
+    table = table.with_property(TableEntryType::from(property.clone()));
+    // A string key becomes a literal property.
+    table = table.with_indexer_type(TableIndexerType::new(number("string"), number("number")));
+    // A non-string key installs (and replaces) a real indexer.
+    let _ = table.set_indexer_type(TableIndexerType::new(number("number"), number("number")));
+    let _ = table.set_indexer_type(TableIndexerType::new(number("number"), number("string")));
+    let _ = table.has_indexer_type();
+    let _ = table.iter_entries().count();
+    let _ = table.iter_mut_entries().count();
+    table = table.with_tokens(TableTypeTokens {
+        opening_brace: Token::from_content("{"),
+        closing_brace: Token::from_content("}"),
+        separators: vec![Token::from_content(",")],
+    });
+    let _ = table.get_tokens();
+    let _ = table.mutate_last_token();
+    table.clear_comments();
+    table.clear_whitespaces();
+    let mut count = 0;
+    table.for_each_token(&mut |_| count += 1);
+    table.remove_tokens();
+    let _ = count;
+}
+
+#[test]
+fn literal_expression_variant_and_token_methods() {
+    use r4::nodes::{
+        Expression, LiteralExpression, LiteralTable, LiteralTableEntry, LiteralTableFieldEntry,
+        NumberExpression, StringExpression, TableTokens, Token,
+    };
+
+    // Every LiteralExpression variant converts into an Expression.
+    for variant in [
+        LiteralExpression::True(None),
+        LiteralExpression::False(None),
+        LiteralExpression::nil(),
+        LiteralExpression::Number("1".parse::<NumberExpression>().expect("number")),
+        LiteralExpression::from(StringExpression::from_value("text")),
+        LiteralExpression::from(LiteralTable::default()),
+    ] {
+        let _: Expression = variant.into();
+    }
+    let _: Expression = Expression::from(LiteralExpression::nil());
+
+    // Build a field entry, then exercise its accessors.
+    let mut table = LiteralTable::from_entries(Vec::new());
+    table.append_field(Identifier::new("k"), LiteralExpression::nil());
+    table.append_array_value(LiteralExpression::from(true));
+    let field = match table.iter_entries().next().expect("one entry") {
+        LiteralTableEntry::Field(field) => (**field).clone(),
+        LiteralTableEntry::Value(_) => panic!("expected a field entry"),
+    };
+    let mut field: LiteralTableFieldEntry = field;
+    assert!(field.get_token().is_none());
+    field = field.with_token(Token::from_content("="));
+    assert!(field.get_token().is_some());
+    field.set_token(Token::from_content("="));
+    let _ = field.mutate_token();
+    let _ = field.get_field();
+    let _ = field.mutate_field();
+    let _ = field.get_value();
+    let _ = field.mutate_value();
+
+    // Entry enum conversions and token walks.
+    let mut entries = vec![
+        LiteralTableEntry::from(field.clone()),
+        LiteralTableEntry::from_value(LiteralExpression::nil()),
+    ];
+    for entry in &mut entries {
+        entry.clear_comments();
+        entry.clear_whitespaces();
+        let mut count = 0;
+        entry.for_each_token(&mut |_| count += 1);
+        let _ = count;
+    }
+
+    // Table accessors and tokens.
+    let mut table = LiteralTable::from_entries(entries);
+    let _ = table.len();
+    let _ = table.is_empty();
+    table = table.with_entry(LiteralTableEntry::from_value(LiteralExpression::nil()));
+    table.append_entry(LiteralTableEntry::from_value(LiteralExpression::from(
+        false,
+    )));
+    let _ = table.iter_entries().count();
+    let _ = table.iter_mut_entries().count();
+    table = table.with_tokens(TableTokens {
+        opening_brace: Token::from_content("{"),
+        closing_brace: Token::from_content("}"),
+        separators: vec![Token::from_content(",")],
+    });
+    assert!(table.get_tokens().is_some());
+    table.set_tokens(TableTokens {
+        opening_brace: Token::from_content("{"),
+        closing_brace: Token::from_content("}"),
+        separators: Vec::new(),
+    });
+    let mut count = 0;
+    table.for_each_token(&mut |_| count += 1);
+    table.clear_comments();
+    table.clear_whitespaces();
+    table.remove_tokens();
+    let _ = count;
+}
+
+#[test]
+fn interpolated_string_segment_methods() {
+    use r4::nodes::{
+        InterpolatedStringExpression, InterpolatedStringTokens, InterpolationSegment,
+        StringSegment, Token, ValueSegment, ValueSegmentTokens,
+    };
+
+    // String segment accessors.
+    let mut segment = StringSegment::new("hello").expect("valid segment");
+    assert_eq!(segment.get_string_value(), Some("hello"));
+    assert!(!segment.is_empty());
+    assert_eq!(segment.len(), 5);
+    let _ = segment.get_value();
+    segment = segment.with_token(Token::from_content("hello"));
+    assert!(segment.get_token().is_some());
+    segment.set_token(Token::from_content("hello"));
+    let _ = format!("{segment:?}");
+
+    // Value segment accessors.
+    let mut value = ValueSegment::new(Expression::identifier("a"));
+    let _ = value.get_expression();
+    let _ = value.mutate_expression();
+    value = value.with_tokens(ValueSegmentTokens {
+        opening_brace: Token::from_content("{"),
+        closing_brace: Token::from_content("}"),
+    });
+    assert!(value.get_tokens().is_some());
+    value.set_tokens(ValueSegmentTokens {
+        opening_brace: Token::from_content("{"),
+        closing_brace: Token::from_content("}"),
+    });
+
+    // Segment conversions.
+    let segments: Vec<InterpolationSegment> = vec![
+        InterpolationSegment::from(segment.clone()),
+        InterpolationSegment::from(value.clone()),
+        InterpolationSegment::from("literal"),
+        InterpolationSegment::from(&String::from("borrowed")),
+        InterpolationSegment::from(String::from("owned")),
+    ];
+
+    // Interpolated string expression.
+    let mut string = InterpolatedStringExpression::new(segments);
+    assert!(!string.is_empty());
+    assert_eq!(string.len(), 5);
+    string = string.with_segment(StringSegment::from_value("tail"));
+    let _ = string.iter_segments().count();
+    let _ = string.iter_mut_segments().count();
+    string = string.with_tokens(InterpolatedStringTokens {
+        opening_tick: Token::from_content("`"),
+        closing_tick: Token::from_content("`"),
+    });
+    assert!(string.get_tokens().is_some());
+    string.set_tokens(InterpolatedStringTokens {
+        opening_tick: Token::from_content("`"),
+        closing_tick: Token::from_content("`"),
+    });
+    let _ = string.mutate_first_token();
+    let _ = string.mutate_last_token();
+
+    let collected: InterpolatedStringExpression =
+        vec![InterpolationSegment::from("a")].into_iter().collect();
+    let _ = collected;
+    let _ = InterpolatedStringExpression::empty();
+}
