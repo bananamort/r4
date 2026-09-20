@@ -35,6 +35,18 @@ pub enum SymbolKind {
     Global,
 }
 
+impl SymbolKind {
+    /// Returns a stable human-readable name for this kind.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SymbolKind::Local => "local",
+            SymbolKind::Parameter => "parameter",
+            SymbolKind::Iteration => "iteration variable",
+            SymbolKind::Global => "global",
+        }
+    }
+}
+
 /// A symbol declared in the program.
 #[derive(Clone, Debug)]
 pub struct Symbol {

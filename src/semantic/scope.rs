@@ -37,6 +37,16 @@ impl ScopeKind {
     pub fn is_function_boundary(self) -> bool {
         matches!(self, ScopeKind::File | ScopeKind::Function)
     }
+
+    /// Returns a stable human-readable name for this scope kind.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ScopeKind::Global => "global",
+            ScopeKind::File => "file",
+            ScopeKind::Function => "function",
+            ScopeKind::Block => "block",
+        }
+    }
 }
 
 /// A lexical scope.

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::nodes::{Block, Identifier};
 
+use super::display::{SymbolDisplay, SymbolDisplayFormat};
 use super::error::SemanticQueryError;
 use super::label::{GotoBinding, GotoLabel, LabelId};
 use super::scope::{Scope, ScopeId, ScopeKind};
@@ -131,6 +132,24 @@ impl SemanticModel {
     #[inline]
     pub fn scope(&self, id: ScopeId) -> &Scope {
         &self.scopes[id.index()]
+    }
+
+    /// Returns a display for the symbol with the given identifier.
+    ///
+    /// The default format renders the symbol's name; use
+    /// [`SymbolDisplayFormat`] to include the declaration kind or the declaring
+    /// scope's kind.
+    pub fn display_symbol(&self, id: SymbolId) -> SymbolDisplay<'_> {
+        SymbolDisplay::local(self.symbol(id), self, SymbolDisplayFormat::default())
+    }
+
+    /// Returns a display for the symbol with the given identifier and format.
+    pub fn display_symbol_with(
+        &self,
+        id: SymbolId,
+        format: SymbolDisplayFormat,
+    ) -> SymbolDisplay<'_> {
+        SymbolDisplay::local(self.symbol(id), self, format)
     }
 
     /// Returns the label with the given identifier.

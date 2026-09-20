@@ -20,6 +20,7 @@ use crate::nodes::{
     Variable,
 };
 
+use super::display::{SymbolDisplay, SymbolDisplayFormat};
 use super::{Scope, ScopeId, SemanticModel, SymbolId, SymbolKind, TypeId};
 
 /// Identifies a module inside a [`MultiModuleModel`].
@@ -406,6 +407,30 @@ impl MultiModuleModel {
     /// Iterates over the shared global symbols in discovery order.
     pub fn globals(&self) -> impl Iterator<Item = &GlobalSymbol> {
         self.globals.iter()
+    }
+
+    /// Returns a display for a unified symbol reference.
+    ///
+    /// A global renders from its canonical global symbol; a lexical symbol
+    /// renders from the owning module's model, so its declaration kind and
+    /// declaring scope are exact.
+    pub fn display_symbol(&self, symbol: SymbolRef) -> SymbolDisplay<'_> {
+        self.display_symbol_with(symbol, SymbolDisplayFormat::default())
+    }
+
+    /// Returns a display for a unified symbol reference with the given format.
+    pub fn display_symbol_with(
+        &self,
+        symbol: SymbolRef,
+        format: SymbolDisplayFormat,
+    ) -> SymbolDisplay<'_> {
+        match symbol {
+            SymbolRef::Global(id) => SymbolDisplay::global(self.global(id), format),
+            SymbolRef::Local { module, symbol } => {
+                let model = &self.module(module).model;
+                SymbolDisplay::local(model.symbol(symbol), model, format)
+            }
+        }
     }
 
     /// Returns the canonical identity of a module-local symbol when it is a
