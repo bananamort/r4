@@ -58,7 +58,7 @@ impl SymbolDisplayFormat {
 /// A rendered symbol.
 ///
 /// Created by [`SemanticModel::display_symbol`] and
-/// [`MultiModuleModel::display_symbol`].
+/// [`MultiModuleModel::display_symbol`](crate::semantic::MultiModuleModel::display_symbol).
 #[derive(Clone, Debug)]
 pub struct SymbolDisplay<'a> {
     name: &'a str,

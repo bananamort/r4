@@ -30,10 +30,48 @@ use crate::Parser;
 /// The name of the global `require` function.
 pub const REQUIRE_NAME: &str = "require";
 
+/// An error produced while loading module source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModuleLoadError {
+    /// The provider found the module but could not read its source.
+    Read {
+        /// The normalized key that was requested.
+        key: String,
+        /// The underlying filesystem message.
+        message: String,
+    },
+}
+
+impl ModuleLoadError {
+    /// Returns a stable machine readable code for this error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ModuleLoadError::Read { .. } => "module/read",
+        }
+    }
+}
+
+impl std::fmt::Display for ModuleLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModuleLoadError::Read { key, message } => {
+                write!(f, "could not read module `{key}`: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ModuleLoadError {}
+
 /// Provides the source text of a module by its normalized key.
 pub trait ModuleProvider {
-    /// Returns the module source, or `None` when the module does not exist.
-    fn load(&self, key: &str) -> Option<String>;
+    /// Returns the module source.
+    ///
+    /// Returns `Ok(None)` when the module does not exist and
+    /// `Err(ModuleLoadError)` when it exists but its source could not be read
+    /// (for example a permission error or non-UTF-8 bytes), so a read failure
+    /// is never mistaken for a missing module.
+    fn load(&self, key: &str) -> Result<Option<String>, ModuleLoadError>;
 }
 
 /// A [`ModuleProvider`] backed by an in-memory map.
@@ -55,8 +93,8 @@ impl MemoryModuleProvider {
 }
 
 impl ModuleProvider for MemoryModuleProvider {
-    fn load(&self, key: &str) -> Option<String> {
-        self.modules.get(key).cloned()
+    fn load(&self, key: &str) -> Result<Option<String>, ModuleLoadError> {
+        Ok(self.modules.get(key).cloned())
     }
 }
 
@@ -174,8 +212,18 @@ impl FileSystemModuleProvider {
 }
 
 impl ModuleProvider for FileSystemModuleProvider {
-    fn load(&self, key: &str) -> Option<String> {
-        std::fs::read_to_string(self.path_for(key)?).ok()
+    fn load(&self, key: &str) -> Result<Option<String>, ModuleLoadError> {
+        let Some(path) = self.path_for(key) else {
+            return Ok(None);
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(source) => Ok(Some(source)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(ModuleLoadError::Read {
+                key: key.to_owned(),
+                message: error.to_string(),
+            }),
+        }
     }
 }
 
@@ -520,6 +568,11 @@ pub enum ResolveError {
         /// The normalized key that could not be loaded.
         path: String,
     },
+    /// A provider found a module but could not read its source.
+    ModuleLoad {
+        /// The load error.
+        error: ModuleLoadError,
+    },
     /// Modules require each other cyclically.
     CyclicRequire {
         /// The module that closes the cycle.
@@ -560,6 +613,7 @@ impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ResolveError::MissingModule { path } => write!(f, "module `{}` was not found", path),
+            ResolveError::ModuleLoad { error } => write!(f, "{}", error),
             ResolveError::CyclicRequire { path } => {
                 write!(f, "cyclic require involving module `{}`", path)
             }
@@ -588,6 +642,7 @@ impl ResolveError {
     pub fn code(&self) -> &'static str {
         match self {
             ResolveError::MissingModule { .. } => "module/missing",
+            ResolveError::ModuleLoad { .. } => "module/read",
             ResolveError::CyclicRequire { .. } => "module/cyclic-require",
             ResolveError::Parse { .. } => "module/parse",
             ResolveError::Analysis { .. } => "module/analysis",
@@ -707,12 +762,15 @@ impl<P: ModuleProvider> ResolveState<'_, P> {
             let target = if let Some(&target) = self.by_key.get(&normalized) {
                 target
             } else {
-                let source =
-                    self.provider
-                        .load(&normalized)
-                        .ok_or_else(|| ResolveError::MissingModule {
+                let source = match self.provider.load(&normalized) {
+                    Ok(Some(source)) => source,
+                    Ok(None) => {
+                        return Err(ResolveError::MissingModule {
                             path: normalized.clone(),
-                        })?;
+                        })
+                    }
+                    Err(error) => return Err(ResolveError::ModuleLoad { error }),
+                };
 
                 // Reuse a cached analysis of the same source when possible.
                 let analyzed = match self.cache.get(&source) {

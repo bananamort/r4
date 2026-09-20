@@ -2,7 +2,7 @@
 //!
 //! [`remove_dead_table_stores`] removes `table.field = value` assignments when
 //! the table is a *confined* local table (see
-//! [`EscapeAnalysis`](crate::semantic::EscapeAnalysis)) whose field is never
+//! [`crate::semantic::EscapeAnalysis`]) whose field is never
 //! read, and the assigned value has no side effects.
 //!
 //! The pass is deliberately conservative. It only fires when every occurrence

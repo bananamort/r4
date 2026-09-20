@@ -88,7 +88,7 @@ impl fmt::Display for TriviaError {
 impl std::error::Error for TriviaError {}
 
 /// An enum to represent source code text.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TriviaKind {
     /// A shebang line (`#!...`).
     ///
@@ -220,7 +220,7 @@ impl Trivia {
 
     /// Returns the kind of trivia.
     pub fn kind(&self) -> TriviaKind {
-        self.kind.clone()
+        self.kind
     }
 
     /// Returns the line number of the trivia, if available.
@@ -362,6 +362,21 @@ impl Token {
         }
     }
 
+    /// Reads the token's content from `source`, failing instead of panicking
+    /// when the recorded range is not a valid slice of `source`.
+    pub fn try_read_with<'a>(&'a self, source: &'a str) -> Result<&'a str, TriviaError> {
+        match &self.position {
+            Position::LineNumberReference { start, end, .. } => {
+                source.get(*start..*end).ok_or(TriviaError::InvalidRange {
+                    start: *start,
+                    end: *end,
+                    length: source.len(),
+                })
+            }
+            Position::LineNumber { content, .. } | Position::Any { content } => Ok(content),
+        }
+    }
+
     /// Returns the line number of the token, if available.
     pub fn get_line_number(&self) -> Option<usize> {
         match &self.position {
@@ -439,7 +454,7 @@ impl Token {
     /// The token becomes the canonical content-free token
     /// ([`Position::Any`] with empty content and no trivia). This is how a
     /// token is erased when building a token-insensitive view of a tree for
-    /// structural comparison; see [`Block::is_equivalent_to`](crate::nodes::Block::is_equivalent_to).
+    /// structural comparison; see [`Equivalent::is_equivalent_to`](crate::Equivalent::is_equivalent_to).
     pub fn remove_tokens(&mut self) {
         self.leading_trivia.clear();
         self.trailing_trivia.clear();
@@ -448,7 +463,6 @@ impl Token {
         };
     }
 
-    #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         self.leading_trivia
             .retain(|trivia| !trivia.kind().is_comment() || filter(trivia));
@@ -456,7 +470,6 @@ impl Token {
             .retain(|trivia| !trivia.kind().is_comment() || filter(trivia));
     }
 
-    #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         if let Position::LineNumberReference {
             start,
@@ -496,7 +509,6 @@ impl Token {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn shift_token_line(&mut self, amount: isize) {
         match &mut self.position {
             Position::LineNumberReference { line_number, .. }

@@ -226,7 +226,6 @@ impl TableEntry {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
             TableEntry::Field(entry) => entry.replace_referenced_tokens(code),
@@ -235,7 +234,6 @@ impl TableEntry {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn shift_token_line(&mut self, amount: isize) {
         match self {
             TableEntry::Field(entry) => entry.shift_token_line(amount),
@@ -244,7 +242,6 @@ impl TableEntry {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         match self {
             TableEntry::Field(entry) => entry.filter_comments(filter),

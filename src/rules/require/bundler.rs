@@ -79,6 +79,11 @@ pub enum BundleError {
         /// The type name.
         name: String,
     },
+    /// A provider found a module but could not read its source.
+    ModuleLoad {
+        /// The load error.
+        error: crate::modules::ModuleLoadError,
+    },
     /// A cross-module reference could not be resolved by identity.
     Module(ModuleError),
     /// A `require` call could not be converted.
@@ -89,6 +94,7 @@ impl From<ResolveError> for BundleError {
     fn from(error: ResolveError) -> Self {
         match error {
             ResolveError::MissingModule { path } => BundleError::MissingModule { path },
+            ResolveError::ModuleLoad { error } => BundleError::ModuleLoad { error },
             ResolveError::CyclicRequire { path } => BundleError::CyclicRequire { path },
             ResolveError::Parse { path, error } => BundleError::Parse { path, error },
             ResolveError::Analysis { path, error } => BundleError::Analysis { path, error },
@@ -105,6 +111,7 @@ impl fmt::Display for BundleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BundleError::MissingModule { path } => write!(f, "module `{}` was not found", path),
+            BundleError::ModuleLoad { error } => write!(f, "{}", error),
             BundleError::CyclicRequire { path } => {
                 write!(f, "cyclic require involving module `{}`", path)
             }

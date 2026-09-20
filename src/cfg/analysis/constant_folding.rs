@@ -29,7 +29,7 @@ pub fn fold_constant_branches(cfg: &mut ControlFlowGraph) -> usize {
 ///
 /// This is the entry point for constant propagation: callers can resolve
 /// identifiers through a reaching-definition environment (see
-/// [`Super::fold_constant_branches_with_propagation`]).
+/// [`fold_constant_branches_with_propagation`](crate::cfg::analysis::fold_constant_branches_with_propagation)).
 pub fn fold_constant_branches_with<F>(cfg: &mut ControlFlowGraph, mut condition_value: F) -> usize
 where
     F: FnMut(BlockId, &Expression) -> Option<bool>,

@@ -9,7 +9,7 @@
 //! independently usable.
 //!
 //! Analysis is incremental: parsed and analyzed sources are kept in a
-//! content-addressed [`AnalysisCache`](crate::modules::AnalysisCache), so
+//! content-addressed [`crate::modules::AnalysisCache`], so
 //! adding or updating a tree whose source is unchanged reuses the previous
 //! analysis, and resolving a module graph reuses the analyses of unchanged
 //! dependencies.

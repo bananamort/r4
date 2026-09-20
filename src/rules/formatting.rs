@@ -2,7 +2,7 @@
 //!
 //! These passes manipulate the raw tokens attached to nodes (comments,
 //! whitespace, line numbers and token content). They are deliberately kept
-//! separate from the semantic passes in [`crate::rules::canonicalize`] and
+//! separate from the semantic passes in [`crate::rules::canonicalize`](mod@crate::rules::canonicalize) and
 //! [`crate::rules::desugar`]: trivia manipulation never consults a
 //! [`SemanticModel`](crate::semantic::SemanticModel) and never changes the
 //! structure of the syntax tree.

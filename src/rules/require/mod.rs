@@ -16,5 +16,6 @@ pub use bundler::{bundle_modules, BundleError};
 pub use convert::{convert_require, ConvertRequireError, RequirePathConverter};
 
 pub use crate::modules::{
-    classify_require_call, MemoryModuleProvider, ModuleProvider, RequireCall, REQUIRE_NAME,
+    classify_require_call, MemoryModuleProvider, ModuleLoadError, ModuleProvider, RequireCall,
+    REQUIRE_NAME,
 };

@@ -12,6 +12,8 @@
 //! The traversal is read-only and never guesses: it reports exactly the trivia
 //! the parser attached, in source order, without duplicates.
 
+use std::collections::HashSet;
+
 use crate::nodes::{
     Block, Expression, LastStatement, Prefix, Statement, Token, Trivia, Type, Variable,
 };
@@ -28,15 +30,18 @@ pub fn for_each_trivia(block: &Block, f: &mut impl FnMut(&Trivia)) {
 /// Collects every piece of trivia in `block`, deduplicated and in source order.
 ///
 /// Tokens without source positions (synthesized by a pass) sort last and keep
-/// their traversal order.
+/// their traversal order. Deduplication is linear in the number of trivia.
 pub fn collect_trivia(block: &Block) -> Vec<Trivia> {
+    let mut seen = HashSet::new();
     let mut trivia = Vec::new();
     for_each_token(block, &mut |token| {
-        for piece in token.iter_leading_trivia() {
-            push_unique(&mut trivia, piece);
-        }
-        for piece in token.iter_trailing_trivia() {
-            push_unique(&mut trivia, piece);
+        for piece in token
+            .iter_leading_trivia()
+            .chain(token.iter_trailing_trivia())
+        {
+            if seen.insert(TriviaKey::of(piece)) {
+                trivia.push(piece.clone());
+            }
         }
     });
     trivia.sort_by_key(|piece| {
@@ -48,6 +53,41 @@ pub fn collect_trivia(block: &Block) -> Vec<Trivia> {
     trivia
 }
 
+/// A hashable identity for a piece of trivia.
+///
+/// Positioned trivia (parsed from source) are identified by their recorded
+/// range; synthesized trivia are identified by their content.
+#[derive(Hash, PartialEq, Eq)]
+enum TriviaKey {
+    Positioned {
+        kind: crate::nodes::TriviaKind,
+        start: usize,
+        end: usize,
+        line: usize,
+    },
+    Content {
+        kind: crate::nodes::TriviaKind,
+        content: String,
+    },
+}
+
+impl TriviaKey {
+    fn of(piece: &Trivia) -> Self {
+        match (piece.get_start(), piece.get_end()) {
+            (Some(start), Some(end)) => TriviaKey::Positioned {
+                kind: piece.kind(),
+                start,
+                end,
+                line: piece.get_line_number().unwrap_or(usize::MAX),
+            },
+            _ => TriviaKey::Content {
+                kind: piece.kind(),
+                content: piece.try_read().unwrap_or("").to_owned(),
+            },
+        }
+    }
+}
+
 /// Passes every token in `block` to `f`.
 ///
 /// A token can be reached through more than one path (a node the read-only
@@ -56,12 +96,6 @@ pub fn collect_trivia(block: &Block) -> Vec<Trivia> {
 /// that need a unique token stream should collect and deduplicate.
 pub(crate) fn for_each_token(block: &Block, f: &mut impl FnMut(&Token)) {
     Walk::visit_block(block, &mut TokenWalk { f });
-}
-
-fn push_unique(trivia: &mut Vec<Trivia>, piece: &Trivia) {
-    if !trivia.contains(piece) {
-        trivia.push(piece.clone());
-    }
 }
 
 struct TokenWalk<'a, F> {

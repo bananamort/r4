@@ -83,8 +83,7 @@ macro_rules! impl_token_fns {
             )*)?
         }
 
-        #[allow(dead_code)]
-        pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
+                pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
             $(
                 self.$field.replace_referenced_tokens(code);
             )*
@@ -105,8 +104,7 @@ macro_rules! impl_token_fns {
             )*)?
         }
 
-        #[allow(dead_code)]
-        pub(crate) fn shift_token_line(&mut self, amount: isize) {
+                pub(crate) fn shift_token_line(&mut self, amount: isize) {
             $(
                 self.$field.shift_token_line(amount);
             )*
@@ -127,8 +125,7 @@ macro_rules! impl_token_fns {
             )*)?
         }
 
-        #[allow(dead_code)]
-        pub(crate) fn filter_comments(&mut self, filter: impl Fn(&crate::nodes::Trivia) -> bool) {
+                pub(crate) fn filter_comments(&mut self, filter: impl Fn(&crate::nodes::Trivia) -> bool) {
             $(
                 self.$field.filter_comments(&filter);
             )*
@@ -156,9 +153,8 @@ macro_rules! impl_token_fns {
         /// emptied, and the listed `children` are detokenized recursively.
         /// The node keeps its structure, so two trees that differ only in
         /// trivia, source positions or token presence become equal. This backs
-        /// [`Block::is_equivalent_to`](crate::nodes::Block::is_equivalent_to).
-        #[allow(dead_code)]
-        pub fn remove_tokens(&mut self) {
+        /// [`Equivalent::is_equivalent_to`](crate::Equivalent::is_equivalent_to).
+                pub fn remove_tokens(&mut self) {
             $(
                 self.$field.remove_tokens();
             )*
@@ -180,8 +176,7 @@ macro_rules! impl_token_fns {
         /// Direct token fields and iterable token containers are visited, and
         /// the listed `children` are visited recursively. Use [`collect_trivia`](crate::process::collect_trivia)
         /// for a deduplicated, source-ordered view of a tree's trivia.
-        #[allow(dead_code)]
-        pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
+                pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
             $(
                 self.$field.for_each_token(f);
             )*

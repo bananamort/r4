@@ -67,7 +67,7 @@ pub(crate) fn read_escaped_string(
                     'f' => value.extend("\u{C}".as_bytes()),
                     'r' => value.push(b'\r'),
                     first_digit if first_digit.is_ascii_digit() => {
-                        let number = read_number(&mut chars, Some(first_digit), 10, 3);
+                        let number = read_number(&mut chars, Some(first_digit), Radix::Decimal, 3);
 
                         if number < 256 {
                             value.push(number as u8);
@@ -109,7 +109,7 @@ pub(crate) fn read_escaped_string(
                             ));
                         }
 
-                        let number = read_number(&mut chars, None, 16, 8);
+                        let number = read_number(&mut chars, None, Radix::Hex, 8);
 
                         if !contains(&chars.next().map(|(_, c)| c), &'}') {
                             return Err(StringError::malformed_escape_sequence(
@@ -168,26 +168,49 @@ pub(crate) fn read_escaped_string(
     Ok(value)
 }
 
+/// The radix of an escape-sequence number.
+#[derive(Copy, Clone)]
+enum Radix {
+    /// Decimal, used by `\ddd`.
+    Decimal,
+    /// Hexadecimal, used by `\xdd` and `\u{...}`.
+    Hex,
+}
+
+impl Radix {
+    /// Returns the numeric radix.
+    const fn value(self) -> u32 {
+        match self {
+            Radix::Decimal => 10,
+            Radix::Hex => 16,
+        }
+    }
+
+    /// Returns whether `character` is a digit of this radix.
+    fn is_digit(self, character: char) -> bool {
+        match self {
+            Radix::Decimal => character.is_ascii_digit(),
+            Radix::Hex => character.is_ascii_hexdigit(),
+        }
+    }
+}
+
 fn read_number(
     chars: &mut Peekable<CharIndices>,
     first_digit: Option<char>,
-    radix: u32,
+    radix: Radix,
     max: usize,
 ) -> u32 {
-    let filter = match radix {
-        10 => char::is_ascii_digit,
-        16 => char::is_ascii_hexdigit,
-        _ => panic!("unsupported radix {}", radix),
-    };
+    let filter = |character: &char| radix.is_digit(*character);
     let mut amount = first_digit
-        .map(|char| char.to_digit(radix).unwrap())
+        .and_then(|character| character.to_digit(radix.value()))
         .unwrap_or(0);
     let mut iteration_count: usize = first_digit.is_some().into();
 
     while let Some(next_digit) = chars.peek().map(|(_, c)| *c).filter(filter) {
         chars.next();
 
-        amount = amount * radix + next_digit.to_digit(radix).unwrap();
+        amount = amount * radix.value() + next_digit.to_digit(radix.value()).unwrap_or(0);
         iteration_count += 1;
 
         if iteration_count >= max {

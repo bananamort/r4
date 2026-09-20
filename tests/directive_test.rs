@@ -253,3 +253,15 @@ fn shebang_survives_comment_removal_and_token_generation() {
     );
     assert!(!output.contains("-- a comment"), "comment kept: {output}");
 }
+
+#[test]
+fn token_read_fails_fast_on_an_invalid_range() {
+    let token = r4::nodes::Token::new_with_line(0, 100, 1);
+    assert!(matches!(
+        token.try_read_with("short"),
+        Err(TriviaError::InvalidRange { .. })
+    ));
+
+    let token = r4::nodes::Token::from_content("local");
+    assert_eq!(token.try_read_with("").expect("synthesized token"), "local");
+}

@@ -7,7 +7,7 @@
 //! was preserved at all.
 //!
 //! The comparison is exact, not a canonical rendering: it clones both trees,
-//! erases every token with [`detokenize`](crate::process::detokenize) and
+//! erases every token with [`crate::process::detokenize`] and
 //! compares the resulting trees with the derived structural `PartialEq`. A
 //! field that is not erased by detokenization takes part in the comparison, so
 //! the relation can never report two structurally different trees as

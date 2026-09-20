@@ -231,7 +231,6 @@ impl TypeDeclarationStatement {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         self.name.replace_referenced_tokens(code);
         if let Some(tokens) = &mut self.tokens {
@@ -259,7 +258,6 @@ impl TypeDeclarationStatement {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn shift_token_line(&mut self, amount: isize) {
         self.name.shift_token_line(amount);
         if let Some(tokens) = &mut self.tokens {
@@ -287,7 +285,6 @@ impl TypeDeclarationStatement {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         self.name.filter_comments(&filter);
         if let Some(tokens) = &mut self.tokens {

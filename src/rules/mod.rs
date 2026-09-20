@@ -4,7 +4,7 @@
 //! [`crate::semantic`] and [`crate::cfg`]. The passes are split into:
 //!
 //! * [`desugar`]: lower modern Luau syntax to vanilla Lua constructs.
-//! * [`canonicalize`]: normalize equivalents syntax forms without changing
+//! * [`canonicalize`](mod@crate::rules::canonicalize): normalize equivalent syntax forms without changing
 //!   behavior.
 //! * [`rename_variables`]: host environment knowledge used by renaming passes.
 

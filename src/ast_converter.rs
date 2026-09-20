@@ -3005,7 +3005,9 @@ impl<'a> AstConverter<'a> {
                     Ok(None)
                 }
             }
-            _ => unreachable!(),
+            _ => Err(ConvertError::InterpolatedString {
+                string: token.to_string(),
+            }),
         }
     }
 }

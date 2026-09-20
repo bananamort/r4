@@ -191,16 +191,14 @@ pub(crate) fn link_exported_values(
 }
 
 fn is_stable_alias(model: &SemanticModel, analysis: &EscapeAnalysis, symbol: SymbolId) -> bool {
-    let hard_escape_free = analysis
-        .info(symbol)
-        .map(|info| info.hard_escapes == 0)
-        .unwrap_or(true);
-    hard_escape_free
+    // A symbol with no escape facts cannot be proven stable, so it is not
+    // linked; prove stability from recorded facts rather than assuming it.
+    let Some(info) = analysis.info(symbol) else {
+        return false;
+    };
+    info.hard_escapes == 0
         && !analysis.has_dynamic_write(symbol)
-        && analysis
-            .info(symbol)
-            .map(|info| info.field_writes.is_empty())
-            .unwrap_or(true)
+        && info.field_writes.is_empty()
         && !model.symbol(symbol).is_captured()
         && model.is_immutable(symbol)
 }
