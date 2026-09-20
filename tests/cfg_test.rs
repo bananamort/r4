@@ -1423,3 +1423,91 @@ fn constant_propagation_handles_function_definitions_and_tuples() {
         let _ = analysis.block_exit_constants(cfg.entry);
     }
 }
+
+#[test]
+fn cfg_invariant_violations_are_detected() {
+    use r4::cfg::{BlockId, InvariantViolation, Terminator};
+
+    fn violations(cfg: &ControlFlowGraph) -> Vec<InvariantViolation> {
+        cfg.verify_invariants().expect_err("must report violations")
+    }
+
+    let base = || build("if c then a() else b() end\nreturn 0").0;
+
+    let mut cfg = base();
+    let entry = cfg.entry;
+    let successor = cfg.blocks[entry.index()].successors[0];
+    cfg.blocks[entry.index()].successors.push(successor);
+    assert!(violations(&cfg)
+        .iter()
+        .any(|v| matches!(v, InvariantViolation::DuplicateSuccessor { .. })));
+
+    let mut cfg = base();
+    let block = cfg
+        .blocks
+        .iter()
+        .position(|block| !block.predecessors.is_empty())
+        .expect("a block with a predecessor");
+    let predecessor = cfg.blocks[block].predecessors[0];
+    cfg.blocks[block].predecessors.push(predecessor);
+    assert!(violations(&cfg)
+        .iter()
+        .any(|v| matches!(v, InvariantViolation::DuplicatePredecessor { .. })));
+
+    let mut cfg = base();
+    let with_statements = cfg
+        .blocks
+        .iter()
+        .position(|block| !block.statements.is_empty())
+        .expect("a block with statements");
+    cfg.blocks[with_statements].statement_origins.clear();
+    assert!(violations(&cfg)
+        .iter()
+        .any(|v| matches!(v, InvariantViolation::StatementOriginMismatch { .. })));
+
+    let mut cfg = base();
+    cfg.blocks[entry.index()].successors.push(BlockId(9999));
+    assert!(violations(&cfg)
+        .iter()
+        .any(|v| matches!(v, InvariantViolation::DanglingSuccessor { .. })));
+
+    let mut cfg = base();
+    cfg.blocks[0].predecessors.push(BlockId(9999));
+    assert!(violations(&cfg)
+        .iter()
+        .any(|v| matches!(v, InvariantViolation::DanglingPredecessor { .. })));
+
+    let mut cfg = base();
+    let successor = cfg.blocks[entry.index()].successors[0];
+    cfg.blocks[successor.index()]
+        .predecessors
+        .retain(|candidate| *candidate != entry);
+    assert!(violations(&cfg)
+        .iter()
+        .any(|v| matches!(v, InvariantViolation::MissingPredecessor { .. })));
+
+    let mut cfg = base();
+    let mut missing_successor = None;
+    'outer: for block in 0..cfg.blocks.len() {
+        for candidate in 0..cfg.blocks.len() {
+            let id = BlockId(candidate as u32);
+            if !cfg.blocks[block].predecessors.contains(&id)
+                && !cfg.blocks[block].successors.contains(&id)
+            {
+                missing_successor = Some((block, id));
+                break 'outer;
+            }
+        }
+    }
+    let (block, candidate) = missing_successor.expect("a non-adjacent block pair");
+    cfg.blocks[block].predecessors.push(candidate);
+    assert!(violations(&cfg)
+        .iter()
+        .any(|v| matches!(v, InvariantViolation::MissingSuccessor { .. })));
+
+    let mut cfg = base();
+    cfg.blocks[entry.index()].terminator = Terminator::Return(None);
+    assert!(violations(&cfg)
+        .iter()
+        .any(|v| matches!(v, InvariantViolation::TerminatorMismatch { .. })));
+}
