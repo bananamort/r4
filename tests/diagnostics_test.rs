@@ -142,3 +142,49 @@ fn diagnostics_can_be_rendered_through_the_compilation() {
         "{rendered}"
     );
 }
+
+#[test]
+fn diagnostic_builders_and_positions_are_covered() {
+    use r4::diagnostic::{LinePosition, LinePositionSpan, Severity, TextSpan};
+    use r4::Diagnostic;
+
+    for severity in [Severity::Error, Severity::Warning, Severity::Info] {
+        assert!(!severity.as_str().is_empty());
+        assert!(!severity.to_string().is_empty());
+    }
+
+    let span = TextSpan::new(2, 5);
+    assert_eq!(span.start, 2);
+    assert_eq!(span.end, 5);
+    assert_eq!(span.len(), 3);
+    assert!(span.contains(2));
+    assert!(!span.contains(5));
+    assert!(TextSpan::new(5, 5).is_empty());
+
+    let start = LinePosition::new(1, 1);
+    let end = LinePosition::new(1, 4);
+    assert_eq!(start.line, 1);
+    assert_eq!(start.column, 1);
+    assert!(!start.to_string().is_empty());
+    let location = LinePositionSpan::new(start, end);
+    assert!(!location.to_string().is_empty());
+
+    let message = Diagnostic::warning("careful")
+        .with_code("custom/warning")
+        .with_optional_span(Some(span))
+        .with_optional_location(Some(location))
+        .with_message("changed");
+    assert_eq!(message.severity, Severity::Warning);
+    assert_eq!(message.message, "changed");
+    assert!(!Diagnostic::info("note").to_string().is_empty());
+
+    // Resolving a location from a source span.
+    let resolved = Diagnostic::error("boom")
+        .with_span(span)
+        .resolve_location("abcdefg");
+    assert!(resolved.location.is_some());
+
+    // The descriptor lookup and formatting of an unknown code.
+    let descriptor = r4::diagnostic::descriptor_for("custom/warning");
+    let _ = descriptor;
+}

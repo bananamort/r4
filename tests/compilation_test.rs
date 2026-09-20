@@ -138,3 +138,46 @@ fn semantic_errors_convert_to_diagnostics() {
     assert_eq!(diagnostic.code, Some("semantic/unresolved-type"));
     assert!(diagnostic.message.contains("Missing"));
 }
+
+#[test]
+fn compilation_api_surface_is_covered() {
+    use r4::semantic::SemanticOptions;
+    use r4::{Compilation, Parser};
+
+    let mut compilation = Compilation::with_options(SemanticOptions {
+        strict_globals: false,
+        strict_types: false,
+    });
+    assert!(!compilation.options().strict_globals);
+    assert_eq!(compilation.diagnostics().len(), 0);
+
+    compilation.set_parser(Parser::default().lua52());
+    assert_eq!(compilation.parser().get_dialect(), r4::Dialect::Lua52);
+
+    let tree = compilation.add_tree("return 1").expect("the tree is added");
+    if let Some(tree_ref) = compilation.tree(tree) {
+        let location = tree_ref.location(r4::diagnostic::TextSpan::new(0, 6));
+        assert_eq!(location.start.line, 1);
+    }
+    let _ = compilation.block(tree);
+    let _ = compilation.model(tree);
+
+    // Unknown tree identifiers are typed errors.
+    let missing = r4::TreeId(9999);
+    assert!(compilation.block(missing).is_none());
+    assert!(compilation.refresh_tree(missing).is_err());
+    assert!(compilation.update_tree(missing, "return 2").is_err());
+
+    // A parse failure is recorded with a resolved location.
+    let error = compilation
+        .add_tree("local x = ")
+        .expect_err("invalid code fails");
+    assert_eq!(error.code, Some("parse/syntax"));
+    assert!(!compilation.diagnostics().is_empty());
+
+    // A recovering parse stores the recovered tree.
+    let recovered = compilation
+        .add_tree_recovering("return 1 + ")
+        .expect("recovery stores the tree");
+    assert!(compilation.block(recovered).is_some());
+}

@@ -158,6 +158,13 @@ impl Compilation {
     /// The tree keeps its identifier. On failure the diagnostic is recorded and
     /// the previous tree is left untouched.
     pub fn update_tree(&mut self, id: TreeId, source: impl Into<String>) -> Result<(), Diagnostic> {
+        if self.tree(id).is_none() {
+            let diagnostic = Diagnostic::error(format!("unknown tree identifier {:?}", id))
+                .with_code("compile/unknown-tree");
+            self.diagnostics.push(diagnostic.clone());
+            return Err(diagnostic);
+        }
+
         let source = source.into();
         if self.tree(id).map(SyntaxTree::source) == Some(source.as_str()) {
             return Ok(());
