@@ -677,3 +677,26 @@ fn comments_drive_trivia_conversion() {
         DefaultVisitor::visit_block(&mut tokens.clone(), &mut Count);
     }
 }
+
+#[test]
+fn semantic_walker_handles_type_packs_and_annotations() {
+    for code in [
+        "local f: <T>(T) -> T = g\nreturn f",
+        "local x: (...number) -> ...string = f\nreturn x",
+        "local y: <T...>(T...) -> T... = g\nreturn y",
+        "type T = A<(number), string>\nreturn 1",
+        "type U = A<...number>\nreturn 1",
+        "type V = A<T...>\nreturn 1",
+        "type W = typeof(x)\nreturn W",
+        "type X = { a: number, [string]: number }\nreturn 1",
+        "local z: number? = nil\nreturn z",
+        "local w: number & string = 1\nreturn w",
+        "local q: (number) -> (string, boolean) = f\nreturn q",
+        "type Y = { [number]: string }\nreturn 1",
+    ] {
+        let _ = Parser::default()
+            .dialect(Dialect::Luau)
+            .parse_analyzed(code)
+            .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"));
+    }
+}

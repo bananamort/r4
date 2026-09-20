@@ -605,3 +605,30 @@ fn type_declaration_token_methods() {
     declaration.remove_tokens();
     let _ = format!("{declaration:?}");
 }
+
+#[test]
+fn attribute_arguments_methods() {
+    use r4::nodes::{
+        AttributeArguments, AttributeTupleArguments, LiteralExpression, LiteralTable,
+        StringExpression,
+    };
+
+    let mut tuple = AttributeTupleArguments::default();
+    tuple.push(LiteralExpression::nil());
+    let tuple = tuple.with_value(LiteralExpression::from(true));
+
+    let mut arguments: Vec<AttributeArguments> = vec![
+        AttributeArguments::from(tuple),
+        AttributeArguments::from(StringExpression::from_value("s")),
+        AttributeArguments::from(LiteralTable::default()),
+    ];
+    for argument in &mut arguments {
+        argument.clear_comments();
+        argument.clear_whitespaces();
+        argument.remove_tokens();
+        let mut count = 0;
+        argument.for_each_token(&mut |_| count += 1);
+        let _ = count;
+        let _ = format!("{argument:?}");
+    }
+}
