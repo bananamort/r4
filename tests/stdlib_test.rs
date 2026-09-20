@@ -112,3 +112,36 @@ fn dead_aliased_stdlib_results_are_removed() {
     let output = remove_unused("local m = math\nlocal x = m.floor(1.5)\nreturn 0");
     assert!(!output.contains("m.floor"), "{output}");
 }
+
+#[test]
+fn classifies_pure_and_impure_calls() {
+    use r4::process::Evaluator;
+    use r4::semantic::has_side_effects;
+
+    for (code, pure) in [
+        ("return math.sqrt(16)", true),
+        ("return string.format('%d', 1)", true),
+        ("return table.concat({})", true),
+        ("return bit32.band(1, 2)", true),
+        ("return print(1)", false),
+        ("return obj:method()", false),
+        ("return unknown(1)", false),
+        ("return (math).sqrt(1)", false),
+    ] {
+        let (block, model) = analyze(code);
+        assert_eq!(
+            call_is_pure(&model, returned_call(&block)),
+            pure,
+            "`{code}`"
+        );
+    }
+
+    let evaluator = Evaluator::default();
+    let (block, model) = analyze("return math.sqrt(16)");
+    let pure = Expression::from(returned_call(&block).clone());
+    assert!(!has_side_effects(&model, &evaluator, &pure));
+
+    let (block, model) = analyze("return print(1)");
+    let impure = Expression::from(returned_call(&block).clone());
+    assert!(has_side_effects(&model, &evaluator, &impure));
+}

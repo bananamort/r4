@@ -678,3 +678,66 @@ fn multi_module_resolves_identifier_occurrences() {
     let fresh = r4::nodes::Identifier::new("never");
     assert_eq!(graph.resolve_identifier(a, &fresh), None);
 }
+
+#[test]
+fn whole_program_index_accessors() {
+    use r4::semantic::MultiModuleModel;
+
+    let mut graph = MultiModuleModel::new();
+    let (block_a, model_a) = analyze("print(1)\nlocal x = 1\nreturn x");
+    let (block_b, model_b) = analyze("print(2)\nreturn 2");
+    let _a = graph.add_module("a", block_a, model_a).expect("module a");
+    let _b = graph.add_module("b", block_b, model_b).expect("module b");
+
+    let index = graph.whole_program_index();
+    let print = graph.global_symbol("print").expect("print is a global");
+
+    assert!(index.global_count() >= 1);
+    assert!(!index.globals().is_empty());
+    assert!(index.global(print).is_some());
+    assert!(!index.global_uses(print).is_empty());
+    assert_eq!(index.global_rank(print), 0);
+
+    assert!(index.local_count() >= 1);
+    assert!(!index.locals().is_empty());
+    let local = index.local(0).expect("a local");
+    assert_eq!(index.local_rank(local), Some(0));
+    assert_eq!(index.dense_rank(local), Some(1));
+    assert!(!index.is_global(local));
+    assert_eq!(index.global_of(local), None);
+    assert!(index.dense_len() >= 1);
+
+    assert_eq!(index.type_count(), index.types().len());
+    assert_eq!(index.label_count(), index.labels().len());
+    let _ = index.type_at(0);
+    let _ = index.label_at(0);
+}
+
+#[test]
+fn whole_program_index_types_and_labels() {
+    use r4::semantic::MultiModuleModel;
+
+    let mut typed = MultiModuleModel::new();
+    let (block, model) = analyze("type T = number\nlocal x: T = 1\nreturn x");
+    let _ = typed.add_module("t", block, model).expect("module t");
+    let index = typed.whole_program_index();
+    assert_eq!(index.type_count(), index.types().len());
+    if let Some(qualified) = index.type_at(0) {
+        assert_eq!(index.type_rank(qualified), Some(0));
+        let _ = index.type_symbol(&typed, qualified);
+    }
+
+    let block = Parser::default()
+        .lua52()
+        .parse("::top::\ngoto top")
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
+    let mut labeled = MultiModuleModel::new();
+    let _ = labeled.add_module("l", block, model).expect("module l");
+    let index = labeled.whole_program_index();
+    assert_eq!(index.label_count(), index.labels().len());
+    if let Some(qualified) = index.label_at(0) {
+        assert_eq!(index.label_rank(qualified), Some(0));
+        let _ = index.goto_label(&labeled, qualified);
+    }
+}
