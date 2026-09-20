@@ -1226,3 +1226,26 @@ fn strict_typing_resolves_aliases_in_type_declarations() {
     let base_id = model.resolve_type(base.get_name()).expect("Base resolves");
     assert_eq!(model.type_symbol(base_id).name, "Base");
 }
+
+#[test]
+fn semantic_walker_handles_labels_and_generic_pack_types() {
+    // Labels and gotos are Lua 5.2 syntax.
+    let (block, model) = Parser::default()
+        .lua52()
+        .parse_analyzed("::top::\ngoto top\nreturn 1")
+        .expect("labels analyze");
+    assert!(!model.goto_bindings.is_empty());
+    assert!(!block.is_empty());
+
+    for code in [
+        "local f: (A...) -> () = g\nreturn f",
+        "local f: () -> A... = g\nreturn f",
+        "local f: <A...>(A...) -> A... = g\nreturn f",
+        "type T = A<B...>\nreturn 1",
+        "local x: A<(number)> = y\nreturn x",
+    ] {
+        let _ = Parser::default()
+            .parse_analyzed(code)
+            .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"));
+    }
+}
