@@ -803,3 +803,117 @@ fn type_cast_with_parentheses_is_synthesized() {
     let output = generator.into_string();
     assert!(output.contains("(1::number)::number"), "{output}");
 }
+
+#[test]
+fn partial_tokens_synthesize_separators_and_variadics() {
+    use r4::generator::TokenBasedLuaGenerator;
+    use r4::nodes::{
+        Attribute, AttributeArguments, AttributeGroup, AttributeGroupElement, AttributeGroupTokens,
+        AttributeTupleArguments, Attributes, Block, Expression, FunctionBodyTokens, FunctionName,
+        FunctionNameTokens, FunctionStatement, FunctionVariadicType, GenericTypePack, Identifier,
+        LastStatement, LiteralExpression, LiteralTable, ReturnStatement, Statement,
+        TableExpression, TableFieldEntry, TableTokens, Token, TupleArgumentsTokens,
+    };
+
+    fn generate(block: &Block) -> String {
+        let mut generator = TokenBasedLuaGenerator::new("");
+        generator.write_block(block);
+        generator.into_string()
+    }
+
+    // A table with tokens but no separator tokens.
+    let table = TableExpression::new(vec![
+        TableFieldEntry::new(Identifier::new("a"), Expression::from(1.0)).into(),
+        TableFieldEntry::new(Identifier::new("b"), Expression::from(2.0)).into(),
+    ])
+    .with_tokens(TableTokens {
+        opening_brace: Token::from_content("{"),
+        closing_brace: Token::from_content("}"),
+        separators: Vec::new(),
+    });
+    let output = generate(&Block::new(
+        Vec::new(),
+        Some(LastStatement::Return(ReturnStatement::new(vec![
+            Expression::from(table),
+        ]))),
+    ));
+    assert!(output.contains("b=2"), "{output}");
+
+    // A function name with tokens but no periods or colon.
+    let name = FunctionName::new(
+        Identifier::new("mod"),
+        vec![Identifier::new("table")],
+        Some(Identifier::new("method")),
+    )
+    .with_tokens(FunctionNameTokens {
+        periods: Vec::new(),
+        colon: None,
+    });
+    let function = FunctionStatement::new(name, Block::default(), Vec::new(), false);
+    let output = generate(&Block::new(
+        vec![Statement::Function(Box::new(function))],
+        None,
+    ));
+    assert!(output.contains("mod.table:method"), "{output}");
+
+    // A function body with tokens but no parameter commas, `...` or colon.
+    let mut function = FunctionStatement::from_name("f", Block::default());
+    function = function.with_parameter(Identifier::new("a"));
+    function = function.with_parameter(Identifier::new("b"));
+    function.set_variadic_type(FunctionVariadicType::GenericTypePack(GenericTypePack::new(
+        "T",
+    )));
+    function.set_tokens(FunctionBodyTokens {
+        function: Token::from_content("function"),
+        opening_parenthese: Token::from_content("("),
+        closing_parenthese: Token::from_content(")"),
+        end: Token::from_content("end"),
+        parameter_commas: Vec::new(),
+        variable_arguments: None,
+        variable_arguments_colon: None,
+        return_type_colon: None,
+    });
+    let output = generate(&Block::new(
+        vec![Statement::Function(Box::new(function))],
+        None,
+    ));
+    assert!(output.contains("..."), "{output}");
+
+    // Attribute group, tuple arguments and literal table with missing separators.
+    let mut tuple = AttributeTupleArguments::default();
+    tuple.push(LiteralExpression::nil());
+    tuple.push(LiteralExpression::from(true));
+    let tuple = tuple.with_tokens(TupleArgumentsTokens {
+        opening_parenthese: Token::from_content("("),
+        closing_parenthese: Token::from_content(")"),
+        commas: Vec::new(),
+    });
+
+    let mut literal = LiteralTable::from_entries(Vec::new());
+    literal.append_field(Identifier::new("k"), LiteralExpression::nil());
+    literal.append_field(Identifier::new("j"), LiteralExpression::nil());
+    let literal = literal.with_tokens(TableTokens {
+        opening_brace: Token::from_content("{"),
+        closing_brace: Token::from_content("}"),
+        separators: Vec::new(),
+    });
+
+    let group = AttributeGroup::new(
+        AttributeGroupElement::new("tuple").with_arguments(AttributeArguments::Tuple(tuple)),
+    )
+    .with_attribute(
+        AttributeGroupElement::new("table").with_arguments(AttributeArguments::Table(literal)),
+    )
+    .with_tokens(AttributeGroupTokens {
+        opening_attribute_list: Token::from_content("@["),
+        closing_bracket: Token::from_content("]"),
+        separators: Vec::new(),
+    });
+    let function = FunctionStatement::from_name("g", Block::default())
+        .with_attributes(Attributes::new().with_attribute(Attribute::Group(group)));
+    let output = generate(&Block::new(
+        vec![Statement::Function(Box::new(function))],
+        None,
+    ));
+    assert!(output.contains("table"), "{output}");
+}
