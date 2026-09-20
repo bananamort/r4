@@ -226,6 +226,10 @@ fn every_evaluable_expression_shape_is_evaluated() {
         "return if a then 1 elseif b then 2 elseif c then 3 else 4",
         "return `value = {a} and {b}`",
         "return `plain`",
+        "return if f() then g() else h()",
+        "return if true then f() else g()",
+        "return (a).b.c",
+        "return ((f))()",
     ] {
         let block = parse_with(code, Dialect::Luau);
         for statement in block.iter_statements() {
@@ -312,5 +316,81 @@ fn token_operations_cover_every_node_kind() {
             let mut detokenized = parse_tokens(code, dialect);
             r4::process::detokenize(&mut detokenized);
         }
+    }
+}
+
+#[test]
+fn cfg_and_semantic_analyses_cover_every_statement_kind() {
+    use r4::cfg::analysis::{ConstantPropagation, DominatorTree, Liveness, Reachability};
+    use r4::cfg::build_chunk;
+    use r4::semantic::{EscapeAnalysis, SemanticAnalyzer};
+
+    let corpora: [(&[&str], Dialect); 4] = [
+        (CORPUS, Dialect::Luau),
+        (LUA52, Dialect::Lua52),
+        (LUA53, Dialect::Lua53),
+        (LUA54, Dialect::Lua54),
+    ];
+    for (codes, dialect) in corpora {
+        for &code in codes {
+            let block = parse_with(code, dialect);
+            let Ok(model) = SemanticAnalyzer::new().analyze(&block) else {
+                continue;
+            };
+
+            let _ = EscapeAnalysis::analyze(&block, &model);
+
+            let Ok(cfg) = build_chunk(&block, &model) else {
+                continue;
+            };
+            let _ = cfg.verify_invariants();
+            let _ = Reachability::analyze(&cfg);
+            let _ = DominatorTree::analyze(&cfg);
+            let _ = Liveness::analyze(&cfg, &model);
+            let _ = ConstantPropagation::analyze(&cfg, &model);
+        }
+    }
+}
+
+#[test]
+fn navigation_modules_and_diagnostics_cover_the_corpus() {
+    use r4::semantic::MultiModuleModel;
+    use r4::{Compilation, SyntaxIndex};
+
+    let corpora: [(&[&str], Dialect); 4] = [
+        (CORPUS, Dialect::Luau),
+        (LUA52, Dialect::Lua52),
+        (LUA53, Dialect::Lua53),
+        (LUA54, Dialect::Lua54),
+    ];
+
+    let mut graph = MultiModuleModel::new();
+    let mut compilation = Compilation::new();
+    let mut index = 0usize;
+
+    for (codes, dialect) in corpora {
+        for &code in codes {
+            if let Ok((block, model)) = Parser::default().dialect(dialect).parse_analyzed(code) {
+                let _ = SyntaxIndex::build(&block);
+                let _ = graph.add_module(format!("m{index}"), block, model);
+            }
+            // Record all diagnostics for both well formed and recovered sources.
+            let _ = compilation.add_tree_recovering(code);
+            if let Ok(tree) = compilation.add_tree(code) {
+                let _ = compilation.block(tree);
+                let _ = compilation.model(tree);
+            }
+            index += 1;
+        }
+    }
+
+    let _ = graph.whole_program_index();
+    for diagnostic in compilation.diagnostics() {
+        let _ = compilation.format_diagnostic(diagnostic, "");
+    }
+    // A malformed source produces recorded diagnostics that can be formatted.
+    let _ = compilation.add_tree_recovering("local x = ");
+    for diagnostic in compilation.diagnostics() {
+        let _ = compilation.format_diagnostic(diagnostic, "local x = ");
     }
 }

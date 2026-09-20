@@ -166,3 +166,57 @@ fn token_type_modifiers_are_removable() {
     indexer.remove_modifier();
     assert!(indexer.get_modifier().is_none());
 }
+
+#[test]
+fn table_type_modifier_mutations_and_tokens() {
+    use r4::nodes::TablePropertyModifier::Read;
+
+    let mut property = TablePropertyType::new("a", number("number")).with_modifier(Read);
+    // Setting the same modifier again hits the early return.
+    property.set_modifier(Read);
+    assert!(property.get_modifier().is_some());
+    property.remove_modifier();
+    property.remove_modifier();
+
+    let indexer = TableIndexerType::new(number("string"), number("number")).with_modifier(Read);
+    let mut indexer = indexer;
+    indexer.set_modifier(r4::nodes::TablePropertyModifier::Write);
+    indexer.remove_modifier();
+
+    let mut table = TableType::default()
+        .with_property(property)
+        .with_indexer_type(indexer);
+    assert!(table.has_indexer_type());
+    // Setting and replacing the indexer.
+    table.set_indexer_type(TableIndexerType::new(number("number"), number("string")));
+    assert!(table.has_indexer_type());
+    // Removing all field modifiers.
+    for entry in table.iter_mut_entries() {
+        if let TableEntryType::Property(property) = entry {
+            property.remove_modifier();
+        }
+    }
+    let _ = table.iter_entries().count();
+}
+
+#[test]
+fn attribute_group_token_mutations() {
+    use r4::nodes::AttributeGroupTokens;
+
+    let tokens = AttributeGroupTokens {
+        opening_attribute_list: Token::from_content("@["),
+        closing_bracket: Token::from_content("]"),
+        separators: vec![Token::from_content(",")],
+    };
+
+    let mut group = AttributeGroup::new(AttributeGroupElement::new("a"));
+    group.set_tokens(tokens.clone());
+    assert!(group.get_tokens().is_some());
+    assert!(group.mutate_tokens().is_some());
+    group.append_attribute(AttributeGroupElement::new("b"));
+    group.remove(0);
+    assert_eq!(group.iter_attributes().count(), 1);
+
+    let group = AttributeGroup::new(AttributeGroupElement::new("a")).with_tokens(tokens);
+    assert!(group.get_tokens().is_some());
+}
