@@ -261,7 +261,6 @@ impl SemanticModel {
             .map(|id| self.expand_type_alias(id))
     }
 
-    /// Returns the label bound to a goto or label name occurrence.
     #[inline]
     pub fn label_of(&self, identifier: &Identifier) -> Option<LabelId> {
         self.resolve_label(identifier)
