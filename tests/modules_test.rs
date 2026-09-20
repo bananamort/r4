@@ -467,3 +467,71 @@ fn module_and_bundle_errors_render() {
         assert!(!error.to_string().is_empty());
     }
 }
+
+#[test]
+fn multi_module_model_accessors() {
+    use r4::semantic::{MultiModuleModel, ScopeRef, SymbolRef};
+
+    let mut graph = MultiModuleModel::new();
+    assert!(graph.is_empty());
+    assert_eq!(graph.len(), 0);
+    assert_eq!(graph.iter_ids().count(), 0);
+
+    let (block_a, model_a) = analyze("print(1)\nlocal x = 1\nreturn x");
+    let (block_b, model_b) = analyze("print(2)\ndo local y = 1 end\nreturn 2");
+    let a = graph.add_module("a", block_a, model_a).expect("module a");
+    let b = graph.add_module("b", block_b, model_b).expect("module b");
+
+    assert_eq!(graph.len(), 2);
+    assert!(!graph.is_empty());
+    assert_eq!(graph.iter_ids().count(), 2);
+    assert_eq!(graph.module(a).key, "a");
+    assert_eq!(graph.module_by_key("a"), Some(a));
+    assert_eq!(graph.module_by_key("missing"), None);
+
+    // The same global unifies across modules.
+    let print = graph.global_symbol("print").expect("print is a global");
+    assert_eq!(graph.global(print).name, "print");
+    assert_eq!(graph.globals().count(), 1);
+    let print_a = symbol_named(&graph.module(a).model, "print");
+    assert_eq!(graph.global_of(a, print_a), Some(print));
+    assert!(graph.same_global((a, print_a), (a, print_a)));
+
+    // Scope navigation reaches the shared global root.
+    let root = graph.root_scope();
+    assert_eq!(root, ScopeRef::Global);
+    assert_eq!(graph.parent_scope(ScopeRef::Global), None);
+    assert!(graph.scope(ScopeRef::Global).is_none());
+    let file_a = graph.file_scope(a);
+    assert!(graph.parent_scope(file_a).is_some());
+    assert!(graph.scope(file_a).is_some());
+    assert_eq!(
+        graph.resolve_in_scope(file_a, "print"),
+        Some(SymbolRef::Global(print))
+    );
+    assert_eq!(
+        graph.resolve_in_scope(root, "print"),
+        Some(SymbolRef::Global(print))
+    );
+    let _ = graph.parent_scope(graph.file_scope(b));
+    let _ = graph.display_symbol(SymbolRef::Global(print));
+
+    // A nested scope has a module-scoped parent.
+    let (block_c, model_c) = analyze("do local z = 1 end\nreturn 3");
+    let c = graph.add_module("c", block_c, model_c).expect("module c");
+    let mut nested = None;
+    for (scope_id, scope) in graph.module(c).model.scopes.iter().enumerate() {
+        if scope.kind == r4::semantic::ScopeKind::Block {
+            nested = Some(r4::semantic::ScopeId(scope_id as u32));
+        }
+    }
+    if let Some(nested) = nested {
+        let scope_ref = ScopeRef::Module {
+            module: c,
+            scope: nested,
+        };
+        assert!(graph.scope(scope_ref).is_some());
+        assert!(graph.parent_scope(scope_ref).is_some());
+    }
+    let _ = graph.whole_program_index();
+}
