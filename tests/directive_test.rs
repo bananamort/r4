@@ -220,9 +220,9 @@ fn trivia_traversal_reaches_every_token_holder() {
 fn classifies_comment_and_shebang_kinds() {
     let sources = [
         ("#!/usr/bin/lua\nreturn 1", TriviaKind::Shebang),
-        ("-- line\nreturn 1", TriviaKind::SingleLineComment),
-        ("--[[ block ]]\nreturn 1", TriviaKind::MultiLineComment),
-        ("--[==[ nested ]==]\nreturn 1", TriviaKind::MultiLineComment),
+        ("-- line\nreturn 1", TriviaKind::Comment),
+        ("--[[ block ]]\nreturn 1", TriviaKind::Comment),
+        ("--[==[ nested ]==]\nreturn 1", TriviaKind::Comment),
     ];
     for (source, expected) in sources {
         let block = parse_with_tokens(source);

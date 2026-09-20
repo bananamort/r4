@@ -91,11 +91,16 @@ impl std::error::Error for TriviaError {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TriviaKind {
     /// A shebang line (`#!...`).
+    ///
+    /// A shebang is executable metadata, not a comment; it is preserved by
+    /// comment removal.
     Shebang,
-    /// A single-line comment (`-- ...`).
-    SingleLineComment,
-    /// A multi-line comment (`--[[ ... ]]`).
-    MultiLineComment,
+    /// A comment (`-- ...` or `--[[ ... ]]`).
+    ///
+    /// r4 keeps the comment's exact text, so a consumer that needs to know
+    /// whether it is a line or long-bracket comment reads the content rather
+    /// than the kind.
+    Comment,
     /// Whitespace that does not contain a line break.
     Whitespace,
     /// A line break: whitespace containing at least one newline.
@@ -104,15 +109,9 @@ pub enum TriviaKind {
 
 impl TriviaKind {
     /// Returns whether this trivia is a comment.
-    ///
-    /// A shebang is not a comment: it is executable metadata and is preserved
-    /// by comment removal.
     #[inline]
     pub const fn is_comment(self) -> bool {
-        matches!(
-            self,
-            TriviaKind::SingleLineComment | TriviaKind::MultiLineComment
-        )
+        matches!(self, TriviaKind::Comment)
     }
 
     /// Returns whether this trivia is whitespace (spaces or a line break).
@@ -121,20 +120,17 @@ impl TriviaKind {
         matches!(self, TriviaKind::Whitespace | TriviaKind::EndOfLine)
     }
 
-    /// Returns the trivia kind for a piece of comment text.
+    /// Classifies trivia text by its leading marker.
     ///
-    /// A shebang starts with `#!`; a multi-line comment starts with `--[[` or
-    /// `--[=`; anything else that starts with `--` is a single-line comment.
-    /// Returns `None` for text that is not a comment.
-    pub fn classify_comment(text: &str) -> Option<TriviaKind> {
+    /// Returns [`TriviaKind::Shebang`] for `#!...`, [`TriviaKind::Comment`] for
+    /// `--...`, and `None` for anything else.
+    pub fn classify(text: &str) -> Option<TriviaKind> {
         if text.starts_with("#!") {
-            return Some(TriviaKind::Shebang);
-        }
-        let body = text.strip_prefix("--")?;
-        if body.starts_with("[[") || body.starts_with("[=") {
-            Some(TriviaKind::MultiLineComment)
+            Some(TriviaKind::Shebang)
+        } else if text.starts_with("--") {
+            Some(TriviaKind::Comment)
         } else {
-            Some(TriviaKind::SingleLineComment)
+            None
         }
     }
 

@@ -131,13 +131,8 @@ fn builds_tokens_and_trivia() {
         }
     );
 
-    let comment = SyntaxFactory::single_line_comment("-- note");
-    assert_eq!(comment.kind(), r4::nodes::TriviaKind::SingleLineComment);
-    let block_comment = SyntaxFactory::multi_line_comment("--[[ note ]]");
-    assert_eq!(
-        block_comment.kind(),
-        r4::nodes::TriviaKind::MultiLineComment
-    );
+    let comment = SyntaxFactory::comment("-- note");
+    assert_eq!(comment.kind(), r4::nodes::TriviaKind::Comment);
     let shebang = SyntaxFactory::shebang("#!/usr/bin/lua");
     assert_eq!(shebang.kind(), r4::nodes::TriviaKind::Shebang);
 

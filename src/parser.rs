@@ -1002,7 +1002,7 @@ mod test {
                 .with_tokens(ReturnTokens {
                     r#return: token_at_first_line(0, 6)
                         .with_trailing_trivia(TriviaKind::Whitespace.at(6, 7, 1))
-                        .with_trailing_trivia(TriviaKind::SingleLineComment.at(7, 17, 1)),
+                        .with_trailing_trivia(TriviaKind::Comment.at(7, 17, 1)),
                     commas: Vec::new(),
                 }),
             return_true("return true") => ReturnStatement::one(create_true(7, 0))
@@ -1175,7 +1175,7 @@ mod test {
             }),
             return_float("return 12.34 -- value") => ReturnStatement::one(
                 DecimalNumber::new(12.34).with_token(
-                    spaced_token(7, 12).with_trailing_trivia(TriviaKind::SingleLineComment.at(13, 21, 1))
+                    spaced_token(7, 12).with_trailing_trivia(TriviaKind::Comment.at(13, 21, 1))
                 )
             ).with_tokens(ReturnTokens {
                 r#return: spaced_token(0, 6),
@@ -1196,7 +1196,7 @@ mod test {
             return_empty_table("return {--[[ inside ]]}") => ReturnStatement::one(
                 TableExpression::default().with_tokens(TableTokens {
                     opening_brace: token_at_first_line(7, 8)
-                        .with_trailing_trivia(TriviaKind::MultiLineComment.at(8, 22, 1)),
+                        .with_trailing_trivia(TriviaKind::Comment.at(8, 22, 1)),
                     closing_brace: token_at_first_line(22, 23),
                     separators: Vec::new(),
                 })
@@ -1416,7 +1416,7 @@ mod test {
                             .with_trailing_trivia(TriviaKind::Whitespace.at(15, 17, 1)),
                         opening_parenthese: token_at_first_line(17, 18)
                             .with_trailing_trivia(TriviaKind::Whitespace.at(18, 19, 1))
-                            .with_trailing_trivia(TriviaKind::MultiLineComment.at(19, 31, 1)),
+                            .with_trailing_trivia(TriviaKind::Comment.at(19, 31, 1)),
                         closing_parenthese: spaced_token(31, 32),
                         end: token_at_first_line(33, 36),
                         parameter_commas: Vec::new(),
@@ -1691,7 +1691,7 @@ mod test {
                     .with_parameter(Identifier::new("a").with_token(token_at_first_line(16, 17)))
                     .with_parameter(
                         Identifier::new("b").with_token(
-                            token_at_first_line(19, 20).with_trailing_trivia(TriviaKind::MultiLineComment.at(20, 29, 1))
+                            token_at_first_line(19, 20).with_trailing_trivia(TriviaKind::Comment.at(20, 29, 1))
                         )
                     )
                     .with_tokens(FunctionBodyTokens {
@@ -1818,7 +1818,7 @@ mod test {
             return_two_values("return true ,  true--end") => ReturnStatement::default()
                 .with_expression(create_true(7, 1))
                 .with_expression(Expression::True(Some(
-                    token_at_first_line(15, 19).with_trailing_trivia(TriviaKind::SingleLineComment.at(19, 24, 1))
+                    token_at_first_line(15, 19).with_trailing_trivia(TriviaKind::Comment.at(19, 24, 1))
                 )))
                 .with_tokens(ReturnTokens {
                     r#return: spaced_token(0, 6),
@@ -1836,11 +1836,11 @@ mod test {
                 }),
             break_statement("break") => LastStatement::Break(Some(token_at_first_line(0, 5))),
             break_statement_with_comment("break-- bye") => LastStatement::Break(Some(
-                token_at_first_line(0, 5).with_trailing_trivia(TriviaKind::SingleLineComment.at(5, 11, 1))
+                token_at_first_line(0, 5).with_trailing_trivia(TriviaKind::Comment.at(5, 11, 1))
             )),
             continue_statement("continue") => LastStatement::Continue(Some(token_at_first_line(0, 8))),
             continue_statement_with_comment("continue-- bye") => LastStatement::Continue(Some(
-                token_at_first_line(0, 8).with_trailing_trivia(TriviaKind::SingleLineComment.at(8, 14, 1))
+                token_at_first_line(0, 8).with_trailing_trivia(TriviaKind::Comment.at(8, 14, 1))
             )),
         );
 
@@ -2017,7 +2017,7 @@ mod test {
                         first_opening_list: spaced_token(8, 9),
                         second_opening_list: token_at_first_line(10, 11),
                         first_closing_list: token_at_first_line(12, 13)
-                            .with_trailing_trivia(TriviaKind::MultiLineComment.at(13, 19, 1)),
+                            .with_trailing_trivia(TriviaKind::Comment.at(13, 19, 1)),
                         second_closing_list: token_at_first_line(19, 20)
                             .with_trailing_trivia(TriviaKind::Whitespace.at(20, 22, 1)),
                         commas: Vec::new(),
@@ -2125,7 +2125,7 @@ mod test {
                 .with_tokens(DoTokens {
                     r#do: token_at_first_line(0, 2)
                         .with_trailing_trivia(TriviaKind::Whitespace.at(2, 3, 1))
-                        .with_trailing_trivia(TriviaKind::MultiLineComment.at(3, 16, 1))
+                        .with_trailing_trivia(TriviaKind::Comment.at(3, 16, 1))
                         .with_trailing_trivia(TriviaKind::Whitespace.at(16, 17, 1)),
                     end: token_at_first_line(17, 20),
                 }),
@@ -4027,7 +4027,7 @@ mod test {
                     semicolons: vec![],
                     last_semicolon: None,
                     final_token: Some(token_at_first_line(7, 7)
-                        .with_leading_trivia(TriviaKind::SingleLineComment.at(0, 7, 1))),
+                        .with_leading_trivia(TriviaKind::Comment.at(0, 7, 1))),
                 }),
             multiple_line_comments("-- todo\n  -- one\n") => Block::default()
                 .with_tokens(BlockTokens {
@@ -4035,10 +4035,10 @@ mod test {
                     last_semicolon: None,
                     final_token: Some(
                         Token::new_with_line(17, 17, 3)
-                            .with_leading_trivia(TriviaKind::SingleLineComment.at(0, 7, 1))
+                            .with_leading_trivia(TriviaKind::Comment.at(0, 7, 1))
                             .with_leading_trivia(TriviaKind::EndOfLine.at(7, 8, 1))
                             .with_leading_trivia(TriviaKind::Whitespace.at(8, 10, 2))
-                            .with_leading_trivia(TriviaKind::SingleLineComment.at(10, 16, 2))
+                            .with_leading_trivia(TriviaKind::Comment.at(10, 16, 2))
                             .with_leading_trivia(TriviaKind::EndOfLine.at(16, 17, 2))
                     ),
                 }),
@@ -4047,7 +4047,7 @@ mod test {
                     semicolons: vec![],
                     last_semicolon: None,
                     final_token: Some(Token::new_with_line(16, 16, 3)
-                        .with_leading_trivia(TriviaKind::MultiLineComment.at(0, 16, 1))),
+                        .with_leading_trivia(TriviaKind::Comment.at(0, 16, 1))),
                 }),
             return_nothing_with_semicolon("return;") => Block::from(
                 ReturnStatement::default()
@@ -4071,7 +4071,7 @@ mod test {
                 last_semicolon: Some(
                     token_at_first_line(6, 7)
                         .with_trailing_trivia(TriviaKind::Whitespace.at(7, 8, 1))
-                        .with_trailing_trivia(TriviaKind::SingleLineComment.at(8, 25, 1))
+                        .with_trailing_trivia(TriviaKind::Comment.at(8, 25, 1))
                 ),
                 final_token: None,
             }),

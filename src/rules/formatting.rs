@@ -603,8 +603,7 @@ pub fn append_text_comment(block: &mut Block, text: &str, location: AppendLocati
 ///
 /// [`format_comment`] always produces a comment, so a failure here is a bug.
 fn comment_trivia_kind(comment: &str) -> TriviaKind {
-    TriviaKind::classify_comment(comment)
-        .expect("format_comment always produces a single- or multi-line comment")
+    TriviaKind::classify(comment).expect("format_comment always produces a comment")
 }
 
 /// Appends the contents of a file as a comment at the start or end of `block`.
