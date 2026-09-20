@@ -4020,7 +4020,7 @@ mod test {
                     semicolons: vec![],
                     last_semicolon: None,
                     final_token: Some(Token::new_with_line(1, 1, 2)
-                        .with_leading_trivia(TriviaKind::Whitespace.at(0, 1, 1))),
+                        .with_leading_trivia(TriviaKind::EndOfLine.at(0, 1, 1))),
                 }),
             single_line_comment("-- todo") => Block::default()
                 .with_tokens(BlockTokens {
@@ -4036,10 +4036,10 @@ mod test {
                     final_token: Some(
                         Token::new_with_line(17, 17, 3)
                             .with_leading_trivia(TriviaKind::Comment.at(0, 7, 1))
-                            .with_leading_trivia(TriviaKind::Whitespace.at(7, 8, 1))
+                            .with_leading_trivia(TriviaKind::EndOfLine.at(7, 8, 1))
                             .with_leading_trivia(TriviaKind::Whitespace.at(8, 10, 2))
                             .with_leading_trivia(TriviaKind::Comment.at(10, 16, 2))
-                            .with_leading_trivia(TriviaKind::Whitespace.at(16, 17, 2))
+                            .with_leading_trivia(TriviaKind::EndOfLine.at(16, 17, 2))
                     ),
                 }),
             single_multiline_comment("--[[\n    todo\n]]") => Block::default()
@@ -4093,8 +4093,10 @@ mod test {
                     })
             ).with_tokens(BlockTokens {
                 semicolons: vec![
-                    Some(spaced_token(7, 8)),
-                    Some(spaced_token_at_line(16, 17, 2)),
+                    Some(Token::new_with_line(7, 8, 1)
+                        .with_trailing_trivia(TriviaKind::EndOfLine.at(8, 9, 1))),
+                    Some(Token::new_with_line(16, 17, 2)
+                        .with_trailing_trivia(TriviaKind::EndOfLine.at(17, 18, 2))),
                 ],
                 last_semicolon: None,
                 final_token: None,

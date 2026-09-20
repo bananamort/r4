@@ -65,7 +65,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
         // In normalizing mode the whitespace trivia is replaced by a single
         // line separator or a single space; indentation is emitted lazily when
         // the next token is written. Comments are always emitted verbatim.
-        if self.normalize && trivia.kind() == TriviaKind::Whitespace {
+        if self.normalize && trivia.kind().is_whitespace() {
             if content.contains('\n') {
                 self.currently_commenting = false;
                 let newline = self.newline.clone();
@@ -92,7 +92,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
                     self.currently_commenting = true;
                 }
             }
-            TriviaKind::Whitespace => {
+            TriviaKind::Whitespace | TriviaKind::EndOfLine => {
                 if self.currently_commenting && content.contains('\n') {
                     self.currently_commenting = false
                 }

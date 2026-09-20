@@ -197,6 +197,17 @@ impl TypeDeclarationStatement {
         }
     }
 
+    /// Passes every token in this type declaration to `f`.
+    pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
+        self.name.for_each_token(f);
+        if let Some(tokens) = &self.tokens {
+            tokens.for_each_token(f);
+        }
+        if let Some(parameters) = self.generic_parameters.as_ref() {
+            parameters.for_each_token(f);
+        }
+    }
+
     /// Removes all tokens from this type declaration.
     pub fn remove_tokens(&mut self) {
         self.name.remove_tokens();

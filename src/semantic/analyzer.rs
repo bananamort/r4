@@ -87,6 +87,16 @@ impl SemanticAnalyzer {
         &self.options
     }
 
+    /// Returns an analyzer configured by a file's `--!` directives.
+    ///
+    /// `--!strict` enables strict global and type checking; `--!nonstrict` and
+    /// `--!nocheck` disable them. Other options are preserved.
+    pub fn with_directives(&self, directives: &super::Directives) -> Self {
+        let mut options = self.options.clone();
+        options.apply_directives(directives);
+        Self { options }
+    }
+
     /// Analyzes a block (typically the root chunk of a file) and produces a
     /// [`SemanticModel`], stopping at the first error.
     pub fn analyze(&self, block: &Block) -> SemanticResult<SemanticModel> {

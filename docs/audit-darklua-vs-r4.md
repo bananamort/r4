@@ -1,8 +1,10 @@
 # Architectural Audit — `darklua-0.19.0` vs `r4`
 
 Date: 2026-09-12
-Last updated: test-organization mission (recovered diagnostics, position-to-node
-navigation, standard-library purity, and darklua-style colocated rule tests).
+Last updated: tests, equivalence, symbol display, syntax factory and trivia
+mission (darklua-style colocated tests plus Loretta/Roslyn ergonomics:
+`is_equivalent_to`, `SymbolDisplay`, `SyntaxFactory`, `EndOfLine` trivia and
+`--!` directives).
 Scope: `references/darklua-0.19.0/src/` versus `r4`'s read-only analysis layers
 (`src/semantic/`, `src/cfg/`).
 
@@ -678,6 +680,44 @@ Rule behavior is tested next to the rule, mirroring darklua's colocated
   `formatting_test.rs`, `api_test.rs`, and the module/link/whole-program
   suites), matching darklua's split between inline rule tests and
   `tests/` integration tests.
+
+### Loretta ergonomics
+
+The syntax layer gained the Loretta/Roslyn-style affordances that were
+previously missing:
+
+- **Structural equivalence** — [`Equivalent`](crate::Equivalent)
+  (`is_equivalent_to`) compares two trees for the same structure and semantic
+  content, ignoring trivia, source positions and whether token data was
+  preserved. It is exact, not a canonical rendering: both trees are cloned,
+  every token is erased by `process::detokenize`, and the results are compared
+  with the derived structural `PartialEq`. Detokenization is complete across
+  every token-bearing node (a `children` list on `impl_token_fns!` separates
+  token containers from child nodes); `tests/equivalence_test.rs` proves that a
+  token-preserving tree and the tokenless parse of the same source are
+  equivalent over a corpus covering every node kind.
+- **`SymbolDisplay`** — configurable rendering of `Symbol`/`SymbolRef` with
+  optional declaration kind and declaring-scope kind;
+  `SymbolKind::as_str` / `ScopeKind::as_str` provide stable labels.
+- **`SyntaxFactory`** — one namespace for tokens, trivia, names, literals,
+  expressions, statements, blocks and fallible number parsing; it returns
+  ordinary tokenless nodes, so a built tree is `is_equivalent_to` the parsed
+  source.
+- **Trivia model** — `TriviaKind::EndOfLine` distinguishes line breaks from
+  inline whitespace; `process::for_each_token` / `collect_trivia` enumerate every
+  token and piece of trivia, including tokens on nodes the node visitors do not
+  surface; `Trivia::try_read_with` reads trivia fallibly; and structured `--!`
+  directives (`Directive`/`Directives`/`Strictness`) are parsed exactly, with
+  `--!strict` / `--!nonstrict` / `--!nocheck` feeding `SemanticOptions`.
+  Conflicting strictness directives and malformed `--!` comments are typed
+  errors.
+
+Deliberately not added: **disabled-text** and **skipped-token** trivia kinds and
+an **`IOperation`** tree. Lua has no preprocessor, so "disabled text" is only
+commented-out code, whose classification would be heuristic; full_moon's
+recovered AST does not expose skipped tokens, so a skipped-token kind could not
+be produced without guessing. `IOperation` would duplicate the existing CFG and
+`SemanticModel`, which already carry the semantic facts the r4 passes consume.
 
 ### Structural semantic layer (token-free passes)
 

@@ -57,6 +57,11 @@ impl SyntaxFactory {
         TriviaKind::Whitespace.with_content(text)
     }
 
+    /// Creates a line-break trivia.
+    pub fn end_of_line(text: impl Into<Cow<'static, str>>) -> Trivia {
+        TriviaKind::EndOfLine.with_content(text)
+    }
+
     // ------------------------------------------------------------------
     // Names
     // ------------------------------------------------------------------

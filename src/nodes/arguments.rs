@@ -274,6 +274,14 @@ impl Arguments {
         }
     }
 
+    /// Passes every token in these arguments to `f`.
+    pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
+        match self {
+            Arguments::Tuple(tuple) => tuple.for_each_token(f),
+            Arguments::String(_) | Arguments::Table(_) => {}
+        }
+    }
+
     /// Replaces referenced tokens with the actual content from the source code.
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {

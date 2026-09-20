@@ -161,7 +161,7 @@ impl Block {
             let mut removed = self.statements.remove(index);
 
             fn filter_trivia(trivia: Trivia) -> Option<Trivia> {
-                if trivia.kind() == TriviaKind::Whitespace {
+                if trivia.kind().is_whitespace() {
                     None
                 } else {
                     Some(trivia)
@@ -222,7 +222,7 @@ impl Block {
                         if gap != 0 {
                             token.insert_leading_trivia(
                                 index + offset,
-                                TriviaKind::Whitespace.with_content("\n".repeat(gap)),
+                                TriviaKind::EndOfLine.with_content("\n".repeat(gap)),
                             );
                             offset += gap;
                         }

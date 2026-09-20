@@ -588,7 +588,7 @@ pub fn append_text_comment(block: &mut Block, text: &str, location: AppendLocati
         AppendLocation::Start => {
             let token = block.mutate_first_token();
             token.insert_leading_trivia(0, TriviaKind::Comment.with_content(comment));
-            token.insert_leading_trivia(1, TriviaKind::Whitespace.with_content("\n"));
+            token.insert_leading_trivia(1, TriviaKind::EndOfLine.with_content("\n"));
         }
         AppendLocation::End => {
             block

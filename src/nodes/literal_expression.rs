@@ -336,6 +336,14 @@ impl LiteralTableEntry {
         }
     }
 
+    /// Passes every token in this literal table entry to `f`.
+    pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
+        match self {
+            Self::Field(entry) => entry.for_each_token(f),
+            Self::Value(_value) => {}
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {

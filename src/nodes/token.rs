@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::fmt;
 
 /// Represents a position in the source code.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,16 +50,61 @@ impl Position {
     }
 }
 
+/// An error reading trivia from source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TriviaError {
+    /// The trivia's recorded range is not a valid slice of `source`.
+    InvalidRange {
+        /// The start byte offset.
+        start: usize,
+        /// The end byte offset.
+        end: usize,
+        /// The length of the source.
+        length: usize,
+    },
+}
+
+impl TriviaError {
+    /// Returns a stable machine readable code for this error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            TriviaError::InvalidRange { .. } => "trivia/invalid-range",
+        }
+    }
+}
+
+impl fmt::Display for TriviaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TriviaError::InvalidRange { start, end, length } => write!(
+                f,
+                "trivia range {}..{} is not a valid slice of a {}-byte source",
+                start, end, length
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TriviaError {}
+
 /// An enum to represent source code text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TriviaKind {
     /// A comment.
     Comment,
-    /// Whitespace characters.
+    /// Whitespace that does not contain a line break.
     Whitespace,
+    /// A line break: whitespace containing at least one newline.
+    EndOfLine,
 }
 
 impl TriviaKind {
+    /// Returns whether this trivia is whitespace (spaces or a line break).
+    #[inline]
+    pub const fn is_whitespace(self) -> bool {
+        matches!(self, TriviaKind::Whitespace | TriviaKind::EndOfLine)
+    }
+
     /// Creates a new trivia with line number reference information.
     pub fn at(self, start: usize, end: usize, line_number: usize) -> Trivia {
         Trivia {
@@ -113,6 +159,34 @@ impl Trivia {
             Position::LineNumberReference { .. } => None,
             Position::LineNumber { content, .. } | Position::Any { content } => Some(content),
         }
+    }
+
+    /// Reads the content of the trivia from `source`, failing instead of
+    /// panicking when the recorded range does not lie on a character boundary
+    /// or exceeds `source`.
+    pub fn try_read_with<'a>(&'a self, source: &'a str) -> Result<&'a str, TriviaError> {
+        match &self.position {
+            Position::LineNumberReference { start, end, .. } => {
+                source.get(*start..*end).ok_or(TriviaError::InvalidRange {
+                    start: *start,
+                    end: *end,
+                    length: source.len(),
+                })
+            }
+            Position::LineNumber { content, .. } | Position::Any { content } => Ok(content),
+        }
+    }
+
+    /// Returns the start byte offset of this trivia, if it references source.
+    #[inline]
+    pub fn get_start(&self) -> Option<usize> {
+        self.position.get_start()
+    }
+
+    /// Returns the end byte offset of this trivia, if it references source.
+    #[inline]
+    pub fn get_end(&self) -> Option<usize> {
+        self.position.get_end()
     }
 
     /// Returns the kind of trivia.
@@ -230,6 +304,16 @@ impl Token {
         self.trailing_trivia.iter()
     }
 
+    /// Passes this token to `f`.
+    ///
+    /// The counterpart of [`for_each_token`](crate::nodes::Block::for_each_token)
+    /// on a single token; used to drive
+    /// [`for_each_token`](crate::process::for_each_token) without special-casing
+    /// leaf tokens.
+    pub fn for_each_token<F: FnMut(&Token)>(&self, f: &mut F) {
+        f(self);
+    }
+
     /// Returns an iterator over the trailing trivia and removes them from the token.
     #[inline]
     pub fn drain_trailing_trivia(&mut self) -> impl Iterator<Item = Trivia> + '_ {
@@ -316,9 +400,9 @@ impl Token {
     /// Clears all whitespaces information from the tokens in this node.
     pub fn clear_whitespaces(&mut self) {
         self.leading_trivia
-            .retain(|trivia| trivia.kind() != TriviaKind::Whitespace);
+            .retain(|trivia| !trivia.kind().is_whitespace());
         self.trailing_trivia
-            .retain(|trivia| trivia.kind() != TriviaKind::Whitespace);
+            .retain(|trivia| !trivia.kind().is_whitespace());
     }
 
     /// Removes all trivia and the source position from this token.

@@ -2625,7 +2625,13 @@ impl<'a> AstConverter<'a> {
         let trivia = match token.token_kind() {
             TokenKind::MultiLineComment => TriviaKind::Comment,
             TokenKind::SingleLineComment => TriviaKind::Comment,
-            TokenKind::Whitespace => TriviaKind::Whitespace,
+            TokenKind::Whitespace => {
+                if token.to_string().contains('\n') {
+                    TriviaKind::EndOfLine
+                } else {
+                    TriviaKind::Whitespace
+                }
+            }
             _ => return Err(ConvertError::UnexpectedTrivia(token.token_kind())),
         }
         .at(

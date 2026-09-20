@@ -174,6 +174,34 @@ macro_rules! impl_token_fns {
                 }
             )*)?
         }
+
+        /// Passes every token attached to this node to `f`.
+        ///
+        /// Direct token fields and iterable token containers are visited, and
+        /// the listed `children` are visited recursively. Combine with
+        /// [`for_each_token`](crate::process::for_each_token) for a complete
+        /// token traversal of a tree.
+        #[allow(dead_code)]
+        pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
+            $(
+                self.$field.for_each_token(f);
+            )*
+            $($(
+                for token in self.$iter_field.iter() {
+                    token.for_each_token(f);
+                }
+            )*)?
+            $($(
+                for token in self.$iter_flatten_field.iter().flatten() {
+                    token.for_each_token(f);
+                }
+            )*)?
+            $($(
+                for child in self.$child_field.iter() {
+                    child.for_each_token(f);
+                }
+            )*)?
+        }
     };
 
     (

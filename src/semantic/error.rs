@@ -16,6 +16,27 @@ pub struct SemanticOptions {
     pub strict_types: bool,
 }
 
+impl SemanticOptions {
+    /// Applies the strictness selected by a file's `--!` directives.
+    ///
+    /// `--!strict` enables strict global and type checking; `--!nonstrict` and
+    /// `--!nocheck` disable them. A file without a strictness directive is left
+    /// unchanged.
+    pub fn apply_directives(&mut self, directives: &super::Directives) {
+        match directives.strictness() {
+            Some(super::Strictness::Strict) => {
+                self.strict_globals = true;
+                self.strict_types = true;
+            }
+            Some(super::Strictness::NonStrict | super::Strictness::NoCheck) => {
+                self.strict_globals = false;
+                self.strict_types = false;
+            }
+            None => {}
+        }
+    }
+}
+
 /// An error produced by semantic analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticError {

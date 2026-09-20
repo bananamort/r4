@@ -132,6 +132,14 @@ impl Attribute {
         }
     }
 
+    /// Passes every token in this attribute to `f`.
+    pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
+        match self {
+            Self::Name(name) => name.for_each_token(f),
+            Self::Group(list) => list.for_each_token(f),
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
@@ -469,6 +477,15 @@ impl AttributeArguments {
             Self::Tuple(tuple) => tuple.remove_tokens(),
             Self::String(string) => string.remove_tokens(),
             Self::Table(table) => table.remove_tokens(),
+        }
+    }
+
+    /// Passes every token in these attribute arguments to `f`.
+    pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
+        match self {
+            Self::Tuple(tuple) => tuple.for_each_token(f),
+            Self::String(string) => string.for_each_token(f),
+            Self::Table(table) => table.for_each_token(f),
         }
     }
 

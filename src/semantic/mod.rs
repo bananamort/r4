@@ -11,6 +11,7 @@
 //! transformations work on token-less ASTs and survive cloning and synthesis.
 
 mod analyzer;
+mod directive;
 mod display;
 mod error;
 mod escape;
@@ -27,6 +28,7 @@ mod walker;
 
 pub use analyzer::is_builtin_type_name;
 pub use analyzer::{SemanticAnalysis, SemanticAnalyzer};
+pub use directive::{Directive, DirectiveError, Directives, Strictness};
 pub use display::{SymbolDisplay, SymbolDisplayFormat};
 pub use error::{
     SemanticError, SemanticErrorKind, SemanticOptions, SemanticQueryError, SemanticResult,

@@ -359,6 +359,15 @@ impl NumberExpression {
         }
     }
 
+    /// Passes every token in this number expression to `f`.
+    pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
+        match self {
+            NumberExpression::Decimal(number) => number.for_each_token(f),
+            NumberExpression::Hex(number) => number.for_each_token(f),
+            NumberExpression::Binary(number) => number.for_each_token(f),
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {

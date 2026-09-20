@@ -217,6 +217,15 @@ impl TableEntry {
         }
     }
 
+    /// Passes every token in this table entry to `f`.
+    pub fn for_each_token<F: FnMut(&crate::nodes::Token)>(&self, f: &mut F) {
+        match self {
+            TableEntry::Field(entry) => entry.for_each_token(f),
+            TableEntry::Index(entry) => entry.for_each_token(f),
+            TableEntry::Value(_) => {}
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
