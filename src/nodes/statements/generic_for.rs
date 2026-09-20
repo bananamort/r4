@@ -141,7 +141,7 @@ impl GenericForStatement {
         }
     }
 
-    super::impl_token_fns!(iter = [tokens, identifiers]);
+    super::impl_token_fns!(iter = [tokens] children = [identifiers]);
 
     /// Returns a mutable reference to the first token for this statement, creating it if missing.
     pub fn mutate_first_token(&mut self) -> &mut Token {

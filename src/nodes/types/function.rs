@@ -79,7 +79,7 @@ impl FunctionArgumentType {
         self.token.as_ref()
     }
 
-    super::impl_token_fns!(iter = [name, token]);
+    super::impl_token_fns!(iter = [token] children = [name]);
 }
 
 /// Represents the return type of a function type annotation.
@@ -303,7 +303,7 @@ impl FunctionType {
         self.return_type.mutate_last_token()
     }
 
-    super::impl_token_fns!(iter = [tokens, generic_parameters, arguments]);
+    super::impl_token_fns!(iter = [tokens] children = [generic_parameters, arguments]);
 }
 
 /// Represents the tokens associated with a function type annotation.

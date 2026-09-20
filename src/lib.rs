@@ -6,6 +6,7 @@ pub mod cfg;
 pub mod compilation;
 pub mod convert;
 pub mod diagnostic;
+pub mod equivalence;
 pub mod generator;
 pub mod modules;
 pub mod navigation;
@@ -23,5 +24,6 @@ pub use diagnostic::{
     descriptor_for, Diagnostic, DiagnosticDescriptor, DiagnosticFormatError, DiagnosticFormatter,
     DiagnosticQueryError, LinePosition, LinePositionSpan, Severity, TextSpan, DIAGNOSTIC_CATALOG,
 };
+pub use equivalence::Equivalent;
 pub use navigation::{IndexEntry, NavigationError, NodeId, NodeKind, SyntaxIndex};
 pub use parser::{AnalyzedParseError, Dialect, Parser, ParserError};

@@ -363,7 +363,7 @@ impl VariableAssignment {
             .mutate_or_insert_token()
     }
 
-    super::impl_token_fns!(iter = [variables, tokens]);
+    super::impl_token_fns!(iter = [tokens] children = [variables]);
 }
 
 #[cfg(test)]

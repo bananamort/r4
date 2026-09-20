@@ -266,6 +266,14 @@ impl Arguments {
         }
     }
 
+    /// Removes all tokens from these arguments.
+    pub fn remove_tokens(&mut self) {
+        match self {
+            Arguments::Tuple(tuple) => tuple.remove_tokens(),
+            Arguments::String(_) | Arguments::Table(_) => {}
+        }
+    }
+
     /// Replaces referenced tokens with the actual content from the source code.
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {

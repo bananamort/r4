@@ -190,6 +190,14 @@ impl InterpolationSegment {
         }
     }
 
+    /// Removes all tokens from this interpolation segment.
+    pub fn remove_tokens(&mut self) {
+        match self {
+            InterpolationSegment::String(segment) => segment.remove_tokens(),
+            InterpolationSegment::Value(segment) => segment.remove_tokens(),
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
@@ -294,7 +302,7 @@ impl InterpolatedStringExpression {
         self.tokens = Some(tokens);
     }
 
-    super::impl_token_fns!(iter = [tokens, segments]);
+    super::impl_token_fns!(iter = [tokens] children = [segments]);
 
     /// Returns an iterator over the segments in this interpolated string expression.
     pub fn iter_segments(&self) -> impl Iterator<Item = &InterpolationSegment> {

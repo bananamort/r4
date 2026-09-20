@@ -197,6 +197,29 @@ impl TypeDeclarationStatement {
         }
     }
 
+    /// Removes all tokens from this type declaration.
+    pub fn remove_tokens(&mut self) {
+        self.name.remove_tokens();
+        self.tokens = None;
+        if let Some(parameters) = self.generic_parameters.as_mut() {
+            parameters.remove_tokens();
+            for parameter in parameters {
+                match parameter {
+                    GenericParameterMutRef::TypeVariable(variable) => variable.remove_tokens(),
+                    GenericParameterMutRef::TypeVariableWithDefault(variable_with_default) => {
+                        variable_with_default.remove_tokens();
+                    }
+                    GenericParameterMutRef::GenericTypePack(_) => {}
+                    GenericParameterMutRef::GenericTypePackWithDefault(
+                        generic_pack_with_default,
+                    ) => {
+                        generic_pack_with_default.remove_tokens();
+                    }
+                }
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         self.name.replace_referenced_tokens(code);

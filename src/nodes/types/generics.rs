@@ -178,7 +178,7 @@ impl GenericParameters {
         self.tokens.as_ref()
     }
 
-    super::impl_token_fns!(iter = [type_variables, generic_type_packs, tokens]);
+    super::impl_token_fns!(iter = [tokens] children = [type_variables, generic_type_packs]);
 }
 
 /// Contains the tokens that define the generic parameters syntax.

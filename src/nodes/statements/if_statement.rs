@@ -292,5 +292,5 @@ impl IfStatement {
         }
     }
 
-    super::impl_token_fns!(iter = [tokens, branches]);
+    super::impl_token_fns!(iter = [tokens] children = [branches]);
 }

@@ -37,6 +37,7 @@ macro_rules! impl_token_fns {
         target = [ $( $field:ident ),* $(,)? ]
         $(iter = [ $( $iter_field:ident),* $(,)? ])?
         $(iter_flatten = [ $( $iter_flatten_field:ident),* $(,)? ])?
+        $(children = [ $( $child_field:ident),* $(,)? ])?
     ) => {
         /// Clears all comments from the tokens in this node.
         pub fn clear_comments(&mut self) {
@@ -44,14 +45,19 @@ macro_rules! impl_token_fns {
                 self.$field.clear_comments();
             )*
             $($(
-                    for token in self.$iter_field.iter_mut() {
-                        token.clear_comments();
-                    }
+                for token in self.$iter_field.iter_mut() {
+                    token.clear_comments();
+                }
             )*)?
             $($(
-                    for token in self.$iter_flatten_field.iter_mut().flatten() {
-                        token.clear_comments();
-                    }
+                for token in self.$iter_flatten_field.iter_mut().flatten() {
+                    token.clear_comments();
+                }
+            )*)?
+            $($(
+                for child in self.$child_field.iter_mut() {
+                    child.clear_comments();
+                }
             )*)?
         }
 
@@ -68,6 +74,11 @@ macro_rules! impl_token_fns {
             $($(
                 for token in self.$iter_flatten_field.iter_mut().flatten() {
                     token.clear_whitespaces();
+                }
+            )*)?
+            $($(
+                for child in self.$child_field.iter_mut() {
+                    child.clear_whitespaces();
                 }
             )*)?
         }
@@ -87,6 +98,11 @@ macro_rules! impl_token_fns {
                     token.replace_referenced_tokens(code);
                 }
             )*)?
+            $($(
+                for child in self.$child_field.iter_mut() {
+                    child.replace_referenced_tokens(code);
+                }
+            )*)?
         }
 
         #[allow(dead_code)]
@@ -102,6 +118,11 @@ macro_rules! impl_token_fns {
             $($(
                 for token in self.$iter_flatten_field.iter_mut().flatten() {
                     token.shift_token_line(amount);
+                }
+            )*)?
+            $($(
+                for child in self.$child_field.iter_mut() {
+                    child.shift_token_line(amount);
                 }
             )*)?
         }
@@ -121,7 +142,72 @@ macro_rules! impl_token_fns {
                     token.filter_comments(&filter);
                 }
             )*)?
+            $($(
+                for child in self.$child_field.iter_mut() {
+                    child.filter_comments(&filter);
+                }
+            )*)?
         }
+
+        /// Removes every token from this node and its contained token-bearing
+        /// children.
+        ///
+        /// Direct token fields are erased, iterable token containers are
+        /// emptied, and the listed `children` are detokenized recursively.
+        /// The node keeps its structure, so two trees that differ only in
+        /// trivia, source positions or token presence become equal. This backs
+        /// [`Block::is_equivalent_to`](crate::nodes::Block::is_equivalent_to).
+        #[allow(dead_code)]
+        pub fn remove_tokens(&mut self) {
+            $(
+                self.$field.remove_tokens();
+            )*
+            $($(
+                $crate::nodes::RemoveTokenData::remove_token_data(&mut self.$iter_field);
+            )*)?
+            $($(
+                $crate::nodes::RemoveTokenData::remove_token_data(&mut self.$iter_flatten_field);
+            )*)?
+            $($(
+                for child in self.$child_field.iter_mut() {
+                    child.remove_tokens();
+                }
+            )*)?
+        }
+    };
+
+    (
+        iter = [$($field:ident),*]
+        children = [$($child_field:ident),*]
+    ) => {
+        $crate::nodes::impl_token_fns!(
+            target = []
+            iter = [ $($field,)* ]
+            children = [ $($child_field,)* ]
+        );
+    };
+
+    (
+        iter = [$($field:ident),*]
+        iter_flatten = [$($flatten_field:ident),*]
+        children = [$($child_field:ident),*]
+    ) => {
+        $crate::nodes::impl_token_fns!(
+            target = []
+            iter = [ $($field,)* ]
+            iter_flatten = [ $($flatten_field,)* ]
+            children = [ $($child_field,)* ]
+        );
+    };
+
+    (
+        children = [$($child_field:ident),*]
+    ) => {
+        $crate::nodes::impl_token_fns!(
+            target = []
+            iter = []
+            children = [ $($child_field,)* ]
+        );
     };
 
     (
@@ -157,3 +243,33 @@ macro_rules! impl_token_fns {
 }
 
 pub(crate) use impl_token_fns;
+
+/// Removes token data from a token container.
+///
+/// This is the field-level operation behind
+/// [`remove_tokens`](crate::nodes::Block::remove_tokens): a token container
+/// field is emptied so that a tree parsed with token data compares equal to the
+/// same tree parsed without it. [`Option`] containers become `None` and [`Vec`]
+/// containers are cleared.
+pub trait RemoveTokenData {
+    /// Removes the token data from `self`.
+    fn remove_token_data(&mut self);
+}
+
+impl RemoveTokenData for Token {
+    fn remove_token_data(&mut self) {
+        self.remove_tokens();
+    }
+}
+
+impl<T> RemoveTokenData for Option<T> {
+    fn remove_token_data(&mut self) {
+        *self = None;
+    }
+}
+
+impl<T> RemoveTokenData for Vec<T> {
+    fn remove_token_data(&mut self) {
+        self.clear();
+    }
+}

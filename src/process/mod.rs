@@ -1,5 +1,6 @@
 //! Defines AST processing and mutation traits, visitors, and constant evaluation.
 
+mod detokenize;
 mod evaluator;
 mod immutable;
 mod node_counter;
@@ -8,6 +9,7 @@ mod post_visitor;
 pub mod utils;
 mod visitors;
 
+pub use detokenize::{detokenize, detokenize_expression, detokenize_statement};
 pub use evaluator::*;
 pub use immutable::{
     any_expression, any_statement, collect_identifier_names, count_nodes, ImmutableProcessor,

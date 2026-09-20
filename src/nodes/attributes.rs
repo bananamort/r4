@@ -91,7 +91,7 @@ impl Attributes {
         self.attributes.retain_mut(predicate);
     }
 
-    super::impl_token_fns!(iter = [attributes]);
+    super::impl_token_fns!(children = [attributes]);
 }
 
 /// Represents a function attribute.
@@ -121,6 +121,14 @@ impl Attribute {
         match self {
             Self::Name(name) => name.clear_whitespaces(),
             Self::Group(list) => list.clear_whitespaces(),
+        }
+    }
+
+    /// Removes all tokens from this attribute.
+    pub fn remove_tokens(&mut self) {
+        match self {
+            Self::Name(name) => name.remove_tokens(),
+            Self::Group(list) => list.remove_tokens(),
         }
     }
 
@@ -342,7 +350,7 @@ impl AttributeGroup {
         }
     }
 
-    super::impl_token_fns!(iter = [tokens, attributes]);
+    super::impl_token_fns!(iter = [tokens] children = [attributes]);
 }
 
 /// Tokens for an attribute group.
@@ -417,7 +425,7 @@ impl AttributeGroupElement {
         self.arguments = None;
     }
 
-    super::impl_token_fns!(target = [name] iter = [arguments]);
+    super::impl_token_fns!(target = [name] children = [arguments]);
 }
 
 /// Arguments for an attribute element.
@@ -452,6 +460,15 @@ impl AttributeArguments {
             Self::Tuple(tuple) => tuple.clear_whitespaces(),
             Self::String(string) => string.clear_whitespaces(),
             Self::Table(table) => table.clear_whitespaces(),
+        }
+    }
+
+    /// Removes all tokens from these attribute arguments.
+    pub fn remove_tokens(&mut self) {
+        match self {
+            Self::Tuple(tuple) => tuple.remove_tokens(),
+            Self::String(string) => string.remove_tokens(),
+            Self::Table(table) => table.remove_tokens(),
         }
     }
 

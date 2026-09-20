@@ -350,6 +350,15 @@ impl NumberExpression {
         }
     }
 
+    /// Removes all tokens from this number expression.
+    pub fn remove_tokens(&mut self) {
+        match self {
+            NumberExpression::Decimal(number) => number.remove_tokens(),
+            NumberExpression::Hex(number) => number.remove_tokens(),
+            NumberExpression::Binary(number) => number.remove_tokens(),
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {

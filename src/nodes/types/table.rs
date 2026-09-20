@@ -400,6 +400,15 @@ impl TableEntryType {
         }
     }
 
+    /// Removes all tokens from this table entry.
+    pub fn remove_tokens(&mut self) {
+        match self {
+            TableEntryType::Property(property) => property.remove_tokens(),
+            TableEntryType::Literal(literal) => literal.remove_tokens(),
+            TableEntryType::Indexer(indexer) => indexer.remove_tokens(),
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
@@ -588,7 +597,7 @@ impl TableType {
         &mut self.tokens.as_mut().unwrap().closing_brace
     }
 
-    super::impl_token_fns!(iter = [entries, tokens]);
+    super::impl_token_fns!(iter = [tokens] children = [entries]);
 }
 
 /// Contains the tokens that define a table type's syntax.

@@ -82,7 +82,7 @@ impl TypeName {
         }
     }
 
-    super::impl_token_fns!(target = [type_name] iter = [type_parameters]);
+    super::impl_token_fns!(target = [type_name] children = [type_parameters]);
 }
 
 /// Represents a collection of type parameters in a generic type.

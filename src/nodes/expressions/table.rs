@@ -208,6 +208,15 @@ impl TableEntry {
         }
     }
 
+    /// Removes all tokens from this table entry.
+    pub fn remove_tokens(&mut self) {
+        match self {
+            TableEntry::Field(entry) => entry.remove_tokens(),
+            TableEntry::Index(entry) => entry.remove_tokens(),
+            TableEntry::Value(_) => {}
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn replace_referenced_tokens(&mut self, code: &str) {
         match self {
@@ -393,7 +402,7 @@ impl TableExpression {
         }
     }
 
-    super::impl_token_fns!(iter = [tokens, entries]);
+    super::impl_token_fns!(iter = [tokens] children = [entries]);
 }
 
 impl Default for TableExpression {

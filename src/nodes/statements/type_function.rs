@@ -288,7 +288,8 @@ impl TypeFunctionStatement {
 
     super::impl_token_fns!(
         target = [identifier]
-        iter = [parameters, generic_parameters, tokens]
+        iter = [tokens]
+        children = [parameters, generic_parameters]
     );
 }
 

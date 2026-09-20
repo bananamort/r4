@@ -321,6 +321,20 @@ impl Token {
             .retain(|trivia| trivia.kind() != TriviaKind::Whitespace);
     }
 
+    /// Removes all trivia and the source position from this token.
+    ///
+    /// The token becomes the canonical content-free token
+    /// ([`Position::Any`] with empty content and no trivia). This is how a
+    /// token is erased when building a token-insensitive view of a tree for
+    /// structural comparison; see [`Block::is_equivalent_to`](crate::nodes::Block::is_equivalent_to).
+    pub fn remove_tokens(&mut self) {
+        self.leading_trivia.clear();
+        self.trailing_trivia.clear();
+        self.position = Position::Any {
+            content: Cow::Borrowed(""),
+        };
+    }
+
     #[allow(dead_code)]
     pub(crate) fn filter_comments(&mut self, filter: impl Fn(&Trivia) -> bool) {
         self.leading_trivia

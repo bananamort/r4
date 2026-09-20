@@ -221,7 +221,7 @@ impl FunctionCall {
         self.arguments.mutate_last_token()
     }
 
-    super::impl_token_fns!(iter = [tokens, method]);
+    super::impl_token_fns!(iter = [tokens] children = [method]);
 }
 
 #[cfg(test)]

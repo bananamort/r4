@@ -160,7 +160,7 @@ impl IfExpression {
         self.result.mutate_last_token()
     }
 
-    super::impl_token_fns!(iter = [tokens, branches]);
+    super::impl_token_fns!(iter = [tokens] children = [branches]);
 }
 
 /// Represents an elseif branch in an if expression.

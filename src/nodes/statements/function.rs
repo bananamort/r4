@@ -132,7 +132,7 @@ impl FunctionName {
         &mut self.name
     }
 
-    super::impl_token_fns!(iter = [tokens, field_names, method]);
+    super::impl_token_fns!(iter = [tokens] children = [field_names, method]);
 }
 
 /// Represents a function declaration statement.
@@ -445,6 +445,7 @@ impl FunctionStatement {
 
     super::impl_token_fns!(
         target = [name]
-        iter = [parameters, generic_parameters, tokens]
+        iter = [tokens]
+        children = [parameters, generic_parameters]
     );
 }

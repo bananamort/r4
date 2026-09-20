@@ -294,7 +294,7 @@ impl LiteralTable {
         self.entries.is_empty()
     }
 
-    super::impl_token_fns!(iter = [tokens, entries]);
+    super::impl_token_fns!(iter = [tokens] children = [entries]);
 }
 
 /// An entry in a literal table.
@@ -324,6 +324,14 @@ impl LiteralTableEntry {
     pub fn clear_whitespaces(&mut self) {
         match self {
             Self::Field(entry) => entry.clear_whitespaces(),
+            Self::Value(_value) => {}
+        }
+    }
+
+    /// Removes all tokens from this literal table entry.
+    pub fn remove_tokens(&mut self) {
+        match self {
+            Self::Field(entry) => entry.remove_tokens(),
             Self::Value(_value) => {}
         }
     }
