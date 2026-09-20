@@ -1,10 +1,9 @@
 # Architectural Audit — `darklua-0.19.0` vs `r4`
 
 Date: 2026-09-12
-Last updated: tests, equivalence, symbol display, syntax factory and trivia
-mission (darklua-style colocated tests plus Loretta/Roslyn ergonomics:
-`is_equivalent_to`, `SymbolDisplay`, `SyntaxFactory`, `EndOfLine` trivia and
-`--!` directives).
+Last updated: Loretta-parity review mission (verified each affordance against
+Loretta's actual Lua implementation, kept r4's designs, reverted the
+parity-only comment-kind split, and fixed shebang handling).
 Scope: `references/darklua-0.19.0/src/` versus `r4`'s read-only analysis layers
 (`src/semantic/`, `src/cfg/`).
 
@@ -703,14 +702,15 @@ previously missing:
   expressions, statements, blocks and fallible number parsing; it returns
   ordinary tokenless nodes, so a built tree is `is_equivalent_to` the parsed
   source.
-- **Trivia model** — `TriviaKind::EndOfLine` distinguishes line breaks from
-  inline whitespace; the read-only `process::for_each_trivia` / `collect_trivia`
-  enumerate every piece of trivia (and `for_each_token` every token) including
-  tokens on nodes the node visitors do not surface; `Trivia::try_read_with` reads trivia fallibly; and structured `--!`
-  directives (`Directive`/`Directives`/`Strictness`) are parsed exactly, with
-  `--!strict` / `--!nonstrict` / `--!nocheck` feeding `SemanticOptions`.
-  Conflicting strictness directives and malformed `--!` comments are typed
-  errors.
+- **Trivia model** — `TriviaKind` distinguishes `Shebang` (executable metadata,
+  preserved by comment removal), `Comment`, inline `Whitespace` and `EndOfLine`;
+  the read-only `process::for_each_trivia` / `collect_trivia` enumerate every
+  piece of trivia (and `for_each_token` every token) including tokens on nodes
+  the node visitors do not surface; `Trivia::try_read_with` reads trivia
+  fallibly; and structured `--!` directives (`Directive`/`Directives`/
+  `Strictness`) are parsed exactly, with `--!strict` / `--!nonstrict` /
+  `--!nocheck` feeding `SemanticOptions`. Conflicting strictness directives and
+  malformed `--!` comments are typed errors.
 
 Deliberately not added: **disabled-text** and **skipped-token** trivia kinds and
 an **`IOperation`** tree. Lua has no preprocessor, so "disabled text" is only
@@ -718,6 +718,37 @@ commented-out code, whose classification would be heuristic; full_moon's
 recovered AST does not expose skipped tokens, so a skipped-token kind could not
 be produced without guessing. `IOperation` would duplicate the existing CFG and
 `SemanticModel`, which already carry the semantic facts the r4 passes consume.
+
+#### Comparison with Loretta (`references/Loretta-0.2.14-nightly.26`)
+
+These affordances were checked against Loretta's actual Lua implementation. r4
+is on par or better, and Loretta's approach is deliberately not adopted where it
+is weaker:
+
+- **Equivalence** — Loretta has two inconsistent notions. The parameterless
+  `IsEquivalentTo` compares green `_fullWidth`, so it is trivia-*sensitive*;
+  `SyntaxFactory.AreEquivalent(before, after, topLevel)` is trivia-insensitive
+  but *token-text-lexical* (identifiers, numbers and strings compare by text)
+  and ignores function bodies under `topLevel`; and its `AreTokensEquivalent`
+  has an inverted comparison, so it calls differing identifier/literal text
+  equivalent. r4's relation is trivia/position/token-presence-insensitive and
+  *semantic* (r4 stores values, not token text), which is the correct notion for
+  a semantic compiler and is proven complete against a mutable oracle. Token
+  data is still available for lexical comparison via `PartialEq`.
+- **`SymbolDisplay`** — Loretta exposes no symbol display for Lua (only Core's
+  Roslyn `SymbolDisplay` and an exception-message helper), so r4's is additive.
+- **`SyntaxFactory`** — Loretta's Lua factory is a 105-member generated API and
+  has no fragment *node* parsing; r4's curated constructors cover construction,
+  and node `with_*` builders already exist. Only token/trivia lexing helpers
+  (`ParseToken(s)`, `ParseLeadingTrivia`) are absent, which `Token::from_content`
+  and `TriviaKind::with_content` cover for construction.
+- **Trivia** — r4 matches Loretta's Lua kinds except `SkippedTokensTrivia`. r4
+  keeps a comment's exact text, so separate single-line/multi-line kinds add no
+  information; a skipped-token kind cannot be produced from full_moon's
+  recovered AST and is reported as a diagnostic instead. Adding `Shebang`
+  (which Loretta also has) fixed a real bug: full_moon emits a shebang token that
+  the converter previously rejected, so a `#!` file failed to parse with token
+  preservation.
 
 ### Structural semantic layer (token-free passes)
 

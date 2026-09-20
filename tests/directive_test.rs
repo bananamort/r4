@@ -233,3 +233,23 @@ fn classifies_comment_and_shebang_kinds() {
         );
     }
 }
+
+#[test]
+fn shebang_survives_comment_removal_and_token_generation() {
+    use r4::generator::{LuaGenerator, TokenBasedLuaGenerator};
+    use r4::rules::remove_comments;
+
+    let source = "#!/usr/bin/lua\n-- a comment\nreturn 1";
+    let mut block = parse_with_tokens(source);
+
+    remove_comments(&mut block);
+
+    let mut generator = TokenBasedLuaGenerator::new(source);
+    generator.write_block(&block);
+    let output = generator.into_string();
+    assert!(
+        output.contains("#!/usr/bin/lua"),
+        "shebang dropped: {output}"
+    );
+    assert!(!output.contains("-- a comment"), "comment kept: {output}");
+}
