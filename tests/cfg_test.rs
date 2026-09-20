@@ -1380,3 +1380,46 @@ fn stale_models_are_rejected_by_the_cfg_builder() {
         r4::cfg::CfgErrorKind::MissingSemanticRecord { kind: "label", .. }
     ));
 }
+
+#[test]
+fn liveness_reads_every_statement_shape() {
+    let (cfg, model) = build_with_tokens(
+        r#"
+        local t = {}
+        do local a = 1 print(a) end
+        for k, v in pairs(t) do print(k, v) end
+        for i = 1, 10, 2 do print(i) end
+        while t do print(t) end
+        repeat print(t) until t
+        local function f() return t end
+        return f
+        "#,
+    );
+    let _ = Liveness::analyze(&cfg, &model).expect("liveness must succeed");
+
+    let (cfg, model) = build_with_tokens("local f: () -> ...number = g\nreturn f");
+    let liveness = Liveness::analyze(&cfg, &model).expect("liveness must succeed");
+    let f = symbol_named(&model, "f");
+    let _ = liveness.defs[cfg.entry.index()][f.index()];
+
+    let (cfg, model) = build_with_tokens("local x: A<(number)> = y\nreturn x");
+    let _ = Liveness::analyze(&cfg, &model).expect("liveness must succeed");
+}
+
+#[test]
+fn constant_propagation_handles_function_definitions_and_tuples() {
+    for code in [
+        "local function f() return 1 end\nreturn f",
+        "local x = function() return 1 end\nreturn x",
+        "local a, b = f()\nreturn a, b",
+        "local a, b = 1, 2\nreturn a, b",
+        "local x = print\nreturn x, print",
+        "local x = ...\nreturn x",
+        "local t = {}\nt.x = 1\nreturn t",
+    ] {
+        let (cfg, model) = build_with_tokens(code);
+        let analysis = ConstantPropagation::analyze(&cfg, &model)
+            .unwrap_or_else(|error| panic!("`{code}`: {error}"));
+        let _ = analysis.block_exit_constants(cfg.entry);
+    }
+}

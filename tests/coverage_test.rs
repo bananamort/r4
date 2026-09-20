@@ -917,3 +917,40 @@ fn partial_tokens_synthesize_separators_and_variadics() {
     ));
     assert!(output.contains("table"), "{output}");
 }
+
+#[test]
+fn for_each_trivia_walks_field_call_varargs_and_literals() {
+    for code in [
+        "return a.b.c",
+        "return f().g",
+        "return a[1]()",
+        "return ...",
+        "return function(...) return ... end",
+        "local t = { a = 1, [b] = 2 }",
+        "return true, false, nil",
+        "-- c\nreturn 1 --[[t]]",
+    ] {
+        let block = parse_tokens(code, Dialect::Luau);
+        let mut count = 0;
+        r4::process::for_each_trivia(&block, &mut |_| count += 1);
+        let _ = count;
+    }
+
+    // Literal expressions (attribute arguments) are reachable only by
+    // construction.
+    use r4::nodes::{
+        Attribute, AttributeArguments, AttributeGroup, AttributeGroupElement,
+        AttributeTupleArguments, Attributes, Block, FunctionStatement, LiteralExpression,
+        Statement, Token,
+    };
+    let mut tuple = AttributeTupleArguments::default();
+    tuple.push(LiteralExpression::False(None));
+    tuple.push(LiteralExpression::Nil(Some(Token::from_content("nil"))));
+    let group = AttributeGroup::new(
+        AttributeGroupElement::new("a").with_arguments(AttributeArguments::Tuple(tuple)),
+    );
+    let function = FunctionStatement::from_name("f", Block::default())
+        .with_attributes(Attributes::new().with_attribute(Attribute::Group(group)));
+    let block = Block::new(vec![Statement::Function(Box::new(function))], None);
+    r4::process::for_each_trivia(&block, &mut |_| {});
+}
