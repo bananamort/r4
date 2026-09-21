@@ -823,3 +823,67 @@ fn function_and_intersection_type_methods() {
     function = function.with_named_argument("x", TypeName::new("A"));
     let _ = function;
 }
+
+#[test]
+fn number_expression_variant_methods() {
+    use r4::nodes::{NumberExpression, NumberParsingError, Token};
+
+    let mut hex: NumberExpression = "0xFF".parse().expect("hex number");
+    let _ = hex.mutate_token();
+    hex.set_uppercase(true);
+    hex.set_token(Token::from_content("0xFF"));
+    let _ = hex.mutate_token();
+
+    let mut binary: NumberExpression = "0b1010".parse().expect("binary number");
+    let _ = binary.mutate_token();
+    binary.set_uppercase(true);
+    binary.set_token(Token::from_content("0b1010"));
+    let _ = binary.mutate_token();
+
+    let mut decimal: NumberExpression = "1.5".parse().expect("decimal number");
+    let _ = decimal.mutate_token();
+    decimal.set_uppercase(false);
+
+    for number in [hex, binary, decimal] {
+        let _ = number.get_token();
+        let _ = number.compute_value();
+    }
+
+    for error in [
+        NumberParsingError::InvalidHexadecimalNumber,
+        NumberParsingError::InvalidHexadecimalExponent,
+        NumberParsingError::InvalidDecimalNumber,
+        NumberParsingError::InvalidDecimalExponent,
+        NumberParsingError::InvalidBinaryNumber,
+    ] {
+        assert!(!error.to_string().is_empty());
+    }
+}
+
+#[test]
+fn replacing_an_existing_indexer_type() {
+    use r4::nodes::{
+        StringType, TableEntryType, TableIndexerType, TableLiteralPropertyType, TypeName,
+    };
+
+    let mut table = TableType::default();
+    // Install a real indexer, then set it again (replacing the previous one).
+    let _ = table.set_indexer_type(TableIndexerType::new(number("number"), number("number")));
+    let removed = table.set_indexer_type(TableIndexerType::new(number("number"), number("string")));
+    assert!(removed.is_some());
+    assert!(table.has_indexer_type());
+
+    // A string-literal key becomes a literal property instead of an indexer.
+    let removed = table.set_indexer_type(TableIndexerType::new(
+        StringType::new("\"key\"").expect("valid string type"),
+        number("number"),
+    ));
+    assert!(removed.is_none());
+
+    let literal = TableLiteralPropertyType::new(
+        StringType::new("\"key\"").expect("valid string type"),
+        number("number"),
+    );
+    let _ = TableEntryType::from(literal);
+    let _ = TypeName::new("unused");
+}
