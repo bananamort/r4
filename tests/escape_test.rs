@@ -278,3 +278,26 @@ fn escape_analysis_covers_type_instantiation_and_base_forms() {
         }
     }
 }
+
+#[test]
+fn escape_analysis_reports_unknown_symbols_as_unconfined() {
+    let (block, model) = analyze("local unused = 1\nreturn 0");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let unused = symbol_named(&model, "unused");
+    // No escape facts were recorded for a non-reference value.
+    assert!(analysis.info(unused).is_none());
+    assert!(!analysis.is_confined_table(&model, unused));
+}
+
+#[test]
+fn escape_analysis_covers_indirect_call_prefixes() {
+    for code in [
+        "local t = {}\na.b()\nreturn t",
+        "local t = {}\nt.a.b()\nreturn t",
+        "local t = {}\nt[1]()\nreturn t",
+        "local t = {}\n(helper)(t)\nreturn t",
+    ] {
+        let (block, model) = analyze(code);
+        let _ = EscapeAnalysis::analyze(&block, &model);
+    }
+}
