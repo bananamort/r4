@@ -278,12 +278,6 @@ pub trait RemoveTokenData {
     fn remove_token_data(&mut self);
 }
 
-impl RemoveTokenData for Token {
-    fn remove_token_data(&mut self) {
-        self.remove_tokens();
-    }
-}
-
 impl<T> RemoveTokenData for Option<T> {
     fn remove_token_data(&mut self) {
         *self = None;

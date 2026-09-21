@@ -943,3 +943,40 @@ fn table_indexer_modifier_token_clearing() {
     indexer.remove_modifier();
     assert!(indexer.get_tokens().is_some());
 }
+
+#[test]
+fn block_token_passes_cover_semicolon_lists() {
+    let mut block = Parser::default()
+        .preserve_tokens()
+        .parse("local x = 1; local y = 2; return x;")
+        .expect("valid code");
+
+    let has_semicolons = block
+        .get_tokens()
+        .map(|tokens| tokens.semicolons.iter().any(Option::is_some))
+        .unwrap_or(false);
+    assert!(
+        has_semicolons,
+        "the parser must record statement semicolons"
+    );
+
+    block.clear_comments();
+    block.clear_whitespaces();
+    let mut count = 0;
+    block.for_each_token(&mut |_| count += 1);
+    block.remove_tokens();
+    assert!(count > 0);
+
+    // A block's own token struct, including its optional semicolons.
+    let mut tokens = r4::nodes::BlockTokens {
+        semicolons: vec![Some(Token::from_content(";")), None],
+        last_semicolon: Some(Token::from_content(";")),
+        final_token: Some(Token::from_content("")),
+    };
+    tokens.clear_comments();
+    tokens.clear_whitespaces();
+    let mut token_count = 0;
+    tokens.for_each_token(&mut |_| token_count += 1);
+    tokens.remove_tokens();
+    assert!(token_count > 0);
+}

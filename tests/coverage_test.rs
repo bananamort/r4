@@ -102,6 +102,8 @@ const CORPUS: &[&str] = &[
     "local f: (number) -> (string, boolean) = g",
     "type J<A, B...> = (A, B...) -> A",
     "return f<<T, U>>",
+    "local x = 1; local y = 2; return x",
+    "do local x = 1; end; return 0",
     "type K<T... = (number)> = () -> ()",
     "type L<T... = ...number> = () -> ()",
     "type M<T... = U...> = () -> ()",
