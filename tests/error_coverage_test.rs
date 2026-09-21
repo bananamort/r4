@@ -17,6 +17,7 @@ use r4::Parser;
 macro_rules! variant_registry {
     ($tag:ident, $ast:ty, $( $variant:ident => $pattern:pat ),* $(,)?) => {
         #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+        #[allow(clippy::enum_variant_names)]
         enum $tag { $( $variant ),* }
 
         impl $tag {
@@ -1081,6 +1082,44 @@ fn module_and_require_errors_are_all_triggered() {
         "alias errors never triggered: {absent:?}"
     );
     for error in &alias_errors {
+        assert!(!error.to_string().is_empty(), "{error:?} has no message");
+    }
+}
+
+variant_registry!(NumberParsingErrorTag, r4::nodes::NumberParsingError,
+    InvalidHexadecimalNumber => r4::nodes::NumberParsingError::InvalidHexadecimalNumber,
+    InvalidHexadecimalExponent => r4::nodes::NumberParsingError::InvalidHexadecimalExponent,
+    InvalidDecimalNumber => r4::nodes::NumberParsingError::InvalidDecimalNumber,
+    InvalidDecimalExponent => r4::nodes::NumberParsingError::InvalidDecimalExponent,
+    InvalidBinaryNumber => r4::nodes::NumberParsingError::InvalidBinaryNumber,
+);
+
+#[test]
+fn number_parsing_errors_are_all_triggered() {
+    use r4::nodes::NumberExpression;
+
+    let errors: Vec<r4::nodes::NumberParsingError> = ["", "1e", "0xZZ", "0x1p", "0b1Z"]
+        .iter()
+        .map(|text| {
+            text.parse::<NumberExpression>()
+                .expect_err("the literal is invalid")
+        })
+        .collect();
+
+    let produced: BTreeSet<&'static str> = errors
+        .iter()
+        .map(|error| NumberParsingErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        NumberParsingErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "number parsing errors never triggered: {absent:?}"
+    );
+
+    for error in &errors {
         assert!(!error.to_string().is_empty(), "{error:?} has no message");
     }
 }
