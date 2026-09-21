@@ -1144,3 +1144,26 @@ fn binary_operator_parenthesization_helpers() {
         }
     }
 }
+
+#[test]
+fn table_literal_property_tokens_and_indexer_conversion() {
+    use r4::nodes::{
+        StringType, TableEntryType, TableIndexTypeTokens, TableIndexerType,
+        TableLiteralPropertyType, Token,
+    };
+
+    let mut literal = TableLiteralPropertyType::new(
+        StringType::new("\"key\"").expect("valid string type"),
+        number("number"),
+    );
+    literal.set_tokens(TableIndexTypeTokens {
+        opening_bracket: Token::from_content("["),
+        closing_bracket: Token::from_content("]"),
+        colon: Token::from_content(":"),
+        modifier: None,
+    });
+    assert!(literal.get_tokens().is_some());
+
+    let entry: TableEntryType = TableIndexerType::new(number("number"), number("number")).into();
+    assert!(matches!(entry, TableEntryType::Indexer(_)));
+}
