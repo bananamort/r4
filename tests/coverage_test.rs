@@ -1798,3 +1798,45 @@ fn token_based_generator_round_trips_exotic_prefixes() {
         }
     }
 }
+
+#[test]
+fn token_based_generator_round_trips_a_kitchen_sink_program() {
+    for code in [
+        concat!(
+            "-- header\n",
+            "local a, b = 1, 2;\n",
+            "local t = { 1, 2, x = 3, ['y'] = 4 };\n",
+            "function M.f(a, b, ...) return a, b, ... end\n",
+            "local g = function<T>(x: T, ...: string): (T, string) return x, 's' end\n",
+            "for i = 1, 10, 2 do if i % 2 == 0 then continue end end\n",
+            "for k, v in pairs(t) do print(k, v) end\n",
+            "while t do break end\n",
+            "repeat t = nil until not t\n",
+            "local x = t.a.b[1]:m<<T>>().c\n",
+            "return `a {x} b`, t, M, g\n",
+        ),
+        concat!(
+            "export type Pair<A, B> = { first: A, second: B }\n",
+            "type Fn = (a: number, b: string, ...number) -> (...string)\n",
+            "type Func<T> = <U>(x: T, y: U) -> T & U\n",
+            "local f: Fn = g\n",
+            "local h: Func<number> = i\n",
+            "return f, h\n",
+        ),
+        concat!(
+            "local x = if a then 1 elseif b then 2 elseif c then 3 else 4\n",
+            "local y = (a and b) or (c and d)\n",
+            "local z = a - (b - c) * (d / e) ^ f\n",
+            "return x, y, z, -(#t), not not a, a .. b .. c\n",
+        ),
+    ] {
+        let tokens = parse_tokens(code, Dialect::Luau);
+        let mut generator = TokenBasedLuaGenerator::new(code);
+        generator.write_block(&tokens);
+        assert_eq!(
+            generator.into_string(),
+            code,
+            "token round trip changed the kitchen-sink program"
+        );
+    }
+}
