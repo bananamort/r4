@@ -231,3 +231,39 @@ where
         None => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+    use crate::nodes::StringExpression;
+
+    // Compile-enforced: adding a `StringErrorKind` variant breaks this match.
+    fn kind_name(kind: &StringErrorKind) -> &'static str {
+        match kind {
+            StringErrorKind::Invalid { .. } => "invalid",
+            StringErrorKind::MalformedEscapeSequence { .. } => "malformed-escape",
+        }
+    }
+
+    #[test]
+    fn every_string_error_kind_is_reachable() {
+        let errors = vec![
+            StringExpression::new("abc").expect_err("missing quotes"),
+            StringExpression::new(r#""\xZZ""#).expect_err("a malformed escape"),
+        ];
+
+        let produced: BTreeSet<&'static str> =
+            errors.iter().map(|error| kind_name(&error.kind)).collect();
+        for error in &errors {
+            assert!(!error.to_string().is_empty());
+        }
+        for expected in ["invalid", "malformed-escape"] {
+            assert!(
+                produced.contains(expected),
+                "string error kind `{expected}` never triggered"
+            );
+        }
+    }
+}
