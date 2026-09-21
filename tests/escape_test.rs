@@ -233,3 +233,26 @@ fn escape_analysis_covers_every_prefix_and_variable_shape() {
         }
     }
 }
+
+#[test]
+fn escape_analysis_covers_index_and_parenthesized_prefixes() {
+    for code in [
+        "local t = {}\nt[t2] += 1\nreturn 0",
+        "local t = {}\nt['x'] += 1\nreturn 0",
+        "local t = {}\nt.a[b].c = 1\nreturn 0",
+        "local t = {}\nf((t))[1] = 2\nreturn 0",
+        "local t = {}\n(f)().x = 1\nreturn 0",
+        "local t = {}\nt<<T>>()\nreturn 0",
+        "local t = {}\nreturn (t)[k]",
+    ] {
+        let (block, model) = analyze(code);
+        let analysis = EscapeAnalysis::analyze(&block, &model);
+        if let Some(t) = model.symbols.iter().find(|symbol| symbol.name == "t") {
+            let _ = analysis.has_dynamic_read(t.id);
+            let _ = analysis.has_dynamic_write(t.id);
+            let _ = analysis.is_field_read(t.id, "x");
+            let _ = analysis.escapes(t.id);
+            let _ = analysis.info(t.id);
+        }
+    }
+}

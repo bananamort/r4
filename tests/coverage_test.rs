@@ -1202,3 +1202,23 @@ fn partial_tokens_synthesize_generic_and_for_commas() {
     ));
     assert!(output.contains("A,B"), "{output}");
 }
+
+#[test]
+fn type_cast_line_break_helpers_are_driven() {
+    for code in [
+        "local x = 1\nreturn (x :: (number) -> string)",
+        "return (x :: A & B)",
+        "return (x :: A | B)",
+        "return (x :: A<T>)",
+        "return (x :: A)",
+        "return (if c then x else y) :: number",
+        "return -(x :: number)",
+        "return (a + (x :: number))",
+        "return f((x :: (A) -> B))",
+        "return ((x :: A) :: B)",
+        "return { (x :: A) }",
+    ] {
+        let block = parse_with(code, Dialect::Luau);
+        assert_generates(&block, code, Dialect::Luau);
+    }
+}
