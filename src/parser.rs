@@ -4146,6 +4146,10 @@ mod test {
             assert_eq!(code_of(&error.kind), error.code());
             assert!(!error.to_string().is_empty());
         }
+        // The syntax diagnostic carries the offending byte span.
+        let syntax = &errors[0];
+        assert_eq!(syntax.code(), "parse/syntax");
+        assert!(syntax.to_diagnostic().span.is_some());
         for expected in ["parse/syntax", "parse/conversion", "parse/panic"] {
             assert!(
                 produced.contains(expected),
