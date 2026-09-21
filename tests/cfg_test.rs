@@ -1613,3 +1613,72 @@ fn cfg_rejects_mismatched_goto_and_label_records() {
         r4::cfg::CfgErrorKind::SemanticMismatch { kind: "label", .. }
     ));
 }
+
+#[test]
+fn liveness_reads_lowered_statement_shapes() {
+    use std::collections::HashMap;
+
+    use r4::cfg::{BasicBlock, BlockId, ControlFlowGraph, Terminator};
+    use r4::nodes::Statement;
+
+    let code = "do local a = 1 print(a) end\n\
+        for k, v in pairs(t) do print(k, v) end\n\
+        for i = 1, 10 do print(i) end\n\
+        while t do print(t) end\n\
+        repeat print(t) until t\n\
+        x = 1\n\
+        x += 1\n\
+        print(x)\n\
+        local y = 1\n\
+        local function f() return t end\n\
+        function g() return 1 end\n\
+        local p = (1 :: {number})\n\
+        local q = (1 :: number?)\n\
+        local r = (1 :: A & B)\n\
+        local s = (1 :: A | B)\n\
+        local u = (1 :: true)\n\
+        local v = (1 :: false)\n\
+        local w = (1 :: nil)\n\
+        local z = (1 :: \"literal\")\n\
+        local aa = (1 :: (number))\n\
+        local bb = (1 :: typeof(t))\n\
+        return f";
+    let block = Parser::default()
+        .preserve_tokens()
+        .parse(code)
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
+
+    let statements: Vec<Statement> = block.iter_statements().cloned().collect();
+
+    let entry = BlockId(0);
+    let exit = BlockId(1);
+    let make_block = |id: BlockId,
+                      statements: Vec<Statement>,
+                      successors: Vec<BlockId>,
+                      predecessors: Vec<BlockId>| BasicBlock {
+        id,
+        statements,
+        statement_origins: Vec::new(),
+        expressions: Vec::new(),
+        branch_origin: None,
+        predecessors,
+        successors,
+        terminator: Terminator::Return(None),
+    };
+
+    let cfg = ControlFlowGraph {
+        blocks: vec![
+            make_block(entry, statements, vec![exit], Vec::new()),
+            make_block(exit, Vec::new(), Vec::new(), vec![entry]),
+        ],
+        entry,
+        exit,
+        label_blocks: HashMap::new(),
+        loop_headers: HashMap::new(),
+        function_scope: model.chunk_scope(),
+    };
+
+    let _ = Liveness::analyze(&cfg, &model).expect("liveness");
+    let _ = ConstantPropagation::analyze(&cfg, &model).expect("constant propagation");
+}
