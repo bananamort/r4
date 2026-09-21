@@ -16,17 +16,18 @@ fn table_type_entry_methods() {
         StringType::new("\"key\"").expect("valid string type"),
         number("number"),
     );
-    let _ = literal.get_string();
-    let _ = literal.get_type();
+    assert_eq!(literal.get_string().get_value(), b"key");
+    assert!(matches!(literal.get_type(), Type::Name(_)));
     let mut literal = literal;
     let _ = literal.mutate_string();
     let _ = literal.mutate_type();
-    let _ = literal.get_modifier();
+    assert_eq!(literal.get_modifier(), None);
     literal = literal.with_modifier(TablePropertyModifier::Read);
+    assert_eq!(literal.get_modifier(), Some(&TablePropertyModifier::Read));
 
     let mut table = TableType::default().with_property(TableEntryType::from(literal));
-    let _ = table.iter_mut_entries().count();
-    let _ = table.get_tokens();
+    assert_eq!(table.iter_mut_entries().count(), 1);
+    assert!(table.get_tokens().is_none());
     table.remove_tokens();
 }
 
@@ -38,8 +39,9 @@ fn generic_parameter_pack_methods() {
     };
 
     let mut pack = GenericTypePack::new("A");
+    assert_eq!(pack.get_name().get_name().as_str(), "A");
     let _ = pack.mutate_name();
-    let _ = pack.get_token();
+    assert!(pack.get_token().is_none());
     let _ = pack.mutate_last_token();
 
     let mut variable = TypeVariableWithDefault::new(Identifier::new("A"), number("number"));
@@ -182,9 +184,19 @@ fn if_expression_methods() {
         Expression::from(1.0),
         Expression::from(2.0),
     );
+    assert!(matches!(
+        expression.get_condition(),
+        Expression::Identifier(_)
+    ));
+    assert!(matches!(expression.get_result(), Expression::Number(_)));
+    assert!(matches!(
+        expression.get_else_result(),
+        Expression::Number(_)
+    ));
+    assert_eq!(expression.iter_branches().count(), 0);
     expression.clear_elseif_branches();
     expression.retain_elseif_branches_mut(|_| true);
-    let _ = expression.remove_branch(0);
+    assert!(expression.remove_branch(0).is_none());
     let _ = expression.mutate_first_token();
     let _ = expression.mutate_last_token();
 }
@@ -620,7 +632,9 @@ fn type_declaration_token_methods() {
     };
 
     let mut declaration = TypeDeclarationStatement::new("T", number("number"));
-    let _ = declaration.mutate_tokens();
+    assert_eq!(declaration.get_name().get_name().as_str(), "T");
+    assert!(matches!(declaration.get_type(), Type::Name(_)));
+    assert!(declaration.mutate_tokens().is_none());
     declaration.clear_comments();
     declaration.clear_whitespaces();
     declaration.remove_tokens();
@@ -648,6 +662,7 @@ fn attribute_arguments_methods() {
     let mut tuple = AttributeTupleArguments::default();
     tuple.push(LiteralExpression::nil());
     let tuple = tuple.with_value(LiteralExpression::from(true));
+    assert_eq!(tuple.len(), 2);
 
     // Removing/adding values keeps the token commas in sync.
     use r4::nodes::{Token, TupleArgumentsTokens};
@@ -665,14 +680,17 @@ fn attribute_arguments_methods() {
         AttributeArguments::from(StringExpression::from_value("s")),
         AttributeArguments::from(LiteralTable::default()),
     ];
+    assert!(matches!(arguments[0], AttributeArguments::Tuple(_)));
+    assert!(matches!(arguments[1], AttributeArguments::String(_)));
+    assert!(matches!(arguments[2], AttributeArguments::Table(_)));
     for argument in &mut arguments {
         argument.clear_comments();
         argument.clear_whitespaces();
         argument.remove_tokens();
         let mut count = 0;
         argument.for_each_token(&mut |_| count += 1);
-        let _ = count;
-        let _ = format!("{argument:?}");
+        assert_eq!(count, 0, "tokens removed");
+        assert!(!format!("{argument:?}").is_empty());
     }
 }
 
