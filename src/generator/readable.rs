@@ -19,9 +19,6 @@ enum StatementType {
     While,
     TypeDeclaration,
     TypeFunction,
-    Return,
-    Break,
-    Continue,
 }
 
 impl From<&nodes::Statement> for StatementType {
@@ -44,17 +41,6 @@ impl From<&nodes::Statement> for StatementType {
             While(_) => Self::While,
             TypeDeclaration(_) => Self::TypeDeclaration,
             TypeFunction(_) => Self::TypeFunction,
-        }
-    }
-}
-
-impl From<&nodes::LastStatement> for StatementType {
-    fn from(statement: &nodes::LastStatement) -> Self {
-        use nodes::LastStatement::*;
-        match statement {
-            Break(_) => Self::Break,
-            Continue(_) => Self::Continue,
-            Return(_) => Self::Return,
         }
     }
 }

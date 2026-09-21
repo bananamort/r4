@@ -1571,3 +1571,40 @@ fn cfg_rejects_models_that_no_longer_match_the_tree() {
         r4::cfg::CfgErrorKind::UnresolvedIdentifier { .. }
     ));
 }
+
+#[test]
+fn cfg_rejects_mismatched_goto_and_label_records() {
+    use r4::nodes::{GotoStatement, LabelStatement};
+
+    // A goto renamed after analysis no longer matches its semantic record.
+    let block = Parser::default()
+        .lua52()
+        .parse("::top::\ngoto top")
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
+
+    let mut renamed_goto = block.clone();
+    for statement in renamed_goto.iter_mut_statements() {
+        if let Statement::Goto(goto) = statement {
+            *goto = GotoStatement::from_name("other");
+        }
+    }
+    let error = build_chunk(&renamed_goto, &model).expect_err("mismatched goto");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::SemanticMismatch { kind: "goto", .. }
+    ));
+
+    // A label renamed after analysis no longer matches its semantic record.
+    let mut renamed_label = block;
+    for statement in renamed_label.iter_mut_statements() {
+        if let Statement::Label(label) = statement {
+            *label = LabelStatement::from_name("other");
+        }
+    }
+    let error = build_chunk(&renamed_label, &model).expect_err("mismatched label");
+    assert!(matches!(
+        error.kind,
+        r4::cfg::CfgErrorKind::SemanticMismatch { kind: "label", .. }
+    ));
+}
