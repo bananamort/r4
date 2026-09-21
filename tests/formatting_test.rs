@@ -273,3 +273,42 @@ fn token_passes_cover_literal_and_type_literal_tokens() {
     assert!(output.contains("type literal"), "{output}");
     assert!(!output.contains("value literals"), "{output}");
 }
+
+#[test]
+fn removes_comments_from_attribute_literal_tables() {
+    use r4::nodes::{
+        Attribute, AttributeArguments, AttributeGroup, AttributeGroupElement,
+        AttributeTupleArguments, Attributes, Block, FunctionStatement, LiteralExpression,
+        LiteralTable, Statement, StringExpression,
+    };
+    use r4::rules::remove_comments_where;
+    use r4::Parser;
+
+    let mut literal = LiteralTable::from_entries(Vec::new());
+    literal.append_field(
+        r4::nodes::Identifier::new("k"),
+        LiteralExpression::from(StringExpression::from_value("value")),
+    );
+    literal.append_array_value(LiteralExpression::Nil(None));
+
+    let mut tuple = AttributeTupleArguments::default();
+    tuple.push(LiteralExpression::from(StringExpression::from_value("arg")));
+    tuple.push(LiteralExpression::from(literal));
+
+    let group = AttributeGroup::new(
+        AttributeGroupElement::new("tuple").with_arguments(AttributeArguments::Tuple(tuple)),
+    )
+    .with_attribute(AttributeGroupElement::new("string").with_arguments(
+        AttributeArguments::String(StringExpression::from_value("arg")),
+    ));
+
+    let function = FunctionStatement::from_name("f", Block::default())
+        .with_attributes(Attributes::new().with_attribute(Attribute::Group(group)));
+
+    for keep in [true, false] {
+        let mut block = Block::new(vec![Statement::Function(Box::new(function.clone()))], None);
+        remove_comments_where(&mut block, |_| keep);
+    }
+
+    let _ = Parser::default().parse("return 1").expect("parse");
+}

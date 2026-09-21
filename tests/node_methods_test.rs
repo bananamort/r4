@@ -887,3 +887,18 @@ fn replacing_an_existing_indexer_type() {
     let _ = TableEntryType::from(literal);
     let _ = TypeName::new("unused");
 }
+
+#[test]
+fn literal_table_conversions() {
+    use r4::nodes::{
+        Expression, LiteralExpression, LiteralTable, LiteralTableEntry, TableExpression,
+    };
+
+    let entry = LiteralTableEntry::from(LiteralExpression::nil());
+    assert!(matches!(entry, LiteralTableEntry::Value(_)));
+
+    let table = LiteralTable::default();
+    let expression: TableExpression = table.into();
+    assert!(expression.is_empty());
+    let _ = Expression::from(expression);
+}
