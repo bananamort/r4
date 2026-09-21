@@ -409,6 +409,39 @@ mod test {
     }
 
     #[test]
+    fn read_only_walk_matches_the_mutable_walk_over_attributes() {
+        use crate::nodes::{
+            Attribute, AttributeArguments, AttributeGroup, AttributeGroupElement,
+            AttributeTupleArguments, Attributes, FunctionStatement, Identifier, LiteralExpression,
+            LiteralTable, StringExpression,
+        };
+
+        let mut literal = LiteralTable::from_entries(Vec::new());
+        literal.append_field(Identifier::new("k"), LiteralExpression::nil());
+        literal.append_array_value(LiteralExpression::from(StringExpression::from_value(
+            "deep",
+        )));
+
+        let mut tuple = AttributeTupleArguments::default();
+        tuple.push(LiteralExpression::from(StringExpression::from_value("arg")));
+        tuple.push(LiteralExpression::from(literal));
+
+        let group = AttributeGroup::new(
+            AttributeGroupElement::new("tuple").with_arguments(AttributeArguments::Tuple(tuple)),
+        )
+        .with_attribute(AttributeGroupElement::new("string").with_arguments(
+            AttributeArguments::String(StringExpression::from_value("arg")),
+        ));
+
+        let function = FunctionStatement::from_name("f", Block::default())
+            .with_attributes(Attributes::new().with_attribute(Attribute::Group(group)));
+        let block = Block::new(vec![Statement::Function(Box::new(function))], None);
+
+        let mut mutable = block.clone();
+        assert_eq!(collect_trivia(&block), mutable_trivia(&mut mutable));
+    }
+
+    #[test]
     fn read_only_walk_visits_each_token_once() {
         for code in CORPUS {
             assert_unique_tokens(code, Parser::default());
