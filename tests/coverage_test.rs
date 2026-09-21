@@ -1690,3 +1690,54 @@ fn generator_output_is_equivalent_for_tricky_constructs() {
         }
     }
 }
+
+#[test]
+fn wrapped_generator_output_is_equivalent() {
+    use r4::Equivalent;
+
+    let long_params = (1..=40)
+        .map(|i| format!("parameter_number_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let long_chain = (1..=30)
+        .map(|i| format!("field_{i}"))
+        .collect::<Vec<_>>()
+        .join(".");
+    let long_arguments = (1..=20)
+        .map(|i| format!("argument_number_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    for code in [
+        format!("local function f({long_params}) end"),
+        format!("function f({long_params}, ...) end"),
+        format!("return {long_chain}(1, 2, 3)"),
+        format!("return {long_chain}:method({long_arguments})"),
+        format!("return outer(inner({long_arguments}))"),
+        "return { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }".to_owned(),
+        "return { a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8 }".to_owned(),
+    ] {
+        let block = parse_with(&code, Dialect::Luau);
+        for (name, output) in [
+            ("readable", {
+                let mut generator = ReadableLuaGenerator::default();
+                generator.write_block(&block);
+                generator.into_string()
+            }),
+            ("dense", {
+                let mut generator = DenseLuaGenerator::default();
+                generator.write_block(&block);
+                generator.into_string()
+            }),
+        ] {
+            let reparsed = Parser::default()
+                .dialect(Dialect::Luau)
+                .parse(&output)
+                .unwrap_or_else(|error| panic!("{name} `{code}`: {error}\n{output}"));
+            assert!(
+                block.is_equivalent_to(&reparsed),
+                "{name} changed the tree for `{code}`:\n{output}"
+            );
+        }
+    }
+}
