@@ -828,3 +828,208 @@ fn constructed_constructs_flow_through_the_pipeline() {
         );
     }
 }
+
+trait RuleOutcome {
+    fn ensure_ok(self, pass: &str, code: &str);
+}
+
+impl RuleOutcome for () {
+    fn ensure_ok(self, _pass: &str, _code: &str) {}
+}
+
+impl RuleOutcome for usize {
+    fn ensure_ok(self, _pass: &str, _code: &str) {}
+}
+
+impl<T, E: std::fmt::Display> RuleOutcome for Result<T, E> {
+    fn ensure_ok(self, pass: &str, code: &str) {
+        if let Err(error) = self {
+            panic!("`{pass}` failed on `{code}`: {error}");
+        }
+    }
+}
+
+#[test]
+fn the_corpus_is_run_through_every_rule() {
+    use std::collections::HashMap;
+
+    use r4::cfg::build_chunk;
+    use r4::generator::{LuaGenerator, ReadableLuaGenerator};
+    use r4::modules::MemoryModuleProvider;
+    use r4::nodes::{Expression, StringExpression};
+    use r4::rules::require::{
+        apply_path_aliases, bundle_modules, convert_require, RequirePathConverter,
+    };
+    use r4::rules::{canonicalize, desugar, inject, rename_variables};
+
+    struct Echo;
+
+    impl RequirePathConverter for Echo {
+        fn convert(&self, path: &str) -> Option<Expression> {
+            Some(Expression::String(StringExpression::from_value(path)))
+        }
+    }
+
+    macro_rules! rule {
+        ($code:expr, $lua52:expr, $block:ident, $model:expr, $pass:expr) => {{
+            let code = $code;
+            let lua52 = $lua52;
+            let mut applied = $block.clone();
+            RuleOutcome::ensure_ok(($pass)(&mut applied, $model), stringify!($pass), code);
+
+            let mut generator = ReadableLuaGenerator::default();
+            generator.write_block(&applied);
+            let output = generator.into_string();
+            let reparsed = parser(lua52).parse(&output).unwrap_or_else(|error| {
+                panic!(
+                    "`{}` output of `{code}` does not parse: {error}\n{output}",
+                    stringify!($pass)
+                )
+            });
+            let model = SemanticAnalyzer::new()
+                .analyze(&reparsed)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "`{}` output of `{code}` does not analyze: {error}",
+                        stringify!($pass)
+                    )
+                });
+            let cfg = build_chunk(&reparsed, &model).unwrap_or_else(|error| {
+                panic!(
+                    "`{}` output of `{code}` does not lower: {error}",
+                    stringify!($pass)
+                )
+            });
+            cfg.verify_invariants().unwrap_or_else(|error| {
+                panic!(
+                    "`{}` output of `{code}` has an invalid CFG: {error:?}",
+                    stringify!($pass)
+                )
+            });
+        }};
+    }
+
+    for &(code, lua52) in corpus() {
+        let block = parse(code, lua52);
+        let model = SemanticAnalyzer::new()
+            .analyze(&block)
+            .unwrap_or_else(|error| panic!("analysis of `{code}` failed: {error}"));
+        let empty_values: HashMap<String, r4::process::LuaValue> = HashMap::new();
+
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            canonicalize::convert_index_to_field
+        );
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            canonicalize::remove_nil_declarations
+        );
+        rule!(code, lua52, block, &model, canonicalize::remove_empty_do);
+        rule!(code, lua52, block, &model, canonicalize::remove_call_parens);
+        rule!(code, lua52, block, &model, canonicalize::compute_expression);
+        rule!(code, lua52, block, &model, canonicalize::remove_assertions);
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            canonicalize::remove_debug_profiling
+        );
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            canonicalize::remove_unused_variables
+        );
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            canonicalize::remove_unused_labels
+        );
+        rule!(code, lua52, block, &model, canonicalize::remove_dead_stores);
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            canonicalize::remove_unreachable_code
+        );
+        rule!(code, lua52, block, &model, canonicalize::group_local);
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            canonicalize::hoist_loop_invariants
+        );
+        rule!(code, lua52, block, &model, desugar::remove_types);
+        rule!(code, lua52, block, &model, desugar::remove_compound_assign);
+        rule!(code, lua52, block, &model, desugar::remove_if_expression);
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            desugar::remove_interpolated_string
+        );
+        rule!(code, lua52, block, &model, desugar::remove_floor_division);
+        rule!(code, lua52, block, &model, desugar::remove_continue);
+        rule!(code, lua52, block, &model, desugar::convert_luau_number);
+        rule!(code, lua52, block, &model, desugar::remove_method_call);
+        rule!(code, lua52, block, &model, desugar::make_assignment_local);
+        rule!(code, lua52, block, &model, desugar::remove_attribute);
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            desugar::remove_method_definition
+        );
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            desugar::convert_function_to_assignment
+        );
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            desugar::convert_local_function_to_assignment
+        );
+        rule!(
+            code,
+            lua52,
+            block,
+            &model,
+            rename_variables::rename_variables
+        );
+        rule!(code, lua52, block, &model, |b, m| {
+            inject::inject_global_values(b, m, &empty_values)
+        });
+        rule!(code, lua52, block, &model, |b, m| convert_require(
+            b, m, &Echo
+        ));
+        rule!(code, lua52, block, &model, |b, m| apply_path_aliases(
+            b,
+            m,
+            [("@pkg", "src/pkg")]
+        ));
+        rule!(code, lua52, block, &model, |b, m| bundle_modules(
+            b,
+            m,
+            &MemoryModuleProvider::new()
+        ));
+    }
+}
