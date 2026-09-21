@@ -494,3 +494,109 @@ fn api_errors_are_all_triggered() {
     );
     assert!(!trivia_error.to_string().is_empty());
 }
+
+variant_registry!(RenameErrorTag, r4::rules::rename_variables::RenameError,
+    UnresolvedIdentifier => r4::rules::rename_variables::RenameError::UnresolvedIdentifier { .. },
+);
+
+variant_registry!(UnusedVariableErrorTag, r4::rules::canonicalize::UnusedVariableError,
+    UnresolvedDeclaration => r4::rules::canonicalize::UnusedVariableError::UnresolvedDeclaration { .. },
+);
+
+variant_registry!(UnusedLabelErrorTag, r4::rules::canonicalize::UnusedLabelError,
+    UnresolvedLabel => r4::rules::canonicalize::UnusedLabelError::UnresolvedLabel { .. },
+);
+
+variant_registry!(ConvertLocalFunctionErrorTag, r4::rules::desugar::ConvertLocalFunctionError,
+    UnresolvedFunction => r4::rules::desugar::ConvertLocalFunctionError::UnresolvedFunction { .. },
+);
+
+#[test]
+fn rule_errors_are_all_triggered() {
+    use r4::nodes::{Expression, FunctionAssignment, FunctionCall, VariableAssignment};
+    use r4::rules::rename_variables::rename_variables;
+    use r4::rules::{canonicalize, desugar};
+
+    // The model is analyzed, but the target blocks were never analyzed against
+    // it, so their identifiers are unbound: a malformed state the passes must
+    // reject rather than guess.
+    let model = analyze(&luau("return 1"));
+
+    let mut rename_target = Block::new(
+        vec![Statement::Call(FunctionCall::from_name("never"))],
+        None,
+    );
+    let rename_error = rename_variables(&mut rename_target, &model)
+        .expect_err("renaming an unbound identifier is rejected");
+    let produced = BTreeSet::from([RenameErrorTag::of(&rename_error).name()]);
+    let absent = missing(RenameErrorTag::ALL.iter().map(|tag| tag.name()), &produced);
+    assert!(
+        absent.is_empty(),
+        "rename errors never triggered: {absent:?}"
+    );
+    assert!(!rename_error.to_string().is_empty());
+
+    let mut unused_target = Block::new(
+        vec![Statement::LocalAssign(VariableAssignment::new(
+            vec![TypedIdentifier::new("never")],
+            vec![Expression::from(1)],
+        ))],
+        None,
+    );
+    let unused_error = canonicalize::remove_unused_variables(&mut unused_target, &model)
+        .expect_err("an unbound declaration is rejected");
+    let produced = BTreeSet::from([UnusedVariableErrorTag::of(&unused_error).name()]);
+    let absent = missing(
+        UnusedVariableErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "unused-variable errors never triggered: {absent:?}"
+    );
+    assert!(!unused_error.to_string().is_empty());
+
+    // The model records an unused label, but the tree's label no longer matches
+    // it, so validation must fail instead of rewriting.
+    let mut label_target = lua52("::a::");
+    let label_model = analyze(&label_target);
+    for statement in label_target.iter_mut_statements() {
+        if let Statement::Label(label) = statement {
+            label.mutate_label().set_name("b".to_owned());
+        }
+    }
+    let label_error = canonicalize::remove_unused_labels(&mut label_target, &label_model)
+        .expect_err("an unbound label is rejected");
+    let produced = BTreeSet::from([UnusedLabelErrorTag::of(&label_error).name()]);
+    let absent = missing(
+        UnusedLabelErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "unused-label errors never triggered: {absent:?}"
+    );
+    assert!(!label_error.to_string().is_empty());
+
+    let mut local_function_target = Block::new(
+        vec![Statement::LocalFunction(Box::new(
+            FunctionAssignment::from_name("never", Block::default()),
+        ))],
+        None,
+    );
+    let convert_error =
+        desugar::convert_local_function_to_assignment(&mut local_function_target, &model)
+            .expect_err("an unbound local function is rejected");
+    let produced = BTreeSet::from([ConvertLocalFunctionErrorTag::of(&convert_error).name()]);
+    let absent = missing(
+        ConvertLocalFunctionErrorTag::ALL
+            .iter()
+            .map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "convert-local-function errors never triggered: {absent:?}"
+    );
+    assert!(!convert_error.to_string().is_empty());
+}
