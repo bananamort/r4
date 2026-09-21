@@ -242,3 +242,27 @@ fn does_not_link_mutable_or_absent_exports() {
     );
     let _ = output;
 }
+
+#[test]
+fn bundles_instance_require_paths() {
+    let output = bundle(
+        "local a = require(script.Parent.b)\nreturn a",
+        &[("b", "return { value = 1 }")],
+    );
+    assert!(!output.is_empty(), "{output}");
+}
+
+#[test]
+fn bundles_deep_instance_require_paths() {
+    let output = bundle(
+        "local a = require(script.Parent.b)\nreturn a.thing",
+        &[
+            (
+                "b",
+                "local v = require(script.Parent.c)\nreturn { thing = v }",
+            ),
+            ("c", "return 1"),
+        ],
+    );
+    assert!(!output.is_empty(), "{output}");
+}
