@@ -127,3 +127,79 @@ fn module_resolution_reuses_cached_analyses() {
         "unchanged dependency sources must reuse the analysis cache"
     );
 }
+
+/// Mutating a block in place must detach its model: querying the model while
+/// the tree is stale is a typed failure, never a stale answer.
+#[test]
+fn mutating_a_block_detaches_its_model_until_refreshed() {
+    use r4::nodes::Identifier;
+    use r4::CompilationError;
+
+    let mut compilation = Compilation::new();
+    let tree = compilation
+        .add_tree("local x = 1\nreturn x")
+        .expect("valid code");
+
+    assert!(compilation.model(tree).is_ok());
+    assert!(!compilation.tree(tree).unwrap().is_stale());
+
+    compilation
+        .block_mut(tree)
+        .expect("tree exists")
+        .take_last_statement();
+
+    assert!(compilation.tree(tree).unwrap().is_stale());
+    assert_eq!(
+        compilation.model(tree).unwrap_err(),
+        CompilationError::StaleTree(tree)
+    );
+
+    let identifier = Identifier::new("x");
+    assert_eq!(
+        compilation.binding_of(tree, &identifier).unwrap_err(),
+        CompilationError::StaleTree(tree)
+    );
+
+    // Refreshing re-analyzes the mutated block and clears the staleness.
+    compilation
+        .refresh_tree(tree)
+        .expect("the mutated tree analyzes");
+    assert!(!compilation.tree(tree).unwrap().is_stale());
+    assert!(compilation.model(tree).is_ok());
+    assert_eq!(compilation.binding_of(tree, &identifier), Ok(None));
+
+    // An unknown identifier is a distinct typed failure.
+    let missing = r4::TreeId(99);
+    assert_eq!(
+        compilation.model(missing).unwrap_err(),
+        CompilationError::UnknownTree(missing)
+    );
+}
+
+/// Resolving modules from a tree whose block was mutated but not refreshed must
+/// fail with a typed diagnostic, never panic or use the stale model.
+#[test]
+fn resolving_a_stale_tree_is_a_typed_failure() {
+    let mut compilation = Compilation::new();
+    let root = compilation
+        .add_tree("return require('./a')")
+        .expect("valid code");
+
+    compilation
+        .block_mut(root)
+        .expect("tree exists")
+        .take_last_statement();
+
+    let provider = MemoryModuleProvider::new();
+    let error = compilation
+        .resolve_modules(root, &provider)
+        .expect_err("a stale root must not resolve");
+    assert_eq!(error.code, Some("compile/stale-tree"));
+
+    compilation
+        .refresh_tree(root)
+        .expect("the mutated root analyzes");
+    compilation
+        .resolve_modules(root, &provider)
+        .expect("a refreshed root resolves");
+}

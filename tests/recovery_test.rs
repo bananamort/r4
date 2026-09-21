@@ -80,7 +80,7 @@ fn compilation_records_recovered_diagnostics() {
         .expect("recovery stores the tree");
 
     assert!(compilation.block(tree).is_some());
-    assert!(compilation.model(tree).is_some());
+    assert!(compilation.model(tree).is_ok());
     let codes: Vec<_> = compilation
         .diagnostics()
         .iter()

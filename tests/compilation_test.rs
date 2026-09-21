@@ -27,7 +27,7 @@ fn compilation_parses_and_analyzes_trees() {
     assert!(compilation.diagnostics().is_empty());
     assert!(compilation.tree(tree).is_some());
     assert!(compilation.block(tree).is_some());
-    assert!(compilation.model(tree).is_some());
+    assert!(compilation.model(tree).is_ok());
     assert!(compilation.source(tree).unwrap().contains("local x = 1"));
 
     let model = compilation.model(tree).unwrap();
@@ -93,6 +93,7 @@ fn compilation_returns_unified_bindings() {
     let identifier = returned_identifier(block);
     let binding = compilation
         .binding_of(tree, identifier)
+        .expect("the tree must not be stale")
         .expect("the identifier must bind");
     let Binding::Symbol(symbol) = binding else {
         panic!("expected a symbol binding, got {binding:?}");

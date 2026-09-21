@@ -21,7 +21,7 @@ pub mod syntax_factory;
 pub mod utils;
 
 pub use annotation::{AnnotationError, NodeAddress, SyntaxAnnotation, SyntaxAnnotations};
-pub use compilation::{Compilation, SyntaxTree, TreeId};
+pub use compilation::{Compilation, CompilationError, SyntaxTree, TreeId};
 pub use convert::{convert_data, to_expression as convert_expression, ConvertDataError};
 pub use diagnostic::{
     descriptor_for, Diagnostic, DiagnosticDescriptor, DiagnosticFormatError, DiagnosticFormatter,

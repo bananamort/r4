@@ -14,6 +14,7 @@
 //! analysis, and resolving a module graph reuses the analyses of unchanged
 //! dependencies.
 
+use std::fmt;
 use std::sync::Arc;
 
 use crate::diagnostic::{
@@ -48,7 +49,11 @@ impl TreeId {
 /// [`SyntaxTree`] is cheap.
 #[derive(Clone, Debug)]
 pub struct SyntaxTree {
+    id: TreeId,
     inner: Arc<AnalyzedModule>,
+    /// Set when [`Compilation::block_mut`] mutated the block, so `inner.model`
+    /// no longer describes `inner.block`.
+    stale: bool,
 }
 
 impl SyntaxTree {
@@ -65,9 +70,22 @@ impl SyntaxTree {
     }
 
     /// Returns the semantic model of [`Self::block`].
+    ///
+    /// Fails with [`CompilationError::StaleTree`] when the block was mutated
+    /// after it was analyzed: a model that no longer matches the AST is never
+    /// returned. Call [`Compilation::refresh_tree`] to re-analyze the block.
+    pub fn model(&self) -> Result<&SemanticModel, CompilationError> {
+        if self.stale {
+            Err(CompilationError::StaleTree(self.id))
+        } else {
+            Ok(&self.inner.model)
+        }
+    }
+
+    /// Returns whether the block was mutated after it was analyzed.
     #[inline]
-    pub fn model(&self) -> &SemanticModel {
-        &self.inner.model
+    pub fn is_stale(&self) -> bool {
+        self.stale
     }
 
     /// Converts a byte span into a one-based line/column span using this tree's
@@ -76,6 +94,30 @@ impl SyntaxTree {
         line_position_span(&self.inner.source, span)
     }
 }
+
+/// A failed query against a [`Compilation`] tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompilationError {
+    /// No tree has this identifier.
+    UnknownTree(TreeId),
+    /// The tree's block was mutated after it was analyzed, so its semantic
+    /// model is out of date. Call [`Compilation::refresh_tree`].
+    StaleTree(TreeId),
+}
+
+impl fmt::Display for CompilationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompilationError::UnknownTree(id) => write!(f, "unknown tree identifier {id:?}"),
+            CompilationError::StaleTree(id) => write!(
+                f,
+                "tree {id:?} was mutated after analysis; call refresh_tree before querying its model"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CompilationError {}
 
 /// A container of parsed and analyzed trees.
 ///
@@ -173,7 +215,11 @@ impl Compilation {
             Some(cached) => cached,
             None => self.analyze(source)?,
         };
-        self.trees[id.index()] = SyntaxTree { inner: analyzed };
+        self.trees[id.index()] = SyntaxTree {
+            id,
+            inner: analyzed,
+            stale: false,
+        };
         Ok(())
     }
 
@@ -237,7 +283,11 @@ impl Compilation {
             block,
             model,
         });
-        self.trees[id.index()] = SyntaxTree { inner: analyzed };
+        self.trees[id.index()] = SyntaxTree {
+            id,
+            inner: analyzed,
+            stale: false,
+        };
         Ok(())
     }
 
@@ -269,7 +319,11 @@ impl Compilation {
 
     fn push(&mut self, analyzed: Arc<AnalyzedModule>) -> TreeId {
         let id = TreeId(self.trees.len() as u32);
-        self.trees.push(SyntaxTree { inner: analyzed });
+        self.trees.push(SyntaxTree {
+            id,
+            inner: analyzed,
+            stale: false,
+        });
         id
     }
 
@@ -286,9 +340,12 @@ impl Compilation {
     }
 
     /// Returns the tree's semantic model, if the identifier is valid.
-    #[inline]
-    pub fn model(&self, id: TreeId) -> Option<&SemanticModel> {
-        self.tree(id).map(SyntaxTree::model)
+    ///
+    /// Fails with [`CompilationError::StaleTree`] when the block was mutated
+    /// in place after it was analyzed; call [`Self::refresh_tree`] first.
+    pub fn model(&self, id: TreeId) -> Result<&SemanticModel, CompilationError> {
+        let tree = self.tree(id).ok_or(CompilationError::UnknownTree(id))?;
+        tree.model()
     }
 
     /// Returns the tree's source, if the identifier is valid.
@@ -300,12 +357,14 @@ impl Compilation {
     /// Returns a mutable reference to the tree's block for in-place edits.
     ///
     /// The tree's analysis is detached copy-on-write, so editing one tree never
-    /// affects another tree that shares the same source. Call
-    /// [`Self::refresh_tree`] afterwards to re-analyze the mutated block.
+    /// affects another tree that shares the same source. Mutating the block
+    /// invalidates the tree's semantic model: querying it fails with
+    /// [`CompilationError::StaleTree`] until [`Self::refresh_tree`] re-analyzes
+    /// the mutated block.
     pub fn block_mut(&mut self, id: TreeId) -> Option<&mut Block> {
-        self.trees
-            .get_mut(id.index())
-            .map(|tree| &mut Arc::make_mut(&mut tree.inner).block)
+        let tree = self.trees.get_mut(id.index())?;
+        tree.stale = true;
+        Some(&mut Arc::make_mut(&mut tree.inner).block)
     }
 
     /// Returns the number of trees.
@@ -393,8 +452,15 @@ impl Compilation {
 
     /// Resolves an identifier occurrence in the given tree to the entity it
     /// binds to.
-    pub fn binding_of(&self, tree: TreeId, identifier: &Identifier) -> Option<Binding> {
-        self.model(tree)?.binding_of(identifier)
+    ///
+    /// Fails with [`CompilationError`] when the tree is unknown or was mutated
+    /// after analysis; `Ok(None)` means the identifier has no binding.
+    pub fn binding_of(
+        &self,
+        tree: TreeId,
+        identifier: &Identifier,
+    ) -> Result<Option<Binding>, CompilationError> {
+        Ok(self.model(tree)?.binding_of(identifier))
     }
 
     /// Resolves the module graph starting from `root` using `provider`.
@@ -417,10 +483,14 @@ impl Compilation {
                 return Err(diagnostic);
             }
         };
-        let model = self
-            .model(root)
-            .expect("the tree exists, so its model exists")
-            .clone();
+        let model = match self.model(root) {
+            Ok(model) => model.clone(),
+            Err(error) => {
+                let diagnostic = compilation_error_diagnostic(&error);
+                self.diagnostics.push(diagnostic.clone());
+                return Err(diagnostic);
+            }
+        };
 
         match ModuleResolver::new(provider).resolve_with_cache(
             block,
@@ -435,6 +505,20 @@ impl Compilation {
                 Err(diagnostic)
             }
         }
+    }
+}
+
+/// Converts a failed compilation query into a recorded [`Diagnostic`].
+fn compilation_error_diagnostic(error: &CompilationError) -> Diagnostic {
+    match error {
+        CompilationError::UnknownTree(id) => {
+            Diagnostic::error(format!("unknown tree identifier {id:?}"))
+                .with_code("compile/unknown-tree")
+        }
+        CompilationError::StaleTree(id) => Diagnostic::error(format!(
+            "tree {id:?} was mutated after analysis; call refresh_tree before resolving its model"
+        ))
+        .with_code("compile/stale-tree"),
     }
 }
 
