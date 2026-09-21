@@ -1416,6 +1416,11 @@ fn constant_propagation_handles_function_definitions_and_tuples() {
         "local x = print\nreturn x, print",
         "local x = ...\nreturn x",
         "local t = {}\nt.x = 1\nreturn t",
+        "x = 1\nreturn x",
+        "local x = 1\nx += 1\nreturn x",
+        "function f() return 1 end\nreturn f",
+        "local x = 1\nfunction f() return x end\nreturn f",
+        "local x = 1\nx = 2\nreturn x",
     ] {
         let (cfg, model) = build_with_tokens(code);
         let analysis = ConstantPropagation::analyze(&cfg, &model)
