@@ -269,3 +269,37 @@ fn annotation_validation_and_errors() {
         assert!(converted.code.is_some());
     }
 }
+
+#[test]
+fn session_error_renders_every_variant() {
+    use r4::rules::SessionError;
+    use r4::semantic::SemanticAnalyzer;
+
+    let parse_error = Parser::default()
+        .parse("local x = ")
+        .expect_err("a syntax error");
+    let semantic_error = SemanticAnalyzer::new()
+        .analyze(
+            &Parser::default()
+                .lua52()
+                .parse("goto missing")
+                .expect("parse"),
+        )
+        .expect_err("a semantic error");
+
+    for error in [
+        SessionError::<AnnotationError>::Parse(parse_error),
+        SessionError::<AnnotationError>::Semantic(semantic_error),
+        SessionError::<AnnotationError>::Pass(AnnotationError::UnknownBlock {
+            identity: BlockIdentity(0),
+        }),
+    ] {
+        assert!(!error.to_string().is_empty());
+    }
+
+    let converted: SessionError<AnnotationError> = Parser::default()
+        .parse("local x = ")
+        .expect_err("a syntax error")
+        .into();
+    assert!(converted.to_string().starts_with("parse error"));
+}

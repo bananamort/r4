@@ -902,3 +902,44 @@ fn literal_table_conversions() {
     assert!(expression.is_empty());
     let _ = Expression::from(expression);
 }
+
+#[test]
+fn expression_conversions_and_last_token_synthesis() {
+    use r4::nodes::Expression;
+
+    let _ = Expression::from(&1.0f64);
+    let _ = Expression::from(&1i32);
+    let _ = Expression::from(&1u32);
+    let _ = Expression::from(Option::<Expression>::None);
+    let _ = Expression::from(Some(Expression::from(1.0)));
+
+    for mut expression in [
+        Expression::True(None),
+        Expression::False(None),
+        Expression::Nil(None),
+        Expression::VariableArguments(None),
+    ] {
+        let _ = expression.mutate_last_token();
+        let _ = expression.mutate_last_token();
+    }
+}
+
+#[test]
+fn table_indexer_modifier_token_clearing() {
+    use r4::nodes::{TableIndexTypeTokens, TableIndexerType, TablePropertyModifier, Token};
+
+    let mut indexer = TableIndexerType::new(number("number"), number("number")).with_tokens(
+        TableIndexTypeTokens {
+            opening_bracket: Token::from_content("["),
+            closing_bracket: Token::from_content("]"),
+            colon: Token::from_content(":"),
+            modifier: Some(Token::from_content("read")),
+        },
+    );
+    indexer.set_modifier(TablePropertyModifier::Write);
+    indexer.set_modifier(TablePropertyModifier::Write);
+    indexer.set_modifier(TablePropertyModifier::Read);
+    indexer.remove_modifier();
+    indexer.remove_modifier();
+    assert!(indexer.get_tokens().is_some());
+}
