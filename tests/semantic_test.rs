@@ -1243,6 +1243,11 @@ fn semantic_walker_handles_labels_and_generic_pack_types() {
         "local f: <A...>(A...) -> A... = g\nreturn f",
         "type T = A<B...>\nreturn 1",
         "local x: A<(number)> = y\nreturn x",
+        "local function v1(...: number) return ... end\nreturn v1",
+        "local function v2(a: number, ...: string): number return a end\nreturn v2",
+        "function v3(...: A...) end\nreturn v3",
+        "local v4 = function(...: number): () return end\nreturn v4",
+        "type function v5(...: number) end\nreturn 1",
     ] {
         let _ = Parser::default()
             .parse_analyzed(code)
