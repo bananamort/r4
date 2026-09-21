@@ -1624,6 +1624,8 @@ fn liveness_reads_lowered_statement_shapes() {
     let code = "do local a = 1 print(a) end\n\
         for k, v in pairs(t) do print(k, v) end\n\
         for i = 1, 10 do print(i) end\n\
+        for j = 1, 10, 2 do print(j) end\n\
+        if c then print(c) else print(t) end\n\
         while t do print(t) end\n\
         repeat print(t) until t\n\
         x = 1\n\
@@ -1681,4 +1683,24 @@ fn liveness_reads_lowered_statement_shapes() {
 
     let _ = Liveness::analyze(&cfg, &model).expect("liveness");
     let _ = ConstantPropagation::analyze(&cfg, &model).expect("constant propagation");
+
+    // A statement referencing an identifier with no binding is a typed error.
+    use r4::nodes::{Arguments as CallArguments, FunctionCall, Prefix, TupleArguments};
+    let unresolved = Statement::Call(FunctionCall::new(
+        Prefix::from_name("never_declared"),
+        CallArguments::Tuple(TupleArguments::default()),
+        None,
+    ));
+    let error_cfg = ControlFlowGraph {
+        blocks: vec![
+            make_block(entry, vec![unresolved], vec![exit], Vec::new()),
+            make_block(exit, Vec::new(), Vec::new(), vec![entry]),
+        ],
+        entry,
+        exit,
+        label_blocks: HashMap::new(),
+        loop_headers: HashMap::new(),
+        function_scope: model.chunk_scope(),
+    };
+    assert!(Liveness::analyze(&error_cfg, &model).is_err());
 }
