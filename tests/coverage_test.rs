@@ -1137,3 +1137,68 @@ fn type_instantiation_pack_arguments_are_rejected_clearly() {
         );
     }
 }
+
+#[test]
+fn partial_tokens_synthesize_generic_and_for_commas() {
+    use r4::generator::TokenBasedLuaGenerator;
+    use r4::nodes::{
+        Block, Expression, GenericForStatement, GenericForTokens, GenericParametersTokens,
+        GenericParametersWithDefaults, Statement, Token, TypeDeclarationStatement, TypeName,
+        TypeParameters, TypeParametersTokens, TypedIdentifier,
+    };
+
+    fn generate(block: &Block) -> String {
+        let mut generator = TokenBasedLuaGenerator::new("");
+        generator.write_block(block);
+        generator.into_string()
+    }
+
+    // Generic for with tokens but no commas.
+    let mut generic_for = GenericForStatement::new(
+        vec![TypedIdentifier::new("a"), TypedIdentifier::new("b")],
+        vec![Expression::identifier("x"), Expression::identifier("y")],
+        Block::default(),
+    );
+    generic_for.set_tokens(GenericForTokens {
+        r#for: Token::from_content("for"),
+        r#in: Token::from_content("in"),
+        r#do: Token::from_content("do"),
+        end: Token::from_content("end"),
+        identifier_commas: Vec::new(),
+        value_commas: Vec::new(),
+    });
+    let output = generate(&Block::new(vec![Statement::GenericFor(generic_for)], None));
+    assert!(output.contains("a,b"), "{output}");
+
+    // Generic parameters with tokens but no commas.
+    let mut parameters =
+        GenericParametersWithDefaults::from_type_variable("A").with_type_variable("B");
+    parameters.set_tokens(GenericParametersTokens {
+        opening_list: Token::from_content("<"),
+        closing_list: Token::from_content(">"),
+        commas: Vec::new(),
+    });
+    let declaration = TypeDeclarationStatement::new("T", TypeName::new("number"))
+        .with_generic_parameters(parameters);
+    let output = generate(&Block::new(
+        vec![Statement::TypeDeclaration(declaration)],
+        None,
+    ));
+    assert!(output.contains("A,B"), "{output}");
+
+    // Type parameters with tokens but no commas.
+    let mut type_parameters = TypeParameters::new(TypeName::new("A"));
+    type_parameters.push_parameter(TypeName::new("B"));
+    type_parameters.set_tokens(TypeParametersTokens {
+        opening_list: Token::from_content("<"),
+        closing_list: Token::from_content(">"),
+        commas: Vec::new(),
+    });
+    let type_name = TypeName::new("Outer").with_type_parameters(type_parameters);
+    let declaration = TypeDeclarationStatement::new("U", type_name);
+    let output = generate(&Block::new(
+        vec![Statement::TypeDeclaration(declaration)],
+        None,
+    ));
+    assert!(output.contains("A,B"), "{output}");
+}
