@@ -1,7 +1,7 @@
 //! Tests for dead-store removal and its typed errors.
 
 use r4::cfg::analysis::LivenessError;
-use r4::cfg::{BlockId, CfgError, CfgErrorKind, UnidentifiedBlock};
+use r4::cfg::{CfgError, CfgErrorKind};
 use r4::rules::canonicalize::{remove_dead_stores, DeadStoreError};
 use r4::Parser;
 
@@ -16,11 +16,6 @@ fn dead_store_errors_render() {
             name: "x".to_owned(),
             line: Some(1),
         }),
-        DeadStoreError::Provenance(UnidentifiedBlock { line: None }),
-        DeadStoreError::MissingStatementOrigin {
-            block: BlockId(0),
-            statement: 1,
-        },
     ] {
         assert!(!error.to_string().is_empty());
     }

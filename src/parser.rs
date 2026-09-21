@@ -4117,4 +4117,40 @@ mod test {
             "unexpected error: {message}"
         );
     }
+
+    #[test]
+    fn every_parser_error_kind_is_reachable() {
+        use std::collections::BTreeSet;
+
+        // Compile-enforced: adding a `ParserErrorKind` variant breaks this match.
+        fn code_of(kind: &ParserErrorKind) -> &'static str {
+            match kind {
+                ParserErrorKind::Parsing(_) => "parse/syntax",
+                ParserErrorKind::Converting(_) => "parse/conversion",
+                ParserErrorKind::Panicked { .. } => "parse/panic",
+            }
+        }
+
+        let parser = Parser::default();
+        let errors = vec![
+            parser.parse("local x = ").expect_err("a syntax error"),
+            parser
+                .parse("return f<<A...>>")
+                .expect_err("a conversion error"),
+            parser.parse("return 3 & 1").expect_err("an upstream panic"),
+        ];
+
+        let produced: BTreeSet<&'static str> =
+            errors.iter().map(|error| code_of(&error.kind)).collect();
+        for error in &errors {
+            assert_eq!(code_of(&error.kind), error.code());
+            assert!(!error.to_string().is_empty());
+        }
+        for expected in ["parse/syntax", "parse/conversion", "parse/panic"] {
+            assert!(
+                produced.contains(expected),
+                "parser error kind `{expected}` never triggered"
+            );
+        }
+    }
 }

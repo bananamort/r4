@@ -1123,3 +1123,231 @@ fn number_parsing_errors_are_all_triggered() {
         assert!(!error.to_string().is_empty(), "{error:?} has no message");
     }
 }
+
+/// `ConvertDataError` is a struct rather than an enum, so it has no variants to
+/// enumerate; this asserts its typed failure path is reachable.
+#[test]
+fn convert_data_error_is_triggered() {
+    struct Failing;
+
+    impl serde::Serialize for Failing {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("cannot serialize this value"))
+        }
+    }
+
+    let error = r4::convert_data(Failing).expect_err("the value cannot be converted");
+    assert!(!error.message().is_empty());
+    assert!(!error.to_string().is_empty());
+}
+
+variant_registry!(ConstantPropagationErrorTag, r4::cfg::analysis::ConstantPropagationError,
+    UnresolvedIdentifier => r4::cfg::analysis::ConstantPropagationError::UnresolvedIdentifier { .. },
+);
+
+variant_registry!(LivenessErrorTag, r4::cfg::analysis::LivenessError,
+    UnresolvedIdentifier => r4::cfg::analysis::LivenessError::UnresolvedIdentifier { .. },
+);
+
+variant_registry!(LicmErrorTag, r4::cfg::analysis::LicmError,
+    Liveness => r4::cfg::analysis::LicmError::Liveness(_),
+);
+
+variant_registry!(DeadStoreErrorTag, r4::rules::canonicalize::DeadStoreError,
+    Cfg => r4::rules::canonicalize::DeadStoreError::Cfg(_),
+    Liveness => r4::rules::canonicalize::DeadStoreError::Liveness(_),
+);
+
+variant_registry!(UnreachableCodeErrorTag, r4::rules::canonicalize::UnreachableCodeError,
+    Cfg => r4::rules::canonicalize::UnreachableCodeError::Cfg(_),
+    ConstantPropagation => r4::rules::canonicalize::UnreachableCodeError::ConstantPropagation(_),
+    Provenance => r4::rules::canonicalize::UnreachableCodeError::Provenance(_),
+);
+
+variant_registry!(HoistLoopInvariantsErrorTag, r4::rules::canonicalize::HoistLoopInvariantsError,
+    Provenance => r4::rules::canonicalize::HoistLoopInvariantsError::Provenance(_),
+    Cfg => r4::rules::canonicalize::HoistLoopInvariantsError::Cfg(_),
+    Liveness => r4::rules::canonicalize::HoistLoopInvariantsError::Liveness(_),
+);
+
+/// A block whose local-assignment value is an identifier the model does not
+/// bind, replaced after analysis.
+fn unbound_local() -> (Block, SemanticModel) {
+    use r4::nodes::Expression;
+
+    let mut block = luau("local x = value\nreturn x");
+    let model = analyze(&block);
+    for statement in block.iter_mut_statements() {
+        if let Statement::LocalAssign(assignment) = statement {
+            for value in assignment.iter_mut_values() {
+                *value = Expression::identifier("never_bound");
+            }
+        }
+    }
+    (block, model)
+}
+
+#[test]
+fn cfg_analysis_errors_are_all_triggered() {
+    use r4::cfg::analysis::{ConstantPropagation, Liveness};
+    use r4::cfg::build_chunk;
+    use r4::nodes::Expression;
+    use r4::rules::canonicalize::{
+        hoist_loop_invariants, remove_dead_stores, remove_unreachable_code,
+    };
+
+    let (block, model) = unbound_local();
+    let cfg = build_chunk(&block, &model).expect("the CFG builds");
+
+    let liveness_error = Liveness::analyze(&cfg, &model).expect_err("an unbound read is rejected");
+    let produced = BTreeSet::from([LivenessErrorTag::of(&liveness_error).name()]);
+    let absent = missing(
+        LivenessErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "liveness errors never triggered: {absent:?}"
+    );
+    assert!(!liveness_error.to_string().is_empty());
+
+    let propagation_error =
+        ConstantPropagation::analyze(&cfg, &model).expect_err("an unbound read is rejected");
+    let produced = BTreeSet::from([ConstantPropagationErrorTag::of(&propagation_error).name()]);
+    let absent = missing(
+        ConstantPropagationErrorTag::ALL
+            .iter()
+            .map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "constant propagation errors never triggered: {absent:?}"
+    );
+    assert!(!propagation_error.to_string().is_empty());
+
+    // Dead stores: liveness, a CFG that cannot be built, and a stale model.
+    let (mut dead_liveness_block, dead_liveness_model) = unbound_local();
+    let dead_liveness = remove_dead_stores(&mut dead_liveness_block, &dead_liveness_model)
+        .expect_err("an unbound read is rejected");
+
+    let mut dead_cfg_block = luau("break");
+    let dead_cfg_model = analyze(&dead_cfg_block);
+    let dead_cfg = remove_dead_stores(&mut dead_cfg_block, &dead_cfg_model)
+        .expect_err("break outside a loop is rejected");
+
+    let dead_errors = vec![dead_cfg, dead_liveness];
+    let produced: BTreeSet<&'static str> = dead_errors
+        .iter()
+        .map(|error| DeadStoreErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        DeadStoreErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "dead store errors never triggered: {absent:?}"
+    );
+    for error in &dead_errors {
+        assert!(!error.to_string().is_empty(), "{error:?} has no message");
+    }
+
+    // Unreachable code: constant propagation, a CFG that cannot be built, and a
+    // stale model.
+    let (mut unreachable_propagation_block, unreachable_propagation_model) = unbound_local();
+    let unreachable_propagation = remove_unreachable_code(
+        &mut unreachable_propagation_block,
+        &unreachable_propagation_model,
+    )
+    .expect_err("an unbound read is rejected");
+
+    let mut unreachable_cfg_block = luau("break");
+    let unreachable_cfg_model = analyze(&unreachable_cfg_block);
+    let unreachable_cfg =
+        remove_unreachable_code(&mut unreachable_cfg_block, &unreachable_cfg_model)
+            .expect_err("break outside a loop is rejected");
+
+    let mut unreachable_provenance_block = luau("if a then b() end\nreturn 1");
+    let analyzed = luau("return 1");
+    let model = analyze(&analyzed);
+    let unreachable_provenance = remove_unreachable_code(&mut unreachable_provenance_block, &model)
+        .expect_err("an unanalyzed block has no provenance");
+
+    let unreachable_errors = vec![
+        unreachable_cfg,
+        unreachable_propagation,
+        unreachable_provenance,
+    ];
+    let produced: BTreeSet<&'static str> = unreachable_errors
+        .iter()
+        .map(|error| UnreachableCodeErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        UnreachableCodeErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "unreachable code errors never triggered: {absent:?}"
+    );
+    for error in &unreachable_errors {
+        assert!(!error.to_string().is_empty(), "{error:?} has no message");
+    }
+
+    // Loop-invariant hoisting: a CFG that cannot be built, a stale model, and
+    // LICM's liveness.
+    let mut hoist_cfg_block = luau("break");
+    let hoist_cfg_model = analyze(&hoist_cfg_block);
+    let hoist_cfg = hoist_loop_invariants(&mut hoist_cfg_block, &hoist_cfg_model)
+        .expect_err("break outside a loop is rejected");
+
+    let mut hoist_provenance_block = luau("while a do end");
+    let analyzed = luau("return 1");
+    let model = analyze(&analyzed);
+    let hoist_provenance = hoist_loop_invariants(&mut hoist_provenance_block, &model)
+        .expect_err("an unanalyzed block has no provenance");
+
+    let mut hoist_liveness_block = luau("while flag do local y = value end");
+    let hoist_liveness_model = analyze(&hoist_liveness_block);
+    for statement in hoist_liveness_block.iter_mut_statements() {
+        if let Statement::While(while_statement) = statement {
+            for inner in while_statement.mutate_block().iter_mut_statements() {
+                if let Statement::LocalAssign(assignment) = inner {
+                    for value in assignment.iter_mut_values() {
+                        *value = Expression::identifier("never_bound");
+                    }
+                }
+            }
+        }
+    }
+    let hoist_liveness = hoist_loop_invariants(&mut hoist_liveness_block, &hoist_liveness_model)
+        .expect_err("an unbound read is rejected by LICM");
+
+    let hoist_errors = vec![hoist_cfg, hoist_provenance, hoist_liveness];
+    let produced: BTreeSet<&'static str> = hoist_errors
+        .iter()
+        .map(|error| HoistLoopInvariantsErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        HoistLoopInvariantsErrorTag::ALL
+            .iter()
+            .map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "hoist errors never triggered: {absent:?}"
+    );
+    for error in &hoist_errors {
+        assert!(!error.to_string().is_empty(), "{error:?} has no message");
+    }
+
+    let r4::rules::canonicalize::HoistLoopInvariantsError::Liveness(licm) = &hoist_errors[2] else {
+        panic!("expected a LICM liveness error");
+    };
+    let produced = BTreeSet::from([LicmErrorTag::of(licm).name()]);
+    let absent = missing(LicmErrorTag::ALL.iter().map(|tag| tag.name()), &produced);
+    assert!(absent.is_empty(), "LICM errors never triggered: {absent:?}");
+    assert!(!licm.to_string().is_empty());
+}

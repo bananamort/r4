@@ -5,7 +5,7 @@ use crate::cfg::analysis::{
     fold_constant_branches_with, ConstantPropagation, ConstantPropagationError, Reachability,
 };
 use crate::cfg::{
-    build_chunk, validate_block_identities, BlockId, CfgError, ConditionKind, ConditionOrigin,
+    build_chunk, validate_block_identities, CfgError, ConditionKind, ConditionOrigin,
     StatementOrigin, Terminator, UnidentifiedBlock,
 };
 use crate::nodes::{Block, DoStatement, Identifier, IfStatement, Statement};
@@ -21,18 +21,6 @@ pub enum UnreachableCodeError {
     ConstantPropagation(ConstantPropagationError),
     /// The AST and the semantic model do not match.
     Provenance(UnidentifiedBlock),
-    /// A statement in the graph has no structural origin.
-    MissingStatementOrigin {
-        /// The graph block containing the statement.
-        block: BlockId,
-        /// The index of the statement inside the block.
-        statement: usize,
-    },
-    /// A branch terminator has no condition origin.
-    MissingConditionOrigin {
-        /// The graph block ending in the branch.
-        block: BlockId,
-    },
 }
 
 impl From<CfgError> for UnreachableCodeError {
@@ -59,16 +47,6 @@ impl fmt::Display for UnreachableCodeError {
             UnreachableCodeError::Cfg(error) => write!(f, "{}", error),
             UnreachableCodeError::ConstantPropagation(error) => write!(f, "{}", error),
             UnreachableCodeError::Provenance(error) => write!(f, "{}", error),
-            UnreachableCodeError::MissingStatementOrigin { block, statement } => write!(
-                f,
-                "statement {} of graph block {:?} has no structural origin",
-                statement, block
-            ),
-            UnreachableCodeError::MissingConditionOrigin { block } => write!(
-                f,
-                "branch of graph block {:?} has no structural origin",
-                block
-            ),
         }
     }
 }
@@ -121,7 +99,7 @@ pub fn remove_unreachable_code(
                 block_decisions[block_id.index()] = Some(truthy);
                 let origin = cfg.blocks[block_id.index()]
                     .branch_origin
-                    .ok_or(UnreachableCodeError::MissingConditionOrigin { block: block_id })?;
+                    .expect("the CFG records a condition origin for every emitted branch");
                 condition_decisions.insert(origin, truthy);
             }
         }
@@ -138,12 +116,9 @@ pub fn remove_unreachable_code(
         }
         let index = block_id.index();
         for statement_index in 0..cfg.blocks[index].statements.len() {
-            let origin = cfg.blocks[index].statement_origin(statement_index).ok_or(
-                UnreachableCodeError::MissingStatementOrigin {
-                    block: block_id,
-                    statement: statement_index,
-                },
-            )?;
+            let origin = cfg.blocks[index]
+                .statement_origin(statement_index)
+                .expect("the CFG records an origin for every emitted statement");
             unreachable_statements.insert(origin);
         }
     }

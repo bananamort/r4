@@ -1,7 +1,7 @@
 //! Tests for unreachable-code removal and its typed errors.
 
 use r4::cfg::analysis::ConstantPropagationError;
-use r4::cfg::{BlockId, CfgError, CfgErrorKind, UnidentifiedBlock};
+use r4::cfg::{CfgError, CfgErrorKind, UnidentifiedBlock};
 use r4::nodes::Block;
 use r4::rules::canonicalize::{remove_unreachable_code, UnreachableCodeError};
 use r4::semantic::SemanticModel;
@@ -42,11 +42,6 @@ fn unreachable_code_errors_render() {
             line: Some(1),
         }),
         UnreachableCodeError::Provenance(UnidentifiedBlock { line: Some(2) }),
-        UnreachableCodeError::MissingStatementOrigin {
-            block: BlockId(0),
-            statement: 2,
-        },
-        UnreachableCodeError::MissingConditionOrigin { block: BlockId(1) },
     ] {
         assert!(!error.to_string().is_empty());
     }

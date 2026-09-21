@@ -4,9 +4,7 @@ use std::fmt;
 use bitvec::prelude::*;
 
 use crate::cfg::analysis::{Liveness, LivenessError};
-use crate::cfg::{
-    build_chunk, validate_block_identities, BlockId, CfgError, StatementOrigin, UnidentifiedBlock,
-};
+use crate::cfg::{build_chunk, CfgError, StatementOrigin};
 use crate::nodes::{Block, Statement, Variable};
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
 use crate::semantic::{SemanticModel, SymbolKind};
@@ -18,15 +16,6 @@ pub enum DeadStoreError {
     Cfg(CfgError),
     /// Liveness could not be computed.
     Liveness(LivenessError),
-    /// The AST and the semantic model do not match.
-    Provenance(UnidentifiedBlock),
-    /// A statement in the graph has no structural origin.
-    MissingStatementOrigin {
-        /// The graph block containing the statement.
-        block: BlockId,
-        /// The index of the statement inside the block.
-        statement: usize,
-    },
 }
 
 impl From<CfgError> for DeadStoreError {
@@ -41,23 +30,11 @@ impl From<LivenessError> for DeadStoreError {
     }
 }
 
-impl From<UnidentifiedBlock> for DeadStoreError {
-    fn from(error: UnidentifiedBlock) -> Self {
-        DeadStoreError::Provenance(error)
-    }
-}
-
 impl fmt::Display for DeadStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DeadStoreError::Cfg(error) => write!(f, "{}", error),
             DeadStoreError::Liveness(error) => write!(f, "{}", error),
-            DeadStoreError::Provenance(error) => write!(f, "{}", error),
-            DeadStoreError::MissingStatementOrigin { block, statement } => write!(
-                f,
-                "statement {} of graph block {:?} has no structural origin",
-                statement, block
-            ),
         }
     }
 }
@@ -83,7 +60,6 @@ pub fn remove_dead_stores(
 ) -> Result<usize, DeadStoreError> {
     let cfg = build_chunk(block, model)?;
     let liveness = Liveness::analyze(&cfg, model)?;
-    validate_block_identities(block)?;
 
     let evaluator = Evaluator::default();
     let mut dead_statements: HashSet<StatementOrigin> = HashSet::new();
@@ -102,12 +78,9 @@ pub fn remove_dead_stores(
             let uses = &liveness.statement_uses[index][statement_index];
 
             if is_dead_store(&statements[statement_index], defs, &live, model, &evaluator) {
-                let origin = cfg.blocks[index].statement_origin(statement_index).ok_or(
-                    DeadStoreError::MissingStatementOrigin {
-                        block: block_id,
-                        statement: statement_index,
-                    },
-                )?;
+                let origin = cfg.blocks[index]
+                    .statement_origin(statement_index)
+                    .expect("the CFG records an origin for every emitted statement");
                 dead_statements.insert(origin);
             }
 
