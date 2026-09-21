@@ -803,3 +803,66 @@ fn interface_extraction_covers_backing_shapes() {
     assert!(interface.has_value("a"));
     assert!(interface.has_value("b"));
 }
+
+#[test]
+fn classifies_instance_edge_cases() {
+    use r4::modules::{classify_require_call, resolve_instance_path, InstanceSegment, RequireCall};
+    use r4::nodes::{Expression, FunctionCall, Statement};
+
+    fn call_and_model(code: &str) -> (FunctionCall, SemanticModel) {
+        let (block, model) = analyze(code);
+        for statement in block.iter_statements() {
+            if let Statement::LocalAssign(assign) = statement {
+                for value in assign.iter_values() {
+                    if let Expression::Call(call) = value {
+                        return ((**call).clone(), model);
+                    }
+                }
+            }
+        }
+        panic!("no call in `{code}`");
+    }
+
+    for code in [
+        "local x = require { key = 1 }",
+        "local x = require(a.b.c)",
+        "local x = require(script:FindFirstChild(1))",
+        "local x = require(script.Parent:GetService('X'))",
+        "local x = require((not_script).Child)",
+        "local x = require(script[1])",
+        "local x = require(script.Parent[1])",
+    ] {
+        let (call, model) = call_and_model(code);
+        assert_eq!(
+            classify_require_call(&call, &model),
+            RequireCall::NonLiteral,
+            "`{code}`"
+        );
+    }
+
+    for (key, segments) in [
+        (
+            "a",
+            vec![
+                InstanceSegment::Parent,
+                InstanceSegment::Parent,
+                InstanceSegment::Parent,
+            ],
+        ),
+        ("", vec![InstanceSegment::Parent]),
+        (
+            "a",
+            vec![
+                InstanceSegment::Parent,
+                InstanceSegment::Child("x".to_owned()),
+                InstanceSegment::Parent,
+            ],
+        ),
+        (
+            "a/b/c/d",
+            vec![InstanceSegment::Parent, InstanceSegment::Parent],
+        ),
+    ] {
+        let _ = resolve_instance_path(key, &segments);
+    }
+}
