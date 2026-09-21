@@ -671,15 +671,23 @@ fn attribute_argument_nodes_drive_visitors_and_generators() {
     r4::rules::remove_spaces(&mut block);
     r4::process::detokenize(&mut block);
 
-    let mut readable = ReadableLuaGenerator::default();
-    readable.write_block(&block);
-    let _ = readable.into_string();
-    let mut dense = DenseLuaGenerator::default();
-    dense.write_block(&block);
-    let _ = dense.into_string();
-    let mut token_based = TokenBasedLuaGenerator::new("");
-    token_based.write_block(&block);
-    let _ = token_based.into_string();
+    // Every generator must render the attribute names and their arguments.
+    for name in ["tuple", "table", "string"] {
+        let mut readable = ReadableLuaGenerator::default();
+        readable.write_block(&block);
+        let output = readable.into_string();
+        assert!(output.contains(name), "readable `{name}`: {output}");
+
+        let mut dense = DenseLuaGenerator::default();
+        dense.write_block(&block);
+        let output = dense.into_string();
+        assert!(output.contains(name), "dense `{name}`: {output}");
+
+        let mut token_based = TokenBasedLuaGenerator::new("");
+        token_based.write_block(&block);
+        let output = token_based.into_string();
+        assert!(output.contains(name), "token based `{name}`: {output}");
+    }
 }
 
 #[test]

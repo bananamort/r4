@@ -129,9 +129,12 @@ fn label_and_goto_accessors() {
 #[test]
 fn parenthese_expression_accessors() {
     let expression = ParentheseExpression::new(Expression::nil());
-    let _ = expression.inner_expression();
+    assert!(matches!(expression.inner_expression(), Expression::Nil(_)));
     let mut owned = expression;
-    let _ = owned.mutate_inner_expression();
+    assert!(matches!(
+        owned.mutate_inner_expression(),
+        Expression::Nil(_)
+    ));
 }
 
 #[test]
