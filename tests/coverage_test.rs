@@ -1323,6 +1323,24 @@ fn evaluator_folds_constant_expressions_to_their_values() {
         ("return true", LuaValue::True),
         ("return false", LuaValue::False),
         ("return 'text'", LuaValue::String(b"text".to_vec())),
+        ("return '1' + 2", LuaValue::Number(3.0)),
+        ("return 2 * 3 + 4", LuaValue::Number(10.0)),
+        ("return 2 + 3 * 4", LuaValue::Number(14.0)),
+        ("return (2 + 3) * 4", LuaValue::Number(20.0)),
+        ("return 1 and 2", LuaValue::Number(2.0)),
+        ("return nil or 3", LuaValue::Number(3.0)),
+        ("return true and 1 or 2", LuaValue::Number(1.0)),
+        ("return false and 1 or 2", LuaValue::Number(2.0)),
+        ("return not nil", LuaValue::True),
+        ("return not 1", LuaValue::False),
+        ("return 'a' < 'b'", LuaValue::True),
+        ("return 'a' == 'a'", LuaValue::True),
+        ("return 1 == '1'", LuaValue::False),
+        ("return 1 ~= '1'", LuaValue::True),
+        (
+            "return 'a' .. 'b' .. 'c'",
+            LuaValue::String(b"abc".to_vec()),
+        ),
         // Non-constant operands decline instead of guessing.
         ("return a", LuaValue::Unknown),
         ("return a + 1", LuaValue::Unknown),
@@ -1528,5 +1546,33 @@ fn token_based_generator_preserves_comments_and_spacing_exactly() {
             code,
             "token round trip changed `{code}`"
         );
+    }
+}
+
+#[test]
+fn synthesized_token_output_is_equivalent_to_the_source() {
+    use r4::Equivalent;
+
+    let corpora: [(&[&str], Dialect); 4] = [
+        (CORPUS, Dialect::Luau),
+        (LUA52, Dialect::Lua52),
+        (LUA53, Dialect::Lua53),
+        (LUA54, Dialect::Lua54),
+    ];
+    for (codes, dialect) in corpora {
+        for &code in codes {
+            let block = parse_with(code, dialect);
+            let mut synthesized = TokenBasedLuaGenerator::new("");
+            synthesized.write_block(&block);
+            let output = synthesized.into_string();
+            let reparsed = Parser::default()
+                .dialect(dialect)
+                .parse(&output)
+                .unwrap_or_else(|error| panic!("`{code}` does not reparse: {error}\n{output}"));
+            assert!(
+                block.is_equivalent_to(&reparsed),
+                "synthesized output changed the tree for `{code}`:\n{output}"
+            );
+        }
     }
 }

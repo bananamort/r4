@@ -312,3 +312,23 @@ fn removes_comments_from_attribute_literal_tables() {
 
     let _ = Parser::default().parse("return 1").expect("parse");
 }
+
+#[test]
+fn formatting_rules_have_the_expected_post_conditions() {
+    use r4::nodes::TriviaKind;
+
+    // `remove_spaces` strips all whitespace trivia (spaces and line breaks).
+    let mut block = Parser::default()
+        .preserve_tokens()
+        .parse("local   x   =   1\nreturn   x")
+        .expect("parse");
+    r4::rules::remove_spaces(&mut block);
+    let trivia = r4::process::collect_trivia(&block);
+    assert!(
+        trivia
+            .iter()
+            .all(|piece| piece.kind() != TriviaKind::Whitespace
+                && piece.kind() != TriviaKind::EndOfLine),
+        "whitespace remains after remove_spaces: {trivia:?}"
+    );
+}
