@@ -980,3 +980,61 @@ fn block_token_passes_cover_semicolon_lists() {
     tokens.remove_tokens();
     assert!(token_count > 0);
 }
+
+#[test]
+fn prefix_conversions_and_token_synthesis() {
+    use r4::nodes::{
+        Arguments, Expression, FieldExpression, FunctionCall, Identifier, IndexExpression,
+        ParentheseExpression, Prefix, TableExpression, TupleArguments, TypeInstantiationExpression,
+        TypeName,
+    };
+
+    let mut prefix = Prefix::from_name("x");
+    let _ = prefix.mutate_last_token();
+    let _ = prefix.mutate_last_token();
+
+    let call = FunctionCall::new(
+        Prefix::from_name("f"),
+        Arguments::Tuple(TupleArguments::default()),
+        None,
+    );
+    let _ = Prefix::from(Expression::from(call));
+
+    let field = FieldExpression::new(Prefix::from_name("a"), Identifier::new("b"));
+    let _ = Prefix::from(Expression::from(field.clone()));
+    let _ = Prefix::from(field.clone());
+    let _ = Prefix::from(Box::new(field));
+
+    let index = IndexExpression::new(Prefix::from_name("a"), Expression::from(1.0));
+    let _ = Prefix::from(Expression::from(index.clone()));
+    let _ = Prefix::from(index.clone());
+    let _ = Prefix::from(Box::new(index));
+
+    let parenthese = ParentheseExpression::new(Expression::from(1.0));
+    let _ = Prefix::from(Expression::from(parenthese.clone()));
+    let _ = Prefix::from(parenthese);
+
+    let instantiation =
+        TypeInstantiationExpression::new(Prefix::from_name("a"), vec![TypeName::new("T").into()]);
+    let _ = Prefix::from(Expression::from(instantiation.clone()));
+    let _ = Prefix::from(instantiation.clone());
+    let _ = Prefix::from(Box::new(instantiation));
+
+    // A non-prefix expression is wrapped in parentheses.
+    let _ = Prefix::from(Expression::from(1.0));
+    let _ = Prefix::from(Expression::from(TableExpression::default()));
+}
+
+#[test]
+fn table_entry_from_string_key_and_value() {
+    use r4::nodes::{Expression, TableEntry};
+
+    assert!(matches!(
+        TableEntry::from_string_key_and_value("valid", Expression::from(1.0)),
+        TableEntry::Field(_)
+    ));
+    assert!(matches!(
+        TableEntry::from_string_key_and_value("not a name", Expression::from(1.0)),
+        TableEntry::Index(_)
+    ));
+}

@@ -368,6 +368,10 @@ mod operator_coverage {
             "(1)[i] += 1",
             "('s')[i] += 1",
             "t[(a + b)] += 1",
+            "a.b.c += 1",
+            "a.b.c.d += 1",
+            "f().x += 1",
+            "(a).b += 1",
         ] {
             let (mut block, model) = analyze(input);
             remove_compound_assign(&mut block, &model);
