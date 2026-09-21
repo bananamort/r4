@@ -30,6 +30,10 @@ fn removes_interpolated_strings_with_both_strategies() {
         "local t = {}\nreturn `before {t} after`",
         "return `{x} {y} {z}`",
         "return `prefix {x}`",
+        "return ``",
+        "local string = {}\nreturn `a {x} b`",
+        "local tostring = {}\nreturn `{x}`",
+        "local string = {}\nlocal tostring = {}\nreturn `a {x} b {y}`",
     ] {
         let (mut block, model) = analyze(code);
         remove_interpolated_string(&mut block, &model);
