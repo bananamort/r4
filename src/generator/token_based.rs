@@ -1225,7 +1225,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
 
         if let Some(variadic_argument_type) = function_type.get_variadic_argument_type() {
             if argument_len > 0 {
-                if let Some(comma) = tokens.commas.get(argument_len) {
+                if let Some(comma) = tokens.commas.get(argument_len - 1) {
                     self.write_token(comma);
                 } else {
                     self.write_symbol(",");
@@ -2699,13 +2699,21 @@ impl LuaGenerator for TokenBasedLuaGenerator<'_> {
     }
 
     fn write_variadic_type_pack(&mut self, variadic_type_pack: &VariadicTypePack) {
-        self.push_str("...");
+        if let Some(token) = variadic_type_pack.get_token() {
+            self.write_token(token);
+        } else {
+            self.push_str("...");
+        }
         self.write_type(variadic_type_pack.get_type());
     }
 
     fn write_generic_type_pack(&mut self, generic_type_pack: &GenericTypePack) {
         self.write_identifier(generic_type_pack.get_name());
-        self.push_str("...");
+        if let Some(token) = generic_type_pack.get_token() {
+            self.write_token(token);
+        } else {
+            self.push_str("...");
+        }
     }
 }
 

@@ -143,30 +143,49 @@ impl NodePostProcessor for Count {}
 impl ImmutableProcessor for Count {}
 
 fn assert_generates(block: &Block, code: &str, dialect: Dialect) {
+    // The readable and dense generators may reformat, but their output must be
+    // valid source: re-parse it in the same dialect.
     let mut readable = ReadableLuaGenerator::default();
     readable.write_block(block);
-    assert!(!readable.into_string().is_empty(), "readable `{code}`");
+    let readable_output = readable.into_string();
+    Parser::default()
+        .dialect(dialect)
+        .parse(&readable_output)
+        .unwrap_or_else(|error| {
+            panic!("readable output for `{code}` does not reparse: {error}\n{readable_output}")
+        });
 
     let mut dense = DenseLuaGenerator::default();
     dense.write_block(block);
-    assert!(!dense.into_string().is_empty(), "dense `{code}`");
+    let dense_output = dense.into_string();
+    Parser::default()
+        .dialect(dialect)
+        .parse(&dense_output)
+        .unwrap_or_else(|error| {
+            panic!("dense output for `{code}` does not reparse: {error}\n{dense_output}")
+        });
 
+    // With the original token data the token-based generator must reproduce the
+    // source byte for byte.
     let tokens = parse_tokens(code, dialect);
     let mut token_based = TokenBasedLuaGenerator::new(code);
     token_based.write_block(&tokens);
-    assert!(
-        !token_based.into_string().is_empty(),
-        "token based `{code}`"
-    );
+    assert_eq!(token_based.into_string(), code, "token round trip `{code}`");
 
-    // Generating a tokenless tree exercises the token synthesis fallbacks.
+    // Generating a tokenless tree exercises the token synthesis fallbacks; the
+    // synthesized output must still parse.
     let tokenless = parse_with(code, dialect);
     let mut synthesized = TokenBasedLuaGenerator::new(code);
     synthesized.write_block(&tokenless);
-    assert!(
-        !synthesized.into_string().is_empty(),
-        "synthesized tokens `{code}`"
-    );
+    let synthesized_output = synthesized.into_string();
+    Parser::default()
+        .dialect(dialect)
+        .parse(&synthesized_output)
+        .unwrap_or_else(|error| {
+            panic!(
+                "synthesized output for `{code}` does not reparse: {error}\n{synthesized_output}"
+            )
+        });
 }
 
 #[test]
