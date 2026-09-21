@@ -1895,3 +1895,29 @@ fn generators_preserve_table_property_modifiers() {
         }
     }
 }
+
+#[test]
+fn tokenful_and_tokenless_trees_are_equivalent_for_type_arguments() {
+    use r4::Equivalent;
+
+    for code in [
+        "return obj:m<<T>>()",
+        "return obj:m<<A, B>>(1)",
+        "return obj:m<<A>>()",
+        "type F = (a: number, ...string) -> (boolean, number)\nreturn 1",
+        "type R<T, U...> = (T, U...) -> T & U\nreturn 1",
+        "return f<<SomeType>>()",
+    ] {
+        let tokenful = Parser::default()
+            .preserve_tokens()
+            .parse(code)
+            .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+        let tokenless = Parser::default()
+            .parse(code)
+            .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+        assert!(
+            tokenful.is_equivalent_to(&tokenless),
+            "tokenful and tokenless trees differ for `{code}`"
+        );
+    }
+}
