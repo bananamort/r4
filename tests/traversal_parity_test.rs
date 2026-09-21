@@ -18,14 +18,17 @@ use std::mem::discriminant;
 use r4::nodes::{
     Arguments, Attribute, AttributeArguments, AttributeGroup, AttributeGroupElement,
     AttributeTupleArguments, Attributes, Block, ChildVisitor, ChildVisitorMut, Expression,
-    FunctionCall, FunctionStatement, GenericTypePack, Identifier, LiteralExpression, LiteralTable,
-    MutableChildren, NumberExpression, Prefix, ReadOnlyChildren, Statement, StringExpression,
-    StringType, TableExpression, Type, TypeName, TypePack, TypedIdentifier, Variable,
+    FunctionCall, FunctionReturnType, FunctionStatement, FunctionVariadicType, GenericParameters,
+    GenericParametersWithDefaults, GenericTypePack, Identifier, LastStatement, LiteralExpression,
+    LiteralTable, MutableChildren, NumberExpression, Prefix, ReadOnlyChildren, Statement,
+    StringExpression, StringType, TableExpression, Type, TypeName, TypePack, TypedIdentifier,
+    Variable, VariadicArgumentType, VariadicTypePack,
 };
 use r4::process::{
     DefaultPostVisitor, DefaultVisitor, ImmutableProcessor, ImmutableVisitor, NodePostProcessor,
     NodePostVisitor, NodeProcessor, NodeVisitor, Walk,
 };
+use r4::semantic::SemanticAnalyzer;
 use r4::Parser;
 
 fn parse(code: &str, lua52: bool) -> Block {
@@ -647,4 +650,160 @@ fn the_child_structure_is_one_definition() {
         assert_sub_multiset(&mutable.0, &immutable.0, "structure", &code);
         assert!(!mutable.0.is_empty(), "no child reached for `{code}`");
     }
+}
+
+/// Collects the identifiers the authoritative read-only child walk surfaces in
+/// *binding* positions: variable expressions and typed-identifier declarations.
+///
+/// The `ChildVisitor` callbacks are terminal, so the collector recurses through
+/// every container callback to reach nested children.
+#[derive(Default)]
+struct BindingChildren {
+    variable_expressions: Vec<Identifier>,
+    declarations: Vec<Identifier>,
+}
+
+impl ChildVisitor for BindingChildren {
+    fn variable_expression(&mut self, identifier: &Identifier) {
+        self.variable_expressions.push(identifier.clone());
+    }
+
+    fn typed_identifier(&mut self, identifier: &TypedIdentifier) {
+        self.declarations.push(identifier.get_identifier().clone());
+        identifier.for_each_child(self);
+    }
+
+    fn block(&mut self, node: &Block) {
+        node.for_each_child(self);
+    }
+
+    fn statement(&mut self, node: &Statement) {
+        node.for_each_child(self);
+    }
+
+    fn last_statement(&mut self, node: &LastStatement) {
+        node.for_each_child(self);
+    }
+
+    fn expression(&mut self, node: &Expression) {
+        node.for_each_child(self);
+    }
+
+    fn prefix(&mut self, node: &Prefix) {
+        node.for_each_child(self);
+    }
+
+    fn variable(&mut self, node: &Variable) {
+        node.for_each_child(self);
+    }
+
+    fn attributes(&mut self, node: &Attributes) {
+        node.for_each_child(self);
+    }
+
+    fn r#type(&mut self, node: &Type) {
+        node.for_each_child(self);
+    }
+
+    fn type_name(&mut self, node: &TypeName) {
+        node.for_each_child(self);
+    }
+
+    fn type_pack(&mut self, node: &TypePack) {
+        node.for_each_child(self);
+    }
+
+    fn generic_type_pack(&mut self, node: &GenericTypePack) {
+        node.for_each_child(self);
+    }
+
+    fn variadic_type_pack(&mut self, node: &VariadicTypePack) {
+        node.for_each_child(self);
+    }
+
+    fn variadic_argument_type(&mut self, node: &VariadicArgumentType) {
+        node.for_each_child(self);
+    }
+
+    fn function_variadic_type(&mut self, node: &FunctionVariadicType) {
+        node.for_each_child(self);
+    }
+
+    fn function_return_type(&mut self, node: &FunctionReturnType) {
+        node.for_each_child(self);
+    }
+
+    fn generic_parameters(&mut self, node: &GenericParameters) {
+        node.for_each_child(self);
+    }
+
+    fn generic_parameters_with_defaults(&mut self, node: &GenericParametersWithDefaults) {
+        node.for_each_child(self);
+    }
+
+    fn table(&mut self, node: &TableExpression) {
+        node.for_each_child(self);
+    }
+
+    fn arguments(&mut self, node: &Arguments) {
+        node.for_each_child(self);
+    }
+
+    fn literal_expression(&mut self, node: &LiteralExpression) {
+        node.for_each_child(self);
+    }
+
+    fn literal_argument(&mut self, node: &LiteralExpression) {
+        node.for_each_child(self);
+    }
+
+    fn literal_table(&mut self, node: &LiteralTable) {
+        node.for_each_child(self);
+    }
+}
+
+/// Guards field-level drift in the semantic analyzer.
+///
+/// The analyzer does not use the shared child definition (its recursion is
+/// interleaved with scope and def-use bookkeeping), so a child field added to a
+/// node could be missed. Every identifier the authoritative walk surfaces in a
+/// binding position must resolve through the model: if the analyzer fails to
+/// recurse into a field, the identifiers it contains stay unbound and this
+/// fails with the offending name and snippet.
+#[test]
+fn semantic_walker_binds_every_binding_child() {
+    let mut saw_variable_expression = false;
+    for (code, block) in corpus() {
+        let model = SemanticAnalyzer::new()
+            .analyze(&block)
+            .unwrap_or_else(|error| panic!("analysis of `{code}` must succeed: {error}"));
+
+        let mut collector = BindingChildren::default();
+        block.for_each_child(&mut collector);
+
+        if !collector.variable_expressions.is_empty() {
+            saw_variable_expression = true;
+        }
+
+        for identifier in &collector.variable_expressions {
+            assert!(
+                model.resolve_identifier(identifier).is_some(),
+                "the analyzer left the variable expression `{}` unbound in `{code}`",
+                identifier.get_name()
+            );
+        }
+
+        for identifier in &collector.declarations {
+            assert!(
+                model.resolve_identifier(identifier).is_some(),
+                "the analyzer left the declaration `{}` unbound in `{code}`",
+                identifier.get_name()
+            );
+        }
+    }
+
+    assert!(
+        saw_variable_expression,
+        "the corpus never reached a variable expression"
+    );
 }
