@@ -232,3 +232,68 @@ fn diagnostic_descriptors_severities_and_format_errors() {
         assert!(!error.to_string().is_empty());
     }
 }
+
+#[test]
+fn formatter_renders_and_reports_format_errors() {
+    use r4::diagnostic::{
+        DiagnosticFormatError, DiagnosticFormatter, DiagnosticQueryError, LinePosition,
+        LinePositionSpan, TextSpan,
+    };
+    use r4::Diagnostic;
+
+    let source = "local x = 1\nreturn \u{26a0} x\n";
+    let formatter = DiagnosticFormatter::new(source);
+    assert_eq!(formatter.source(), source);
+
+    // Without a location the header alone is rendered.
+    let rendered = formatter
+        .render(&Diagnostic::error("boom"))
+        .expect("renders the header");
+    assert!(rendered.contains("boom"), "{rendered}");
+
+    let error = formatter
+        .render(&Diagnostic::error("boom").with_code("nonexistent/code"))
+        .expect_err("an unknown code is rejected");
+    assert!(matches!(error, DiagnosticFormatError::UnknownCode { .. }));
+
+    // A span that splits a character or exceeds the source is rejected.
+    let split = source.find('\u{26a0}').expect("the marker") + 1;
+    assert!(formatter
+        .render(&Diagnostic::error("boom").with_span(TextSpan::new(split, split + 1)))
+        .is_err());
+    assert!(formatter
+        .render(&Diagnostic::error("boom").with_span(TextSpan::new(0, source.len() + 10)))
+        .is_err());
+
+    // Valid spans render the source line and caret.
+    let rendered = formatter
+        .render(&Diagnostic::error("boom").with_span(TextSpan::new(0, 5)))
+        .expect("renders");
+    assert!(rendered.contains("local"), "{rendered}");
+
+    let second = source.find("return").expect("the second line");
+    let rendered = DiagnosticFormatter::new(source)
+        .with_context_lines(1)
+        .render(&Diagnostic::error("boom").with_span(TextSpan::new(second, second + 6)))
+        .expect("renders");
+    assert!(rendered.contains("return"), "{rendered}");
+
+    let error = formatter
+        .render(
+            &Diagnostic::error("boom").with_location(LinePositionSpan::new(
+                LinePosition::new(99, 1),
+                LinePosition::new(99, 2),
+            )),
+        )
+        .expect_err("an out-of-range location is rejected");
+    assert!(matches!(
+        error,
+        DiagnosticFormatError::InvalidLocation { .. }
+    ));
+
+    assert!(!DiagnosticQueryError::MissingSpan.to_string().is_empty());
+    assert_eq!(
+        DiagnosticQueryError::MissingSpan.code(),
+        "query/missing-span"
+    );
+}
