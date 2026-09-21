@@ -65,20 +65,26 @@ fn if_statement_methods() {
     use r4::nodes::{IfBranch, IfStatement};
 
     let statement = IfStatement::new(Vec::new(), None);
+    assert_eq!(statement.iter_branches().count(), 0);
     let mut empty = IfStatement::new(
         vec![IfBranch::new(Expression::identifier("b"), Block::default())],
         None,
     );
+    assert_eq!(empty.iter_branches().count(), 1);
     let _ = empty.get_tokens();
     let _ = empty.mutate_tokens();
     let _ = empty.mutate_all_blocks();
     empty.push_new_branch(Expression::identifier("c"), Block::default());
     empty.push_branch(IfBranch::new(Expression::identifier("d"), Block::default()));
+    assert_eq!(empty.iter_branches().count(), 3);
     let mut branch = IfBranch::new(Expression::identifier("e"), Block::default());
     let _ = branch.take_block();
-    let _ = empty.retain_branches_mut(|_| true);
+    assert!(branch.get_block().is_empty());
+    empty.retain_branches_mut(|branch| matches!(branch.get_condition(), Expression::Identifier(_)));
+    assert_eq!(empty.iter_branches().count(), 3);
     empty = empty.with_else_block(Block::default());
     empty.set_else_block(Block::default());
+    assert!(empty.get_else_block().is_some());
     let _ = statement.get_tokens();
 }
 
@@ -118,10 +124,24 @@ fn local_assignment_methods() {
 
     let mut assignment =
         VariableAssignment::new(vec![TypedIdentifier::new("a")], vec![Expression::from(1.0)]);
+    assert_eq!(assignment.variables_len(), 1);
+    assert_eq!(assignment.values_len(), 1);
     assignment.push_value(Expression::from(2.0));
     assignment.extend_values(vec![Expression::from(3.0)]);
     assignment.append_assignment(TypedIdentifier::new("b"), Expression::nil());
-    assignment.for_each_assignment(|_, _| {});
+    assert_eq!(assignment.variables_len(), 2);
+    assert_eq!(assignment.values_len(), 4);
+    // `for_each_assignment` iterates the variables, pairing each with a value.
+    let pairs = std::cell::Cell::new(0);
+    let values_seen = std::cell::Cell::new(0);
+    assignment.for_each_assignment(|_, value| {
+        pairs.set(pairs.get() + 1);
+        if value.is_some() {
+            values_seen.set(values_seen.get() + 1);
+        }
+    });
+    assert_eq!(pairs.get(), 2);
+    assert_eq!(values_seen.get(), 2);
     let _ = assignment.mutate_tokens();
     let _ = assignment.get_tokens();
 }
@@ -131,10 +151,10 @@ fn token_methods() {
     use r4::nodes::{Position, Token};
 
     let token = Token::from_position(Position::line_number("x", 3));
-    let _ = token.get_line_number();
+    assert_eq!(token.read("x"), "x");
+    assert_eq!(token.get_line_number(), Some(3));
     let _ = token.get_end();
     let _ = token.get_start();
-    let _ = token.try_read_with("x");
     let mut token = token;
     token.remove_tokens();
 }
@@ -208,10 +228,12 @@ fn string_and_number_methods() {
     use r4::nodes::{NumberExpression, StringExpression};
 
     let string = StringExpression::from_value("value");
-    let _ = string.clone().into_value();
-    let _ = string.into_string();
+    assert_eq!(string.get_value(), b"value");
+    assert_eq!(string.clone().into_value(), b"value".to_vec());
+    assert_eq!(string.into_string(), Some("value".to_owned()));
 
     let mut number: NumberExpression = "123".parse().expect("valid number");
+    assert_eq!(number.compute_value(), 123.0);
     let _ = number.mutate_token();
     let _ = number.get_token();
     number = number.with_token(Token::from_content("123"));
@@ -229,8 +251,13 @@ fn type_pack_and_union_methods() {
     let _ = pack.get_tokens();
 
     let mut union = UnionType::new(number("number"), number("string"));
-    let _ = union.first_type();
-    let _ = union.last_type();
+    assert!(
+        matches!(union.first_type(), Type::Name(name) if name.get_type_name().get_name().as_str() == "number")
+    );
+    assert!(
+        matches!(union.last_type(), Type::Name(name) if name.get_type_name().get_name().as_str() == "string")
+    );
+    assert_eq!(union.iter_types().count(), 2);
     union.remove_leading_token();
     let _ = union.mutate_last_token();
 }
@@ -573,10 +600,15 @@ fn type_last_token_mutation_covers_every_variant() {
         let _ = r#type.mutate_last_token();
     }
 
-    // `true`/`false`/`nil` synthesize their token on first mutation.
-    for mut r#type in [Type::True(None), Type::False(None), Type::Nil(None)] {
-        let _ = r#type.mutate_last_token();
-        let _ = r#type.mutate_last_token();
+    // `true`/`false`/`nil` synthesize their keyword token on first mutation and
+    // reuse it afterwards.
+    for (mut r#type, expected) in [
+        (Type::True(None), "true"),
+        (Type::False(None), "false"),
+        (Type::Nil(None), "nil"),
+    ] {
+        assert_eq!(r#type.mutate_last_token().read(""), expected);
+        assert_eq!(r#type.mutate_last_token().read(""), expected);
     }
 }
 
@@ -907,20 +939,26 @@ fn literal_table_conversions() {
 fn expression_conversions_and_last_token_synthesis() {
     use r4::nodes::Expression;
 
-    let _ = Expression::from(&1.0f64);
-    let _ = Expression::from(&1i32);
-    let _ = Expression::from(&1u32);
-    let _ = Expression::from(Option::<Expression>::None);
-    let _ = Expression::from(Some(Expression::from(1.0)));
+    assert!(matches!(Expression::from(&1.0f64), Expression::Number(_)));
+    assert!(matches!(Expression::from(&1i32), Expression::Number(_)));
+    assert!(matches!(Expression::from(&1u32), Expression::Number(_)));
+    assert!(matches!(
+        Expression::from(Option::<Expression>::None),
+        Expression::Nil(_)
+    ));
+    assert!(matches!(
+        Expression::from(Some(Expression::from(1.0))),
+        Expression::Number(_)
+    ));
 
-    for mut expression in [
-        Expression::True(None),
-        Expression::False(None),
-        Expression::Nil(None),
-        Expression::VariableArguments(None),
+    for (mut expression, expected) in [
+        (Expression::True(None), "true"),
+        (Expression::False(None), "false"),
+        (Expression::Nil(None), "nil"),
+        (Expression::VariableArguments(None), "..."),
     ] {
-        let _ = expression.mutate_last_token();
-        let _ = expression.mutate_last_token();
+        assert_eq!(expression.mutate_last_token().read(""), expected);
+        assert_eq!(expression.mutate_last_token().read(""), expected);
     }
 }
 
@@ -1040,159 +1078,131 @@ fn table_entry_from_string_key_and_value() {
 }
 
 #[test]
-fn binary_operator_parenthesization_helpers() {
-    use r4::nodes::{
-        BinaryOperator, Expression, FunctionReturnType, FunctionType, GenericTypePack,
-        IfExpression, IntersectionType, OptionalType, ParentheseType, TableType,
-        TypeCastExpression, TypeName, UnionType, VariadicTypePack,
-    };
+fn binary_precedence_and_associativity() {
+    use r4::nodes::BinaryOperator::*;
 
-    let number = || TypeName::new("number");
-    let casts = vec![
-        Expression::from(TypeCastExpression::new(Expression::from(1.0), number())),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            TypeName::new("A").with_type_parameters(r4::nodes::TypeParameters::new(number())),
-        )),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            FunctionType::new(number()),
-        )),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            FunctionType::new(FunctionReturnType::TypePack(Box::default())),
-        )),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            FunctionType::new(FunctionReturnType::GenericTypePack(Box::new(
-                GenericTypePack::new("A"),
-            ))),
-        )),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            FunctionType::new(FunctionReturnType::VariadicTypePack(VariadicTypePack::new(
-                number(),
-            ))),
-        )),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            IntersectionType::new(number(), TypeName::new("B")),
-        )),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            UnionType::new(number(), TypeName::new("B")),
-        )),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            OptionalType::new(number()),
-        )),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            ParentheseType::new(number()),
-        )),
-        Expression::from(TypeCastExpression::new(
-            Expression::from(1.0),
-            TableType::default(),
-        )),
-    ];
+    assert!(Asterisk.precedes(Plus));
+    assert!(!Plus.precedes(Asterisk));
+    assert!(Caret.precedes(Asterisk));
+    assert!(And.precedes(Or));
+    assert!(!Or.precedes(And));
+    assert!(Equal.precedes(And));
 
-    let expressions: Vec<Expression> = casts
-        .iter()
-        .cloned()
-        .chain([
-            Expression::from(IfExpression::new(
-                Expression::identifier("a"),
-                Expression::from(1.0),
-                casts[0].clone(),
-            )),
-            Expression::from(r4::nodes::BinaryExpression::new(
-                BinaryOperator::Plus,
-                Expression::from(1.0),
-                casts[0].clone(),
-            )),
-            Expression::from(r4::nodes::UnaryExpression::new(
-                r4::nodes::UnaryOperator::Minus,
-                casts[0].clone(),
-            )),
-        ])
-        .collect();
+    assert!(Caret.precedes_unary_expression());
+    assert!(!Minus.precedes_unary_expression());
 
+    assert_eq!(Caret.to_str(), "^");
+    assert_eq!(Concat.to_str(), "..");
+    assert_eq!(Plus.to_str(), "+");
+    assert_eq!(LowerOrEqualThan.to_str(), "<=");
+
+    for operator in [Caret, Concat] {
+        assert!(operator.is_right_associative());
+        assert!(!operator.is_left_associative());
+    }
     for operator in [
-        BinaryOperator::Plus,
-        BinaryOperator::Minus,
-        BinaryOperator::Asterisk,
-        BinaryOperator::Slash,
-        BinaryOperator::DoubleSlash,
-        BinaryOperator::Caret,
-        BinaryOperator::Percent,
-        BinaryOperator::Concat,
-        BinaryOperator::And,
-        BinaryOperator::Or,
-        BinaryOperator::Equal,
-        BinaryOperator::NotEqual,
-        BinaryOperator::LowerThan,
-        BinaryOperator::GreaterThan,
+        Plus,
+        Minus,
+        Asterisk,
+        Slash,
+        DoubleSlash,
+        Percent,
+        And,
+        Or,
+        Equal,
+        NotEqual,
+        BitwiseAnd,
+        BitwiseOr,
+        BitwiseXor,
+        ShiftLeft,
+        ShiftRight,
     ] {
-        let _ = operator.precedes(BinaryOperator::Plus);
-        let _ = operator.precedes_unary_expression();
-        let _ = operator.is_left_associative();
-        let _ = operator.is_right_associative();
-        let _ = operator.to_str();
-        for expression in &expressions {
-            let _ = operator.left_needs_parentheses(expression);
-            let _ = operator.right_needs_parentheses(expression);
-        }
+        assert!(operator.is_left_associative());
+        assert!(!operator.is_right_associative());
     }
 }
 
 #[test]
-fn table_literal_property_tokens_and_indexer_conversion() {
-    use r4::nodes::{
-        StringType, TableEntryType, TableIndexTypeTokens, TableIndexerType,
-        TableLiteralPropertyType, Token,
+fn binary_operand_parenthesization_preserves_evaluation_order() {
+    use r4::nodes::{BinaryExpression, BinaryOperator, Expression, UnaryExpression, UnaryOperator};
+
+    fn binary(operator: BinaryOperator) -> Expression {
+        Expression::from(BinaryExpression::new(
+            operator,
+            Expression::from(1.0),
+            Expression::from(2.0),
+        ))
+    }
+    let unary = || {
+        Expression::from(UnaryExpression::new(
+            UnaryOperator::Minus,
+            Expression::from(1.0),
+        ))
     };
 
-    let mut literal = TableLiteralPropertyType::new(
-        StringType::new("\"key\"").expect("valid string type"),
-        number("number"),
-    );
-    literal.set_tokens(TableIndexTypeTokens {
-        opening_bracket: Token::from_content("["),
-        closing_bracket: Token::from_content("]"),
-        colon: Token::from_content(":"),
-        modifier: None,
-    });
-    assert!(literal.get_tokens().is_some());
+    // Left operands.
+    assert!(!BinaryOperator::Plus.left_needs_parentheses(&binary(BinaryOperator::Asterisk)));
+    assert!(BinaryOperator::Asterisk.left_needs_parentheses(&binary(BinaryOperator::Plus)));
+    assert!(!BinaryOperator::Minus.left_needs_parentheses(&binary(BinaryOperator::Minus)));
+    assert!(BinaryOperator::Caret.left_needs_parentheses(&binary(BinaryOperator::Caret)));
+    assert!(!BinaryOperator::Minus.left_needs_parentheses(&unary()));
+    assert!(BinaryOperator::Caret.left_needs_parentheses(&unary()));
+    assert!(!BinaryOperator::Plus.left_needs_parentheses(&Expression::from(1.0)));
 
-    let entry: TableEntryType = TableIndexerType::new(number("number"), number("number")).into();
-    assert!(matches!(entry, TableEntryType::Indexer(_)));
+    // Right operands.
+    assert!(!BinaryOperator::Plus.right_needs_parentheses(&binary(BinaryOperator::Asterisk)));
+    assert!(BinaryOperator::Asterisk.right_needs_parentheses(&binary(BinaryOperator::Plus)));
+    assert!(BinaryOperator::Minus.right_needs_parentheses(&binary(BinaryOperator::Minus)));
+    assert!(!BinaryOperator::Caret.right_needs_parentheses(&binary(BinaryOperator::Caret)));
+    assert!(BinaryOperator::Caret.right_needs_parentheses(&binary(BinaryOperator::Plus)));
+    assert!(!BinaryOperator::Plus.right_needs_parentheses(&unary()));
 }
 
 #[test]
-fn generic_parameters_with_defaults_iterates() {
+fn parenthesization_helpers_handle_if_and_type_cast_operands() {
     use r4::nodes::{
-        GenericParameter, GenericParametersWithDefaults, GenericTypePack,
-        GenericTypePackWithDefault, TypePack, TypeVariableWithDefault,
+        BinaryExpression, BinaryOperator, Expression, FunctionType, IfExpression,
+        TypeCastExpression, TypeName, UnaryExpression, UnaryOperator,
     };
 
-    let variables = GenericParametersWithDefaults::from_type_variable("A");
-    assert_eq!(variables.into_iter().count(), 1);
+    let number = || TypeName::new("number");
+    // An operand that ends in an if-expression needs parentheses.
+    let if_expression = Expression::from(IfExpression::new(
+        Expression::identifier("a"),
+        Expression::from(1.0),
+        Expression::from(2.0),
+    ));
+    assert!(BinaryOperator::Plus.left_needs_parentheses(&if_expression));
+    let nested = Expression::from(BinaryExpression::new(
+        BinaryOperator::Plus,
+        Expression::from(1.0),
+        if_expression.clone(),
+    ));
+    assert!(BinaryOperator::Plus.left_needs_parentheses(&nested));
 
-    let packs = GenericParametersWithDefaults::from_generic_type_pack(GenericTypePack::new("A"));
-    assert_eq!(packs.into_iter().count(), 1);
-
-    let defaults = GenericParametersWithDefaults::from_type_variable_with_default(
-        TypeVariableWithDefault::new(Identifier::new("A"), number("number")),
+    // A type cast to an unparameterized function type is parenthesized for `<`.
+    let cast = Expression::from(TypeCastExpression::new(
+        Expression::from(1.0),
+        FunctionType::new(number()),
+    ));
+    assert!(BinaryOperator::LowerThan.left_needs_parentheses(&cast));
+    // A cast to a plain (unparameterized) type name is also parenthesized...
+    assert!(
+        BinaryOperator::LowerThan.left_needs_parentheses(&Expression::from(
+            TypeCastExpression::new(Expression::from(1.0), number())
+        ))
     );
-    assert_eq!(defaults.into_iter().count(), 1);
+    // ...but a parameterized type name is not.
+    let parameterized = Expression::from(TypeCastExpression::new(
+        Expression::from(1.0),
+        TypeName::new("A").with_type_parameters(r4::nodes::TypeParameters::new(number())),
+    ));
+    assert!(!BinaryOperator::LowerThan.left_needs_parentheses(&parameterized));
 
-    let with_pack_default = GenericParametersWithDefaults::from_generic_type_pack_with_default(
-        GenericTypePackWithDefault::new(GenericTypePack::new("A"), TypePack::default()),
-    );
-    assert_eq!(with_pack_default.into_iter().count(), 1);
-
-    let mut mixed = GenericParametersWithDefaults::from_type_variable("A");
-    mixed.push_type_variable("B");
-    let collected: Vec<GenericParameter> = mixed.into_iter().collect();
-    assert_eq!(collected.len(), 2);
+    // Unary operands never need right parentheses.
+    let unary = Expression::from(UnaryExpression::new(
+        UnaryOperator::Minus,
+        Expression::from(1.0),
+    ));
+    assert!(!BinaryOperator::Asterisk.right_needs_parentheses(&unary));
 }

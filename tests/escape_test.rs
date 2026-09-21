@@ -197,86 +197,73 @@ fn tables_stay_confined_across_every_control_flow_statement() {
 }
 
 #[test]
-fn escape_analysis_covers_every_prefix_and_variable_shape() {
+fn compound_index_assignments_read_and_write_through_the_index() {
     for code in [
-        // Compound assignment reads and writes the index.
         "local t = {}\nt[1] += 1\nreturn 0",
         "local t = {}\nt[k] += 1\nreturn 0",
-        "local t = {}\nt.x += 1\nreturn 0",
-        // Parenthesized bases of a field/index access.
-        "local t = {}\nreturn (t).x",
-        "local t = {}\nreturn (t.x).y",
-        "local t = {}\nreturn (t[1]).y",
-        "local t = {}\nreturn (f()).y",
-        "local t = {}\nreturn (t + 1).y",
-        // Method calls whose prefix is not a plain identifier.
+    ] {
+        let (block, model) = analyze(code);
+        let analysis = EscapeAnalysis::analyze(&block, &model);
+        let t = symbol_named(&model, "t");
+        assert!(analysis.has_dynamic_read(t), "`{code}` reads dynamically");
+        assert!(analysis.has_dynamic_write(t), "`{code}` writes dynamically");
+    }
+}
+
+#[test]
+fn compound_field_assignments_record_field_writes() {
+    let (block, model) = analyze("local t = {}\nt.x += 1\nreturn 0");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    let info = analysis.info(t).expect("facts");
+    assert!(info.field_writes.contains("x"));
+    assert!(info.field_reads.is_empty());
+    assert!(!analysis.has_dynamic_read(t));
+    assert!(!analysis.has_dynamic_write(t));
+}
+
+#[test]
+fn parenthesized_bases_are_walked_without_attributing_effects() {
+    let (block, model) = analyze("local t = {}\nreturn (t).x");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(!analysis.escapes(t));
+    assert!(!analysis.is_field_read(t, "x"));
+
+    let (block, model) = analyze("local t = {}\nreturn (t.x).y");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(analysis.is_field_read(t, "x"));
+}
+
+#[test]
+fn method_calls_escape_every_receiver_prefix() {
+    for code in [
         "local t = {}\nt:m()",
         "local t = {}\n(t):m()",
-        "local t = {}\nf():m()",
         "local t = {}\nt[1]:m()",
-        // A local copy escapes, and a parenthesized callee is direct.
-        "local t = {}\nlocal u = t\nreturn 0",
-        "local f = function() end\n(f)()",
-        // Type-instantiation prefixes.
-        "local t = {}\nt<<T>>.x = 1\nreturn 0",
     ] {
         let (block, model) = analyze(code);
         let analysis = EscapeAnalysis::analyze(&block, &model);
-        if let Some(t) = model.symbols.iter().find(|symbol| symbol.name == "t") {
-            let _ = analysis.is_table(t.id);
-            let _ = analysis.is_confined_table(&model, t.id);
-            let _ = analysis.escapes(t.id);
-            let _ = analysis.has_dynamic_read(t.id);
-            let _ = analysis.has_dynamic_write(t.id);
-            let _ = analysis.is_field_read(t.id, "x");
-            let _ = analysis.info(t.id);
-        }
+        let t = symbol_named(&model, "t");
+        assert!(analysis.escapes(t), "`{code}` escapes t");
     }
 }
 
 #[test]
-fn escape_analysis_covers_index_and_parenthesized_prefixes() {
-    for code in [
-        "local t = {}\nt[t2] += 1\nreturn 0",
-        "local t = {}\nt['x'] += 1\nreturn 0",
-        "local t = {}\nt.a[b].c = 1\nreturn 0",
-        "local t = {}\nf((t))[1] = 2\nreturn 0",
-        "local t = {}\n(f)().x = 1\nreturn 0",
-        "local t = {}\nt<<T>>()\nreturn 0",
-        "local t = {}\nreturn (t)[k]",
-    ] {
-        let (block, model) = analyze(code);
-        let analysis = EscapeAnalysis::analyze(&block, &model);
-        if let Some(t) = model.symbols.iter().find(|symbol| symbol.name == "t") {
-            let _ = analysis.has_dynamic_read(t.id);
-            let _ = analysis.has_dynamic_write(t.id);
-            let _ = analysis.is_field_read(t.id, "x");
-            let _ = analysis.escapes(t.id);
-            let _ = analysis.info(t.id);
-        }
-    }
+fn type_instantiation_method_calls_walk_the_prefix() {
+    let (block, model) = analyze("local t = {}\nt<<T>>:m()");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(analysis.escapes(t));
 }
 
 #[test]
-fn escape_analysis_covers_type_instantiation_and_base_forms() {
-    for code in [
-        "local t = {}\nt<<T>>:m()",
-        "local t = {}\n((t))[1] = 2",
-        "local t = {}\nreturn (t).x",
-        "local t = {}\nreturn ((t)).x",
-        "local t = {}\nreturn t[k]",
-        "local t = {}\nt[k] = 1",
-    ] {
-        let (block, model) = analyze(code);
-        let analysis = EscapeAnalysis::analyze(&block, &model);
-        if let Some(t) = model.symbols.iter().find(|symbol| symbol.name == "t") {
-            let _ = analysis.is_confined_table(&model, t.id);
-            let _ = analysis.has_dynamic_read(t.id);
-            let _ = analysis.has_dynamic_write(t.id);
-            let _ = analysis.is_field_read(t.id, "x");
-            let _ = analysis.info(t.id);
-        }
-    }
+fn helper_calls_do_not_escape_unrelated_tables() {
+    let (block, model) = analyze("local t = {}\na.b()\nreturn 0");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(!analysis.escapes(t));
 }
 
 #[test]
@@ -284,20 +271,53 @@ fn escape_analysis_reports_unknown_symbols_as_unconfined() {
     let (block, model) = analyze("local unused = 1\nreturn 0");
     let analysis = EscapeAnalysis::analyze(&block, &model);
     let unused = symbol_named(&model, "unused");
-    // No escape facts were recorded for a non-reference value.
     assert!(analysis.info(unused).is_none());
     assert!(!analysis.is_confined_table(&model, unused));
 }
 
 #[test]
-fn escape_analysis_covers_indirect_call_prefixes() {
-    for code in [
-        "local t = {}\na.b()\nreturn t",
-        "local t = {}\nt.a.b()\nreturn t",
-        "local t = {}\nt[1]()\nreturn t",
-        "local t = {}\n(helper)(t)\nreturn t",
-    ] {
-        let (block, model) = analyze(code);
-        let _ = EscapeAnalysis::analyze(&block, &model);
-    }
+fn parenthesized_and_index_bases_record_the_right_facts() {
+    // `(t[1]).y` reads through a parenthesized index base.
+    let (block, model) = analyze("local t = {}\nreturn (t[1]).y");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(analysis.has_dynamic_read(t));
+
+    // `(t + 1).y` observes `t` as a value, so it escapes.
+    let (block, model) = analyze("local t = {}\nreturn (t + 1).y");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(analysis.escapes(t));
+
+    // `t[b].c = 1` reads `t` dynamically (the index base is `t` itself).
+    let (block, model) = analyze("local t = {}\nt[b].c = 1\nreturn 0");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(analysis.has_dynamic_read(t));
+
+    // `t.a[b].c = 1` attributes the field read to `t` but not the dynamic index,
+    // whose base is `t.a` rather than `t`.
+    let (block, model) = analyze("local t = {}\nt.a[b].c = 1\nreturn 0");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(analysis.is_field_read(t, "a"));
+    assert!(!analysis.has_dynamic_read(t));
+
+    // `t<<T>>()` observes `t` as a call target, so it escapes.
+    let (block, model) = analyze("local t = {}\nt<<T>>()\nreturn 0");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(analysis.escapes(t));
+
+    // Passing `t` to a helper escapes it.
+    let (block, model) = analyze("local t = {}\nf((t))[1] = 2\nreturn 0");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(analysis.escapes(t));
+
+    // `(f)().x = 1` escapes the callee but not `t`.
+    let (block, model) = analyze("local t = {}\n(f)().x = 1\nreturn t");
+    let analysis = EscapeAnalysis::analyze(&block, &model);
+    let t = symbol_named(&model, "t");
+    assert!(analysis.escapes(t)); // `return t` exposes it
 }
