@@ -95,3 +95,32 @@ fn rejects_unanalyzed_trees() {
         NavigationError::UnanalyzedBlock
     );
 }
+
+#[test]
+fn index_accessors_and_error_rendering() {
+    use r4::navigation::NodeId;
+
+    let (index, _block) = analyzed_index(CODE);
+    assert!(!index.is_empty());
+    assert!(index.len() > 1);
+    assert_eq!(index.iter().count(), index.len());
+
+    let offset = CODE.find("value").expect("value is present");
+    let id = index.node_at(offset).expect("a node");
+    assert_eq!(
+        index.entry(id).and_then(|entry| entry.binding),
+        index.binding(id)
+    );
+    assert!(index.binding(id).is_some());
+
+    assert!(index.entry(NodeId(9999)).is_none());
+    assert!(index.binding(NodeId(9999)).is_none());
+
+    for error in [
+        NavigationError::MissingTokens,
+        NavigationError::UnanalyzedBlock,
+    ] {
+        assert!(!error.to_string().is_empty());
+        assert!(error.code().starts_with("navigation/"));
+    }
+}
