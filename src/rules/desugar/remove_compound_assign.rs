@@ -350,6 +350,26 @@ mod operator_coverage {
     }
 
     #[test]
+    fn compound_index_assignment_evaluates_each_part_once() {
+        for input in ["f()[g()] += 1", "t.a[g()] += 1", "f()[1] += 1"] {
+            let (mut block, model) = analyze(input);
+            remove_compound_assign(&mut block, &model);
+            let output = generate(&block);
+            assert!(!output.contains("+="), "`{input}` left `+=`: {output}");
+            for call in ["f()", "g()"] {
+                if input.contains(call) {
+                    assert_eq!(
+                        output.matches(call).count(),
+                        1,
+                        "`{input}` must evaluate `{call}` once: {output}"
+                    );
+                }
+            }
+            parse(&output);
+        }
+    }
+
+    #[test]
     fn removes_compound_assignment_on_fields_and_indexes() {
         for input in [
             "t.field += 1",

@@ -1640,3 +1640,53 @@ fn token_based_generator_round_trips_dialect_specific_code() {
         );
     }
 }
+
+#[test]
+fn generator_output_is_equivalent_for_tricky_constructs() {
+    use r4::Equivalent;
+
+    let generators = |block: &Block| {
+        let mut readable = ReadableLuaGenerator::default();
+        readable.write_block(block);
+        let mut dense = DenseLuaGenerator::default();
+        dense.write_block(block);
+        let mut synthesized = TokenBasedLuaGenerator::new("");
+        synthesized.write_block(block);
+        vec![
+            ("readable", readable.into_string()),
+            ("dense", dense.into_string()),
+            ("synthesized", synthesized.into_string()),
+        ]
+    };
+
+    for code in [
+        "return 'a\\n\\t\\\"b'",
+        "return { { 1 }, { 2, 3 } }",
+        "return { [1] = 'a', [2] = 'b' }",
+        "return f ( { a = 1 } , 'x' )",
+        "return `a { b } c { d }`",
+        "type T = { [string]: number }\nreturn 1",
+        "type T = (a: number, b: string) -> boolean\nreturn 1",
+        "return function ( a : number , ... : string ) : boolean return true end",
+        "local x = if a then 1 elseif b then 2 else 3\nreturn x",
+        "return a + b * c - d / e % f ^ g",
+        "return a and b or not c",
+        "return a .. b .. c",
+        "return -x, #t, not y",
+        "local t = { 1, 2, a = 3, [b] = 4 }\nreturn t",
+        "for k, v in pairs ( t ) do break end",
+        "while true do continue end",
+    ] {
+        let block = parse_with(code, Dialect::Luau);
+        for (name, output) in generators(&block) {
+            let reparsed = Parser::default()
+                .dialect(Dialect::Luau)
+                .parse(&output)
+                .unwrap_or_else(|error| panic!("{name} `{code}`: {error}\n{output}"));
+            assert!(
+                block.is_equivalent_to(&reparsed),
+                "{name} changed the tree for `{code}`:\n{output}"
+            );
+        }
+    }
+}
