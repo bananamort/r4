@@ -260,3 +260,237 @@ fn cfg_errors_are_all_triggered() {
         }
     }
 }
+
+variant_registry!(NavigationErrorTag, r4::navigation::NavigationError,
+    MissingTokens => r4::navigation::NavigationError::MissingTokens,
+    UnanalyzedBlock => r4::navigation::NavigationError::UnanalyzedBlock,
+);
+
+variant_registry!(AnnotationErrorTag, r4::annotation::AnnotationError,
+    UnknownBlock => r4::annotation::AnnotationError::UnknownBlock { .. },
+    UnknownStatement => r4::annotation::AnnotationError::UnknownStatement { .. },
+    UnknownExpression => r4::annotation::AnnotationError::UnknownExpression { .. },
+    MissingCondition => r4::annotation::AnnotationError::MissingCondition { .. },
+    UnknownIdentifier => r4::annotation::AnnotationError::UnknownIdentifier { .. },
+);
+
+variant_registry!(DirectiveErrorTag, r4::semantic::DirectiveError,
+    InvalidRange => r4::semantic::DirectiveError::InvalidRange { .. },
+    MissingName => r4::semantic::DirectiveError::MissingName,
+    ConflictingStrictness => r4::semantic::DirectiveError::ConflictingStrictness { .. },
+);
+
+variant_registry!(DiagnosticFormatErrorTag, r4::diagnostic::DiagnosticFormatError,
+    UnknownCode => r4::diagnostic::DiagnosticFormatError::UnknownCode { .. },
+    InvalidSpan => r4::diagnostic::DiagnosticFormatError::InvalidSpan { .. },
+    InvalidLocation => r4::diagnostic::DiagnosticFormatError::InvalidLocation { .. },
+);
+
+variant_registry!(DiagnosticQueryErrorTag, r4::diagnostic::DiagnosticQueryError,
+    MissingSpan => r4::diagnostic::DiagnosticQueryError::MissingSpan,
+);
+
+variant_registry!(TriviaErrorTag, r4::nodes::TriviaError,
+    InvalidRange => r4::nodes::TriviaError::InvalidRange { .. },
+);
+
+fn annotation_error(
+    block: &Block,
+    address: r4::annotation::NodeAddress,
+) -> r4::annotation::AnnotationError {
+    let mut annotations = r4::annotation::SyntaxAnnotations::new();
+    annotations.insert(address, r4::annotation::SyntaxAnnotation::new("x"));
+    annotations
+        .validate(block)
+        .expect_err("the address must not resolve")
+}
+
+#[test]
+fn api_errors_are_all_triggered() {
+    use r4::annotation::NodeAddress;
+    use r4::diagnostic::{
+        Diagnostic, DiagnosticFormatter, DiagnosticQueryError, LinePosition, LinePositionSpan,
+        TextSpan,
+    };
+    use r4::navigation::SyntaxIndex;
+    use r4::semantic::{Directive, Directives};
+    use r4::Compilation;
+
+    let tokenless = luau("return 1");
+    let _ = analyze(&tokenless);
+    let tokenful = Parser::default()
+        .preserve_tokens()
+        .parse("return 1")
+        .expect("valid code");
+    let navigation_errors = vec![
+        SyntaxIndex::build(&tokenless).expect_err("tokens are required"),
+        SyntaxIndex::build(&tokenful).expect_err("analysis is required"),
+    ];
+    let produced: BTreeSet<&'static str> = navigation_errors
+        .iter()
+        .map(|error| NavigationErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        NavigationErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "navigation errors never triggered: {absent:?}"
+    );
+    for error in &navigation_errors {
+        assert!(!error.code().is_empty());
+        assert!(!error.to_string().is_empty());
+    }
+
+    let block = luau("local x = 1\nreturn x");
+    let _ = analyze(&block);
+    let id = block.get_identity().expect("the block is analyzed");
+    let annotation_errors = vec![
+        annotation_error(&block, NodeAddress::Block(BlockIdentity(9_999))),
+        annotation_error(
+            &block,
+            NodeAddress::Statement {
+                block: id,
+                index: 99,
+            },
+        ),
+        annotation_error(
+            &block,
+            NodeAddress::Expression {
+                block: id,
+                statement: 0,
+                index: 99,
+            },
+        ),
+        annotation_error(
+            &block,
+            NodeAddress::Condition {
+                block: id,
+                statement: 0,
+            },
+        ),
+        annotation_error(
+            &block,
+            NodeAddress::Identifier(r4::nodes::BindingId::symbol(9_999)),
+        ),
+    ];
+    let produced: BTreeSet<&'static str> = annotation_errors
+        .iter()
+        .map(|error| AnnotationErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        AnnotationErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "annotation errors never triggered: {absent:?}"
+    );
+    for error in &annotation_errors {
+        assert!(!error.code().is_empty());
+        assert!(!error.to_string().is_empty());
+    }
+
+    let directive_source = "--!strict\n--!nonstrict\nreturn 1";
+    let directive_block = Parser::default()
+        .preserve_tokens()
+        .parse(directive_source)
+        .expect("valid code");
+    let directive_errors = vec![
+        Directive::parse("--!").expect_err("a nameless directive is rejected"),
+        Directives::from_block(&directive_block, directive_source)
+            .expect_err("conflicting strictness is rejected"),
+        r4::nodes::TriviaError::InvalidRange {
+            start: 0,
+            end: 1,
+            length: 0,
+        }
+        .into(),
+    ];
+    let produced: BTreeSet<&'static str> = directive_errors
+        .iter()
+        .map(|error| DirectiveErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        DirectiveErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "directive errors never triggered: {absent:?}"
+    );
+    for error in &directive_errors {
+        assert!(!error.code().is_empty());
+        assert!(!error.to_string().is_empty());
+    }
+
+    let source = "return 1";
+    let format_errors = vec![
+        DiagnosticFormatter::new(source)
+            .render(&Diagnostic::error("x").with_code("bogus/code"))
+            .expect_err("an uncataloged code is rejected"),
+        DiagnosticFormatter::new(source)
+            .render(
+                &Diagnostic::error("x")
+                    .with_code("semantic/undeclared-symbol")
+                    .with_span(TextSpan::new(1000, 1001)),
+            )
+            .expect_err("a span outside the source is rejected"),
+        DiagnosticFormatter::new(source)
+            .render(
+                &Diagnostic::error("x")
+                    .with_code("semantic/undeclared-symbol")
+                    .with_location(LinePositionSpan::new(
+                        LinePosition::new(99, 1),
+                        LinePosition::new(99, 2),
+                    )),
+            )
+            .expect_err("a location outside the source is rejected"),
+    ];
+    let produced: BTreeSet<&'static str> = format_errors
+        .iter()
+        .map(|error| DiagnosticFormatErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        DiagnosticFormatErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "diagnostic format errors never triggered: {absent:?}"
+    );
+    for error in &format_errors {
+        assert!(!error.to_string().is_empty());
+    }
+
+    let mut compilation = Compilation::new();
+    compilation.add_tree("return 1").expect("valid code");
+    let query_error = compilation
+        .diagnostics_for_token(&r4::nodes::Token::from_content("x"))
+        .expect_err("a token without a span cannot be queried");
+    assert_eq!(DiagnosticQueryErrorTag::ALL.len(), 1);
+    assert_eq!(
+        DiagnosticQueryErrorTag::of(&query_error).name(),
+        DiagnosticQueryErrorTag::MissingSpan.name()
+    );
+    assert_eq!(query_error.code(), DiagnosticQueryError::MissingSpan.code());
+
+    let tokenful = Parser::default()
+        .preserve_tokens()
+        .parse("-- comment\nreturn 1")
+        .expect("valid code");
+    let comment = r4::process::collect_trivia(&tokenful)
+        .into_iter()
+        .find(|piece| piece.kind().is_comment())
+        .expect("a comment");
+    let trivia_error = comment
+        .try_read_with("--")
+        .expect_err("a short source is rejected");
+    assert_eq!(TriviaErrorTag::ALL.len(), 1);
+    assert_eq!(
+        TriviaErrorTag::of(&trivia_error).name(),
+        TriviaErrorTag::InvalidRange.name()
+    );
+    assert!(!trivia_error.to_string().is_empty());
+}
