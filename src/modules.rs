@@ -23,12 +23,17 @@ use crate::parser::ParserError;
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::semantic::{
     ModuleError, ModuleId, MultiModuleModel, SemanticAnalyzer, SemanticError, SemanticModel,
-    SymbolKind,
 };
 use crate::Parser;
 
 /// The name of the global `require` function.
 pub const REQUIRE_NAME: &str = "require";
+
+/// The Roblox global naming the script currently being analyzed.
+const SCRIPT_GLOBAL: &str = "script";
+
+/// The Roblox global naming the data-model root.
+const GAME_GLOBAL: &str = "game";
 
 /// An error produced while loading module source.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -354,7 +359,7 @@ pub fn classify_require_call(call: &FunctionCall, model: &SemanticModel) -> Requ
                     Some(path) => RequireCall::Path { path },
                     None => RequireCall::NonLiteral,
                 },
-                (Some(expression), None) => match instance_segments(expression) {
+                (Some(expression), None) => match instance_segments(expression, model) {
                     Some(segments) => RequireCall::Instance { segments },
                     None => RequireCall::NonLiteral,
                 },
@@ -367,25 +372,36 @@ pub fn classify_require_call(call: &FunctionCall, model: &SemanticModel) -> Requ
 
 /// Extracts the instance path of a Roblox/Luau `require` argument.
 ///
-/// Only paths rooted at `script` are recognized; `game:GetService` and any
-/// other data-model root depend on a project mapping and are reported as
-/// non-literal (fail fast) instead of being guessed.
-fn instance_segments(expression: &Expression) -> Option<Vec<InstanceSegment>> {
+/// Only paths rooted at the global `script` are recognized; `game:GetService`
+/// and any other data-model root depend on a project mapping and are reported
+/// as non-literal (fail fast) instead of being guessed. Every root is resolved
+/// through the semantic model, so a local that shadows `script` or `game` is
+/// never mistaken for the Roblox global.
+fn instance_segments(
+    expression: &Expression,
+    model: &SemanticModel,
+) -> Option<Vec<InstanceSegment>> {
     match expression {
-        Expression::Identifier(identifier) if identifier.get_name() == "script" => Some(Vec::new()),
+        Expression::Identifier(identifier)
+            if model.identifier_resolves_to_global(identifier, SCRIPT_GLOBAL) =>
+        {
+            Some(Vec::new())
+        }
         Expression::Field(field) => {
-            let mut segments = prefix_instance_segments(field.get_prefix())?;
+            let mut segments = prefix_instance_segments(field.get_prefix(), model)?;
             segments.push(instance_field_segment(field.get_field().get_name()));
             Some(segments)
         }
-        Expression::Call(call) => instance_call_segments(call),
-        Expression::Parenthese(parenthese) => instance_segments(parenthese.inner_expression()),
+        Expression::Call(call) => instance_call_segments(call, model),
+        Expression::Parenthese(parenthese) => {
+            instance_segments(parenthese.inner_expression(), model)
+        }
         Expression::Index(index) => {
             let name = match index.get_index() {
                 Expression::String(string) => path_of_string(string)?,
                 _ => return None,
             };
-            let mut segments = prefix_instance_segments(index.get_prefix())?;
+            let mut segments = prefix_instance_segments(index.get_prefix(), model)?;
             segments.push(InstanceSegment::Child(name));
             Some(segments)
         }
@@ -393,36 +409,46 @@ fn instance_segments(expression: &Expression) -> Option<Vec<InstanceSegment>> {
     }
 }
 
-fn prefix_instance_segments(prefix: &Prefix) -> Option<Vec<InstanceSegment>> {
+fn prefix_instance_segments(
+    prefix: &Prefix,
+    model: &SemanticModel,
+) -> Option<Vec<InstanceSegment>> {
     match prefix {
-        Prefix::Identifier(identifier) if identifier.get_name() == "script" => Some(Vec::new()),
+        Prefix::Identifier(identifier)
+            if model.identifier_resolves_to_global(identifier, SCRIPT_GLOBAL) =>
+        {
+            Some(Vec::new())
+        }
         Prefix::Field(field) => {
-            let mut segments = prefix_instance_segments(field.get_prefix())?;
+            let mut segments = prefix_instance_segments(field.get_prefix(), model)?;
             segments.push(instance_field_segment(field.get_field().get_name()));
             Some(segments)
         }
-        Prefix::Call(call) => instance_call_segments(call),
+        Prefix::Call(call) => instance_call_segments(call, model),
         Prefix::Index(index) => {
             let name = match index.get_index() {
                 Expression::String(string) => path_of_string(string)?,
                 _ => return None,
             };
-            let mut segments = prefix_instance_segments(index.get_prefix())?;
+            let mut segments = prefix_instance_segments(index.get_prefix(), model)?;
             segments.push(InstanceSegment::Child(name));
             Some(segments)
         }
-        Prefix::Parenthese(parenthese) => instance_segments(parenthese.inner_expression()),
+        Prefix::Parenthese(parenthese) => instance_segments(parenthese.inner_expression(), model),
         _ => None,
     }
 }
 
-fn instance_call_segments(call: &FunctionCall) -> Option<Vec<InstanceSegment>> {
+fn instance_call_segments(
+    call: &FunctionCall,
+    model: &SemanticModel,
+) -> Option<Vec<InstanceSegment>> {
     match call.get_method() {
         Some(method)
             if method.get_name() == "FindFirstChild" || method.get_name() == "WaitForChild" =>
         {
             let name = single_string_argument(call)?;
-            let mut segments = prefix_instance_segments(call.get_prefix())?;
+            let mut segments = prefix_instance_segments(call.get_prefix(), model)?;
             segments.push(InstanceSegment::Child(name));
             Some(segments)
         }
@@ -431,7 +457,7 @@ fn instance_call_segments(call: &FunctionCall) -> Option<Vec<InstanceSegment>> {
             let Prefix::Identifier(identifier) = call.get_prefix() else {
                 return None;
             };
-            if identifier.get_name() != "game" {
+            if !model.identifier_resolves_to_global(identifier, GAME_GLOBAL) {
                 return None;
             }
             Some(vec![InstanceSegment::Service(name)])
@@ -485,17 +511,7 @@ pub fn resolve_instance_path(key: &str, segments: &[InstanceSegment]) -> Option<
 }
 
 fn resolves_to_require(model: &SemanticModel, identifier: &crate::nodes::Identifier) -> bool {
-    let Some(symbol) = model.resolve_identifier(identifier) else {
-        return false;
-    };
-    let info = model.symbol(symbol);
-    if info.kind == SymbolKind::Global {
-        return info.name == REQUIRE_NAME;
-    }
-    match model.immutable_global_alias(symbol) {
-        Some(global) => model.symbol(global).name == REQUIRE_NAME,
-        None => false,
-    }
+    model.identifier_resolves_to_global(identifier, REQUIRE_NAME)
 }
 
 fn path_of_string(string: &StringExpression) -> Option<String> {

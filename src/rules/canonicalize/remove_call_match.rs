@@ -4,7 +4,7 @@ use crate::nodes::{
     Expression, FunctionCall, Identifier, Statement, TypedIdentifier, VariableAssignment,
 };
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
-use crate::semantic::{SemanticModel, SymbolKind};
+use crate::semantic::SemanticModel;
 use crate::utils::{
     expressions_as_expression, expressions_as_statement, preserve_arguments_side_effects,
 };
@@ -53,19 +53,7 @@ pub fn identifier_resolves_to_global(
     identifier: &Identifier,
     name: &str,
 ) -> bool {
-    let Some(symbol) = model.resolve_identifier(identifier) else {
-        return false;
-    };
-
-    let info = model.symbol(symbol);
-    if info.kind == SymbolKind::Global {
-        return info.name == name;
-    }
-
-    match model.immutable_global_alias(symbol) {
-        Some(global) => model.symbol(global).name == name,
-        None => false,
-    }
+    model.identifier_resolves_to_global(identifier, name)
 }
 
 /// Removes every call matched by `matcher`, preserving argument side effects.

@@ -866,3 +866,89 @@ fn classifies_instance_edge_cases() {
         let _ = resolve_instance_path(key, &segments);
     }
 }
+
+/// The Roblox data-model roots are resolved through the semantic model: a local
+/// that shadows `script` or `game` is never mistaken for the global, while a
+/// read-only alias of the global still classifies.
+#[test]
+fn instance_roots_resolve_through_the_semantic_model() {
+    use r4::modules::{classify_require_call, InstanceSegment, RequireCall};
+    use r4::nodes::{Expression, FunctionCall, Prefix, Statement};
+
+    fn require_call(code: &str) -> (FunctionCall, SemanticModel) {
+        let (block, model) = analyze(code);
+        for statement in block.iter_statements() {
+            if let Statement::LocalAssign(assign) = statement {
+                for value in assign.iter_values() {
+                    if let Expression::Call(call) = value {
+                        if matches!(
+                            call.get_prefix(),
+                            Prefix::Identifier(identifier) if identifier.get_name() == "require"
+                        ) {
+                            return ((**call).clone(), model);
+                        }
+                    }
+                }
+            }
+        }
+        panic!("no require call in `{code}`");
+    }
+
+    for code in [
+        "local script = {}\nlocal x = require(script.Parent.Util)",
+        "local game = {}\nlocal x = require(game:GetService(\"Players\"))",
+        "local script = {}\nlocal x = require(script:FindFirstChild(\"Child\"))",
+        "local script = {}\nlocal x = require(script:WaitForChild(\"Child\"))",
+        "local script = {}\nlocal x = require(script.Parent[1])",
+        "local game = nil\nlocal x = require(game:GetService(\"Players\"))",
+    ] {
+        let (call, model) = require_call(code);
+        assert_eq!(
+            classify_require_call(&call, &model),
+            RequireCall::NonLiteral,
+            "`{code}` shadowed a data-model root and must not classify as an instance require"
+        );
+    }
+
+    // The genuine globals still classify.
+    let (call, model) = require_call("local x = require(script.Parent.Util)");
+    let RequireCall::Instance { segments } = classify_require_call(&call, &model) else {
+        panic!("expected an instance path");
+    };
+    assert_eq!(
+        segments,
+        vec![
+            InstanceSegment::Parent,
+            InstanceSegment::Child("Util".to_owned())
+        ]
+    );
+
+    let (call, model) = require_call("local x = require(game:GetService(\"Players\"))");
+    let RequireCall::Instance { segments } = classify_require_call(&call, &model) else {
+        panic!("expected a service path");
+    };
+    assert_eq!(
+        segments,
+        vec![InstanceSegment::Service("Players".to_owned())]
+    );
+
+    // A read-only alias of the global root still resolves to it.
+    let (call, model) = require_call("local s = script\nlocal x = require(s.Parent.Util)");
+    assert!(
+        matches!(
+            classify_require_call(&call, &model),
+            RequireCall::Instance { .. }
+        ),
+        "an immutable alias of the global script must classify"
+    );
+
+    let (call, model) =
+        require_call("local g = game\nlocal x = require(g:GetService(\"Players\"))");
+    assert!(
+        matches!(
+            classify_require_call(&call, &model),
+            RequireCall::Instance { .. }
+        ),
+        "an immutable alias of the global game must classify"
+    );
+}

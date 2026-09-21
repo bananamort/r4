@@ -566,6 +566,27 @@ impl SemanticModel {
             .all(|symbol| self.immutable_global_alias(symbol.id).is_some())
     }
 
+    /// Returns whether `identifier` refers to the global `name`, either
+    /// directly or through a read-only immutable alias.
+    ///
+    /// This is the strict, identity-based way to recognise a host global
+    /// occurrence: a shadowing local, a written local, an unresolvable
+    /// identifier, or a local that aliases some other global all return
+    /// `false`. It never falls back to comparing the identifier's name.
+    pub fn identifier_resolves_to_global(&self, identifier: &Identifier, name: &str) -> bool {
+        let Some(symbol) = self.resolve_identifier(identifier) else {
+            return false;
+        };
+        let info = self.symbol(symbol);
+        if info.kind == SymbolKind::Global {
+            return info.name == name;
+        }
+        match self.immutable_global_alias(symbol) {
+            Some(global) => self.symbol(global).name == name,
+            None => false,
+        }
+    }
+
     /// Iterates over all symbols captured as upvalues by nested functions.
     pub fn captured_symbols(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols.iter().filter(|symbol| symbol.is_captured())
