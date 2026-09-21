@@ -200,6 +200,7 @@ fn every_node_kind_drives_the_visitors_generators_and_converter() {
 #[test]
 fn every_evaluable_expression_shape_is_evaluated() {
     let evaluator = Evaluator::default();
+    let pure_evaluator = Evaluator::default().assume_pure_metamethods();
     for code in [
         "return 1 + 2",
         "return 2 * 3 - 4",
@@ -273,6 +274,30 @@ fn every_evaluable_expression_shape_is_evaluated() {
         "return a and b",
         "return a or b",
         "return #t, -x",
+        "return false or b",
+        "return true and b",
+        "return false and b",
+        "return true or b",
+        "return a == b",
+        "return 1 ~= 2",
+        "return 1 ~= 1",
+        "return if false then 1 elseif f() then 2 else 3",
+        "return if false then 1 elseif true then f() else 3",
+        "return if false then 1 elseif a then f() else 3",
+        "return if a then 1 elseif f() then 2 else 3",
+        "return if a then f() else 3",
+        "return a[b()].c",
+        "return f().x",
+        "return 'a' + 'b'",
+        "return 1 + 'a'",
+        "return 7 // 2",
+        "return a // b",
+        "return a ~= b",
+        "return a % b",
+        "return a ^ b",
+        "return -a, #a",
+        "return 'x' .. 1",
+        "return 1 .. 'x'",
     ] {
         let block = parse_with(code, Dialect::Luau);
         for statement in block.iter_statements() {
@@ -292,6 +317,8 @@ fn every_evaluable_expression_shape_is_evaluated() {
                 let _ = evaluator.has_side_effects(expression);
                 let _ = evaluator.has_side_effects_with(expression, &|_| true);
                 let _ = evaluator.has_side_effects_with(expression, &|_| false);
+                let _ = pure_evaluator.has_side_effects_with(expression, &|_| true);
+                let _ = pure_evaluator.has_side_effects_with(expression, &|_| false);
                 let _ = evaluator.can_return_multiple_values(expression);
             }
         }
