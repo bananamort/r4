@@ -126,9 +126,7 @@ impl AstFuzzer {
                         }
                         2 => {
                             self.push_work(AstFuzzerWork::MakeCallStatement);
-                            self.push_work(AstFuzzerWork::MakeFunctionCall);
-                            self.push_work(AstFuzzerWork::FuzzPrefix);
-                            self.push_work(AstFuzzerWork::FuzzArguments);
+                            self.fuzz_function_call();
                         }
                         3 => {
                             self.generate_function(
@@ -532,9 +530,7 @@ impl AstFuzzer {
                         }
                         10 => {
                             self.push_work(AstFuzzerWork::MakeCallExpression);
-                            self.push_work(AstFuzzerWork::MakeFunctionCall);
-                            self.push_work(AstFuzzerWork::FuzzPrefix);
-                            self.push_work(AstFuzzerWork::FuzzArguments);
+                            self.fuzz_function_call();
                         }
                         11 => {
                             self.generate_function(
@@ -636,9 +632,7 @@ impl AstFuzzer {
                         3 => {
                             self.budget.take_expression();
                             self.push_work(AstFuzzerWork::MakeCallPrefix);
-                            self.push_work(AstFuzzerWork::MakeFunctionCall);
-                            self.push_work(AstFuzzerWork::FuzzPrefix);
-                            self.push_work(AstFuzzerWork::FuzzArguments);
+                            self.fuzz_function_call();
                         }
                         4 => {
                             self.budget.take_expression();
@@ -1053,18 +1047,25 @@ impl AstFuzzer {
                     let pop_call = self.pop_call();
                     self.statements.push(pop_call.into());
                 }
-                AstFuzzerWork::MakeFunctionCall => {
+                AstFuzzerWork::MakeFunctionCall {
+                    method,
+                    method_types,
+                } => {
                     let prefix = self.pop_prefix();
                     let arguments = self.pop_arguments();
-                    self.calls.push(FunctionCall::new(
-                        prefix,
-                        arguments,
-                        if self.random.method_call() {
-                            Some(self.random.identifier())
+                    let call = if method {
+                        let name = self.random.identifier();
+                        if method_types > 0 {
+                            let types = self.pop_types(method_types);
+                            FunctionCall::new(prefix, arguments, None)
+                                .with_type_instantiation_method(name, types)
                         } else {
-                            None
-                        },
-                    ));
+                            FunctionCall::new(prefix, arguments, Some(name))
+                        }
+                    } else {
+                        FunctionCall::new(prefix, arguments, None)
+                    };
+                    self.calls.push(call);
                 }
                 AstFuzzerWork::MakeVariable { kind } => match kind {
                     VariableKind::Field => {
@@ -1878,6 +1879,29 @@ impl AstFuzzer {
 
     fn fuzz_multiple_type(&mut self, amount: usize) {
         self.push_repeated_work(AstFuzzerWork::FuzzType { depth: 0 }, amount);
+    }
+
+    /// Fuzzes a function call: a prefix, its arguments and, when a method is
+    /// chosen, optionally the method's explicit type arguments
+    /// (`obj:m<<T, U>>()`). The type arguments are generated after the prefix
+    /// and arguments so that they are on top of the type stack when the call is
+    /// built.
+    fn fuzz_function_call(&mut self) {
+        let method = self.random.method_call();
+        let method_types = if method && self.random.method_type_instantiation() {
+            self.budget
+                .try_take_types(self.random.type_instantiation_types())
+        } else {
+            0
+        };
+
+        self.push_work(AstFuzzerWork::MakeFunctionCall {
+            method,
+            method_types,
+        });
+        self.push_work(AstFuzzerWork::FuzzPrefix);
+        self.push_work(AstFuzzerWork::FuzzArguments);
+        self.fuzz_multiple_type(method_types);
     }
 
     fn fuzz_nested_type(&mut self, current_depth: usize) {

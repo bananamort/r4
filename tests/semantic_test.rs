@@ -1299,3 +1299,25 @@ fn undefined_label_is_a_typed_error() {
         .expect_err("an undefined label is rejected");
     assert_eq!(error.code(), "semantic/undefined-label");
 }
+
+#[test]
+fn goto_into_a_local_scope_is_rejected() {
+    let block = parse_lua52("goto skip\nlocal x = 1\n::skip::\nreturn 1");
+    let error = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect_err("jumping into a local's scope is rejected");
+    assert!(
+        error.code().starts_with("semantic/"),
+        "unexpected code: {}",
+        error.code()
+    );
+    assert!(!error.to_string().is_empty());
+}
+
+#[test]
+fn goto_out_of_a_local_scope_is_allowed() {
+    let block = parse_lua52("do\n  local x = 1\n  goto done\nend\n::done::\nreturn 1");
+    SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("jumping out of a scope is allowed");
+}

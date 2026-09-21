@@ -25,7 +25,10 @@ pub enum AstFuzzerWork {
     },
     MakeDoStatement,
     MakeCallStatement,
-    MakeFunctionCall,
+    MakeFunctionCall {
+        method: bool,
+        method_types: usize,
+    },
     MakeVariable {
         kind: VariableKind,
     },

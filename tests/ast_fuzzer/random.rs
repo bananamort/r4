@@ -11,6 +11,7 @@ pub struct RandomAst {
     block_std_dev: f64,
     last_statement_prob: f64,
     method_call_prob: f64,
+    method_type_instantiation_prob: f64,
     table_mean: f64,
     table_std_dev: f64,
     function_return_type_prob: f64,
@@ -40,6 +41,7 @@ impl Default for RandomAst {
             block_std_dev: 4.0,
             last_statement_prob: 0.5,
             method_call_prob: 0.3,
+            method_type_instantiation_prob: 0.5,
             table_mean: 1.0,
             table_std_dev: 1.5,
             function_return_type_prob: 0.5,
@@ -101,6 +103,10 @@ impl RandomAst {
 
     pub fn method_call(&self) -> bool {
         rng().random_bool(self.method_call_prob)
+    }
+
+    pub fn method_type_instantiation(&self) -> bool {
+        rng().random_bool(self.method_type_instantiation_prob)
     }
 
     pub fn call_arguments(&self) -> usize {
