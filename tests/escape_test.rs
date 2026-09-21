@@ -256,3 +256,25 @@ fn escape_analysis_covers_index_and_parenthesized_prefixes() {
         }
     }
 }
+
+#[test]
+fn escape_analysis_covers_type_instantiation_and_base_forms() {
+    for code in [
+        "local t = {}\nt<<T>>:m()",
+        "local t = {}\n((t))[1] = 2",
+        "local t = {}\nreturn (t).x",
+        "local t = {}\nreturn ((t)).x",
+        "local t = {}\nreturn t[k]",
+        "local t = {}\nt[k] = 1",
+    ] {
+        let (block, model) = analyze(code);
+        let analysis = EscapeAnalysis::analyze(&block, &model);
+        if let Some(t) = model.symbols.iter().find(|symbol| symbol.name == "t") {
+            let _ = analysis.is_confined_table(&model, t.id);
+            let _ = analysis.has_dynamic_read(t.id);
+            let _ = analysis.has_dynamic_write(t.id);
+            let _ = analysis.is_field_read(t.id, "x");
+            let _ = analysis.info(t.id);
+        }
+    }
+}

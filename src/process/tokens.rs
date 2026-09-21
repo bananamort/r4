@@ -366,6 +366,8 @@ mod test {
         "local a, b = 1, 2 -- multi\nreturn a, b",
         "do local inner = 1 end -- do",
         "return 0x10, 0b1010, 1e5 -- numbers",
+        "return true, false, nil, ... -- keyword literals",
+        "local x: true = y -- literal type",
     ];
 
     fn assert_read_only_matches(code: &str, parser: Parser) {
