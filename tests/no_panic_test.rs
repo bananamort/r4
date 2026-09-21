@@ -1,6 +1,7 @@
 //! Adversarial input coverage: every transformation pass must return normally
 //! (success or typed error) for any input that parses, never panic.
 
+use r4::cfg::build_chunk;
 use r4::nodes::Block;
 use r4::rules::{canonicalize, desugar, rename_variables};
 use r4::semantic::SemanticAnalyzer;
@@ -79,11 +80,43 @@ fn parse(code: &str, lua52: bool) -> Option<Block> {
     parser.parse(code).ok()
 }
 
+/// Asserts that a transformation pass succeeds on semantically valid input.
+///
+/// A pass that returns a typed error for a block that parsed *and* analyzed is
+/// a broken pass, not an acceptable outcome: discarding the error is how a rule
+/// regression hides. Infallible passes return `()`.
+trait EnsureSuccess {
+    fn ensure_success(self, pass: &str, code: &str);
+}
+
+impl EnsureSuccess for () {
+    fn ensure_success(self, _pass: &str, _code: &str) {}
+}
+
+impl EnsureSuccess for usize {
+    fn ensure_success(self, _pass: &str, _code: &str) {}
+}
+
+impl<T, E: std::fmt::Display> EnsureSuccess for Result<T, E> {
+    fn ensure_success(self, pass: &str, code: &str) {
+        if let Err(error) = self {
+            panic!("`{pass}` failed on valid input `{code}`: {error}");
+        }
+    }
+}
+
 macro_rules! exercise {
     ($code:expr, $lua52:expr, $pass:path) => {{
         if let Some(mut block) = parse($code, $lua52) {
             if let Ok(model) = SemanticAnalyzer::new().analyze(&block) {
-                let _ = $pass(&mut block, &model);
+                // Only a well-formed program is valid input for a pass. A block
+                // the analyzer accepts but that cannot be lowered to a CFG (for
+                // example `break` outside a loop) has no sound transformation
+                // contract, so it is exercised for panics only.
+                if build_chunk(&block, &model).is_err() {
+                    continue;
+                }
+                EnsureSuccess::ensure_success($pass(&mut block, &model), stringify!($pass), $code);
             }
         }
     }};
@@ -140,14 +173,14 @@ fn renaming_is_idempotent_and_survives_reanalysis() {
         let Ok(model) = SemanticAnalyzer::new().analyze(&block) else {
             continue;
         };
-        if rename_variables::rename_variables(&mut block, &model).is_err() {
-            continue;
-        }
-        let Ok(refreshed) = SemanticAnalyzer::new().analyze(&block) else {
-            continue;
-        };
+        rename_variables::rename_variables(&mut block, &model)
+            .unwrap_or_else(|error| panic!("renaming valid `{code}` must succeed: {error}"));
+        let refreshed = SemanticAnalyzer::new()
+            .analyze(&block)
+            .unwrap_or_else(|error| panic!("renamed `{code}` must re-analyze: {error}"));
         // A second rename over the already-renamed tree must succeed too.
-        let _ = rename_variables::rename_variables(&mut block, &refreshed);
+        rename_variables::rename_variables(&mut block, &refreshed)
+            .unwrap_or_else(|error| panic!("re-renaming valid `{code}` must succeed: {error}"));
     }
 }
 
@@ -177,17 +210,39 @@ fn transformed_trees_reanalyze_with_consistent_invariants() {
         let Some(block) = parse(code, false) else {
             continue;
         };
+        // Only a well-formed program has a sound transformation contract: a
+        // block that cannot be lowered to a CFG is exercised for panics only.
+        let Ok(validity_model) = SemanticAnalyzer::new().analyze(&block) else {
+            continue;
+        };
+        if build_chunk(&block, &validity_model).is_err() {
+            continue;
+        }
         let Ok(mut session) = Session::from_block(block) else {
             continue;
         };
 
-        let _ = session.apply_semantic_result(canonicalize::remove_unused_variables);
-        let _ = session.apply_semantic_result(canonicalize::remove_dead_stores);
-        let _ = session.apply_semantic_result(canonicalize::remove_unreachable_code);
-        let _ = session.apply_semantic_result(canonicalize::hoist_loop_invariants);
-        let _ = session.apply_semantic_result(rename_variables::rename_variables);
-        let _ = session.apply_semantic_result(desugar::convert_local_function_to_assignment);
-        let _ = session.apply_semantic(canonicalize::compute_expression);
+        session
+            .apply_semantic_result(canonicalize::remove_unused_variables)
+            .expect("unused-variable removal must succeed on a valid program");
+        session
+            .apply_semantic_result(canonicalize::remove_dead_stores)
+            .expect("dead-store removal must succeed on a valid program");
+        session
+            .apply_semantic_result(canonicalize::remove_unreachable_code)
+            .expect("unreachable-code removal must succeed on a valid program");
+        session
+            .apply_semantic_result(canonicalize::hoist_loop_invariants)
+            .expect("loop-invariant hoisting must succeed on a valid program");
+        session
+            .apply_semantic_result(rename_variables::rename_variables)
+            .expect("renaming must succeed on a valid program");
+        session
+            .apply_semantic_result(desugar::convert_local_function_to_assignment)
+            .expect("local-function conversion must succeed on a valid program");
+        session
+            .apply_semantic(canonicalize::compute_expression)
+            .expect("expression folding must succeed on a valid program");
 
         let mut block = session.into_block();
         let Ok(model) = SemanticAnalyzer::new().analyze(&block) else {
