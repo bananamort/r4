@@ -1617,3 +1617,26 @@ fn token_based_generator_round_trips_tricky_literals_and_layouts() {
         );
     }
 }
+
+#[test]
+fn token_based_generator_round_trips_dialect_specific_code() {
+    for (code, dialect) in [
+        ("::top::\ngoto top", Dialect::Lua52),
+        ("goto continue\n::continue::", Dialect::Lua52),
+        ("do goto skip end\n::skip::\nreturn 1", Dialect::Lua52),
+        ("return 1 // 2", Dialect::Lua53),
+        ("return 7 // 2, 1.5, 2.0e3", Dialect::Lua53),
+        ("local x <const> = 1\nreturn x", Dialect::Lua54),
+        ("local x <close> = make()\nreturn 0", Dialect::Lua54),
+        ("::top::\ngoto top", Dialect::LuaJit),
+    ] {
+        let tokens = parse_tokens(code, dialect);
+        let mut generator = TokenBasedLuaGenerator::new(code);
+        generator.write_block(&tokens);
+        assert_eq!(
+            generator.into_string(),
+            code,
+            "token round trip changed `{code}` ({dialect:?})"
+        );
+    }
+}

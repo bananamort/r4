@@ -1254,3 +1254,48 @@ fn semantic_walker_handles_labels_and_generic_pack_types() {
             .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"));
     }
 }
+
+#[test]
+fn shadowed_and_captured_locals_bind_correctly() {
+    use r4::semantic::SymbolKind;
+
+    let model = analyze("local x = 1\ndo local x = 2\nprint(x) end\nprint(x)");
+    let locals: Vec<_> = model
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.name == "x" && symbol.kind == SymbolKind::Local)
+        .collect();
+    assert_eq!(locals.len(), 2, "two distinct `x` locals");
+    assert_ne!(locals[0].declaring_scope, locals[1].declaring_scope);
+
+    let model = analyze("local x = 1\nlocal function f() return x end\nreturn f");
+    let x = model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "x" && symbol.kind == SymbolKind::Local)
+        .expect("x");
+    assert!(x.is_captured(), "x is captured by the nested function");
+}
+
+#[test]
+fn goto_resolves_to_the_visible_label() {
+    let block = Parser::default()
+        .lua52()
+        .parse("do goto skip end\n::skip::\nreturn 1")
+        .expect("parse");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
+    assert_eq!(model.goto_bindings.len(), 1);
+    assert_eq!(model.goto_bindings[0].site.name, "skip");
+}
+
+#[test]
+fn undefined_label_is_a_typed_error() {
+    let block = Parser::default()
+        .lua52()
+        .parse("goto nowhere\nreturn 1")
+        .expect("parse");
+    let error = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect_err("an undefined label is rejected");
+    assert_eq!(error.code(), "semantic/undefined-label");
+}
