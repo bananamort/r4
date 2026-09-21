@@ -741,3 +741,65 @@ fn whole_program_index_types_and_labels() {
         let _ = index.goto_label(&labeled, qualified);
     }
 }
+
+#[test]
+fn resolve_error_variants_render() {
+    use r4::modules::ResolveError;
+    use r4::semantic::{ModuleError, SemanticAnalyzer};
+
+    let parse_error = Parser::default()
+        .parse("local x = ")
+        .expect_err("a syntax error");
+    let analysis_error = SemanticAnalyzer::new()
+        .analyze(
+            &Parser::default()
+                .lua52()
+                .parse("goto missing")
+                .expect("parse"),
+        )
+        .expect_err("a semantic error");
+
+    for error in [
+        ResolveError::Parse {
+            path: "a".to_owned(),
+            error: parse_error,
+        },
+        ResolveError::Analysis {
+            path: "a".to_owned(),
+            error: analysis_error,
+        },
+        ResolveError::Interface(ModuleError::UnboundExport {
+            name: "x".to_owned(),
+        }),
+    ] {
+        assert!(!error.to_string().is_empty());
+        assert!(error.code().starts_with("module/"));
+        let _ = error.to_diagnostic();
+    }
+
+    let converted: ResolveError = ModuleError::UnboundExport {
+        name: "x".to_owned(),
+    }
+    .into();
+    assert_eq!(converted.code(), "module/interface");
+}
+
+#[test]
+fn interface_extraction_covers_backing_shapes() {
+    let interface = interface_of("local t = { a = 1, b = 2 }\nreturn t");
+    assert!(interface.has_value("a"));
+    assert!(interface.has_value("b"));
+
+    let interface = interface_of("local a, b = 1, 2\nlocal t = {}\nt.x = 1\nreturn t");
+    assert!(interface.has_value("x"));
+
+    let interface = interface_of("local t = {}\nfunction other.f() end\nt.x = 1\nreturn t");
+    assert!(interface.has_value("x"));
+
+    let interface = interface_of("local t = {}\nfunction t.f() end\nreturn t");
+    assert!(interface.has_value("f"));
+
+    let interface = interface_of("local t = {}\nt.a = 1\nt.b = {}\nreturn t");
+    assert!(interface.has_value("a"));
+    assert!(interface.has_value("b"));
+}
