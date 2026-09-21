@@ -26,7 +26,7 @@ use crate::semantic::{
     is_builtin_type_name, ModuleError, ModuleId, MultiModuleModel, SemanticError, TypeId,
 };
 
-use super::convert::{convert_require, ConvertRequireError, RequirePathConverter};
+use super::convert::{convert_require, RequirePathConverter};
 use super::link;
 
 /// The key used for the entry chunk in the resolved module graph.
@@ -86,8 +86,6 @@ pub enum BundleError {
     },
     /// A cross-module reference could not be resolved by identity.
     Module(ModuleError),
-    /// A `require` call could not be converted.
-    Convert(ConvertRequireError),
 }
 
 impl From<ResolveError> for BundleError {
@@ -143,7 +141,6 @@ impl fmt::Display for BundleError {
                 module, name
             ),
             BundleError::Module(error) => write!(f, "{}", error),
-            BundleError::Convert(error) => write!(f, "{}", error),
         }
     }
 }
@@ -161,8 +158,32 @@ pub fn bundle_modules<P: ModuleProvider>(
     model: &crate::semantic::SemanticModel,
     provider: &P,
 ) -> Result<usize, BundleError> {
+    bundle_modules_with_config(
+        block,
+        model,
+        provider,
+        crate::Parser::default(),
+        crate::semantic::SemanticOptions::default(),
+    )
+}
+
+/// Like [`bundle_modules`], parsing modules with `parser` and analyzing them
+/// with `options`.
+///
+/// Use this to bundle a Lua 5.2/5.3 graph or to analyze modules strictly, so a
+/// module that fails analysis is a typed [`BundleError::Analysis`] instead of a
+/// silent success.
+pub fn bundle_modules_with_config<P: ModuleProvider>(
+    block: &mut Block,
+    model: &crate::semantic::SemanticModel,
+    provider: &P,
+    parser: crate::Parser,
+    options: crate::semantic::SemanticOptions,
+) -> Result<usize, BundleError> {
     let root_block = mem::take(block);
     let resolved = ModuleResolver::new(provider)
+        .with_parser(parser)
+        .with_semantic_options(options)
         .resolve(root_block, model.clone(), ROOT_KEY)
         .map_err(BundleError::from)?;
 
@@ -231,7 +252,7 @@ fn bundle_graph(resolved: ResolvedModules) -> Result<Block, BundleError> {
         {
             let module = graph.module_mut(module_id);
             convert_require(&mut module.block, &module.model, &converter)
-                .map_err(BundleError::Convert)?;
+                .expect("resolved modules contain no non-literal requires");
         }
         let block = mem::take(&mut graph.module_mut(module_id).block);
         definitions.push(build_module_definition(&modules_name, &path, block));
@@ -245,7 +266,7 @@ fn bundle_graph(resolved: ResolvedModules) -> Result<Block, BundleError> {
         };
         let module = graph.module_mut(root);
         convert_require(&mut module.block, &module.model, &converter)
-            .map_err(BundleError::Convert)?;
+            .expect("resolved modules contain no non-literal requires");
     }
 
     let mut root_block = mem::take(&mut graph.module_mut(root).block);

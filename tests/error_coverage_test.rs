@@ -757,3 +757,330 @@ fn compilation_session_parser_inject_errors_are_all_triggered() {
     );
     assert!(!convert_error.to_string().is_empty());
 }
+
+struct FailingProvider;
+
+impl r4::modules::ModuleProvider for FailingProvider {
+    fn load(&self, key: &str) -> Result<Option<String>, r4::modules::ModuleLoadError> {
+        Err(r4::modules::ModuleLoadError::Read {
+            key: key.to_owned(),
+            message: "disk error".to_owned(),
+        })
+    }
+}
+
+variant_registry!(ModuleLoadErrorTag, r4::modules::ModuleLoadError,
+    Read => r4::modules::ModuleLoadError::Read { .. },
+);
+
+variant_registry!(ResolveErrorTag, r4::modules::ResolveError,
+    MissingModule => r4::modules::ResolveError::MissingModule { .. },
+    ModuleLoad => r4::modules::ResolveError::ModuleLoad { .. },
+    CyclicRequire => r4::modules::ResolveError::CyclicRequire { .. },
+    Parse => r4::modules::ResolveError::Parse { .. },
+    Analysis => r4::modules::ResolveError::Analysis { .. },
+    NonLiteralRequire => r4::modules::ResolveError::NonLiteralRequire { .. },
+    Interface => r4::modules::ResolveError::Interface { .. },
+);
+
+variant_registry!(ModuleErrorTag, r4::semantic::ModuleError,
+    UnboundExport => r4::semantic::ModuleError::UnboundExport { .. },
+    UnknownExport => r4::semantic::ModuleError::UnknownExport { .. },
+    UnknownImportAlias => r4::semantic::ModuleError::UnknownImportAlias { .. },
+    UnknownImportedType => r4::semantic::ModuleError::UnknownImportedType { .. },
+    AmbiguousImportedType => r4::semantic::ModuleError::AmbiguousImportedType { .. },
+);
+
+variant_registry!(BundleErrorTag, r4::rules::require::BundleError,
+    MissingModule => r4::rules::require::BundleError::MissingModule { .. },
+    CyclicRequire => r4::rules::require::BundleError::CyclicRequire { .. },
+    Parse => r4::rules::require::BundleError::Parse { .. },
+    Analysis => r4::rules::require::BundleError::Analysis { .. },
+    NonLiteralRequire => r4::rules::require::BundleError::NonLiteralRequire { .. },
+    DuplicateExportedType => r4::rules::require::BundleError::DuplicateExportedType { .. },
+    UnimportedType => r4::rules::require::BundleError::UnimportedType { .. },
+    ModuleLoad => r4::rules::require::BundleError::ModuleLoad { .. },
+    Module => r4::rules::require::BundleError::Module(_),
+);
+
+variant_registry!(AliasErrorTag, r4::rules::require::AliasError,
+    MalformedAlias => r4::rules::require::AliasError::MalformedAlias { .. },
+    DuplicateAlias => r4::rules::require::AliasError::DuplicateAlias { .. },
+    NestedAlias => r4::rules::require::AliasError::NestedAlias { .. },
+    UnresolvedAlias => r4::rules::require::AliasError::UnresolvedAlias { .. },
+    Convert => r4::rules::require::AliasError::Convert(_),
+);
+
+fn symbol_named(model: &SemanticModel, name: &str) -> r4::semantic::SymbolId {
+    model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == name)
+        .unwrap_or_else(|| panic!("symbol `{name}` must exist"))
+        .id
+}
+
+#[test]
+fn module_and_require_errors_are_all_triggered() {
+    use r4::modules::{MemoryModuleProvider, ModuleProvider, ModuleResolver};
+    use r4::rules::require::{apply_path_aliases, bundle_modules, AliasRequireConverter};
+    use r4::semantic::MultiModuleModel;
+
+    fn resolve<P: ModuleProvider>(
+        root: &str,
+        provider: &P,
+    ) -> Result<r4::modules::ResolvedModules, r4::modules::ResolveError> {
+        let block = luau(root);
+        let model = analyze(&block);
+        ModuleResolver::new(provider).resolve(block, model, "<root>")
+    }
+
+    let empty = MemoryModuleProvider::new();
+    let missing_error = resolve("return require('./missing')", &empty).expect_err("missing");
+    let load_error = resolve("return require('./a')", &FailingProvider).expect_err("load");
+
+    let mut cyclic = MemoryModuleProvider::new();
+    cyclic.insert("a", "local b = require('./b')\nreturn b");
+    cyclic.insert("b", "local a = require('./a')\nreturn a");
+    let cycle_error = resolve("return require('./a')", &cyclic).expect_err("cycle");
+
+    let mut bad_parse = MemoryModuleProvider::new();
+    bad_parse.insert("a", "local x = ");
+    let parse_error = resolve("return require('./a')", &bad_parse).expect_err("parse");
+
+    let mut non_literal = MemoryModuleProvider::new();
+    non_literal.insert("a", "return require(value)");
+    let non_literal_error =
+        resolve("return require('./a')", &non_literal).expect_err("non-literal");
+
+    let mut strict_module = MemoryModuleProvider::new();
+    strict_module.insert("a", "type A = Missing\nreturn 1");
+    let strict_root = luau("return require('./a')");
+    let strict_root_model = analyze(&strict_root);
+    let analysis_error = ModuleResolver::new(&strict_module)
+        .with_semantic_options(r4::semantic::SemanticOptions {
+            strict_types: true,
+            ..Default::default()
+        })
+        .resolve(strict_root, strict_root_model, "<root>")
+        .expect_err("strict types rejects the module");
+
+    // A root block the model does not describe makes interface extraction fail.
+    let interface_error = ModuleResolver::new(&empty)
+        .resolve(luau("return opaque"), analyze(&luau("return 1")), "<root>")
+        .expect_err("the unbound export is rejected");
+
+    let resolve_errors = vec![
+        missing_error,
+        load_error,
+        cycle_error,
+        parse_error,
+        non_literal_error,
+        analysis_error,
+        interface_error,
+    ];
+    let produced: BTreeSet<&'static str> = resolve_errors
+        .iter()
+        .map(|error| ResolveErrorTag::of(error).name())
+        .collect();
+    let absent = missing(ResolveErrorTag::ALL.iter().map(|tag| tag.name()), &produced);
+    assert!(
+        absent.is_empty(),
+        "resolve errors never triggered: {absent:?}"
+    );
+    for error in &resolve_errors {
+        assert!(!error.code().is_empty(), "{error:?} has no code");
+        assert!(!error.to_string().is_empty());
+    }
+
+    let r4::modules::ResolveError::ModuleLoad { error } = &resolve_errors[1] else {
+        panic!("expected a module load error");
+    };
+    assert_eq!(ModuleLoadErrorTag::ALL.len(), 1);
+    assert_eq!(
+        ModuleLoadErrorTag::of(error).name(),
+        ModuleLoadErrorTag::Read.name()
+    );
+
+    let a_block = luau("export type Point = number\nreturn 1");
+    let a_model = analyze(&a_block);
+    let c_block = luau("export type Point = string\nreturn 1");
+    let c_model = analyze(&c_block);
+    let b_block = luau("local a = require('./a')\nlocal c = require('./c')\nreturn a, c");
+    let b_model = analyze(&b_block);
+
+    let mut graph = MultiModuleModel::new();
+    let a = graph.add_module("a", a_block, a_model).expect("module a");
+    let c = graph.add_module("c", c_block, c_model).expect("module c");
+    let b = graph.add_module("b", b_block, b_model).expect("module b");
+    let alias_a = symbol_named(&graph.module(b).model, "a");
+    let alias_c = symbol_named(&graph.module(b).model, "c");
+
+    let unknown_alias = graph
+        .resolve_imported_value(b, alias_a, "Point")
+        .expect_err("the symbol is not an import alias yet");
+    let unknown_type = graph
+        .resolve_imported_type(b, "Point")
+        .expect_err("the type is not imported");
+    graph.bind_import(b, alias_a, a);
+    graph.bind_import(b, alias_c, c);
+    let ambiguous_type = graph
+        .resolve_imported_type(b, "Point")
+        .expect_err("the type is ambiguous");
+    let unknown_export = graph
+        .resolve_imported_value(b, alias_a, "missing")
+        .expect_err("the export is unknown");
+
+    let mut interface_graph = MultiModuleModel::new();
+    let unanalyzed = luau("return opaque");
+    let bound_model = analyze(&luau("return 1"));
+    let unbound_export = interface_graph
+        .add_module("m", unanalyzed, bound_model)
+        .expect_err("an unbound export is rejected");
+
+    let module_errors = vec![
+        unbound_export,
+        unknown_export,
+        unknown_alias,
+        unknown_type,
+        ambiguous_type,
+    ];
+    let produced: BTreeSet<&'static str> = module_errors
+        .iter()
+        .map(|error| ModuleErrorTag::of(error).name())
+        .collect();
+    let absent = missing(ModuleErrorTag::ALL.iter().map(|tag| tag.name()), &produced);
+    assert!(
+        absent.is_empty(),
+        "module errors never triggered: {absent:?}"
+    );
+    for error in &module_errors {
+        assert!(!error.code().is_empty(), "{error:?} has no code");
+        assert!(!error.to_string().is_empty());
+    }
+
+    let mut bundle_provider = MemoryModuleProvider::new();
+    bundle_provider.insert("a", "export type Public = number\nreturn 1");
+    bundle_provider.insert("b", "type Local = Public\nreturn 1");
+    let mut bundle_block = luau("return require('./a') + require('./b')");
+    let bundle_model = analyze(&bundle_block);
+    let unimported = bundle_modules(&mut bundle_block, &bundle_model, &bundle_provider)
+        .expect_err("an unimported type is rejected");
+
+    let mut ambiguous_provider = MemoryModuleProvider::new();
+    ambiguous_provider.insert("a", "export type Point = number\nreturn 1");
+    ambiguous_provider.insert("c", "export type Point = string\nreturn 1");
+    ambiguous_provider.insert(
+        "b",
+        "local a = require('./a')\nlocal c = require('./c')\ntype Local = Point\nreturn a, c",
+    );
+    let mut ambiguous_block = luau("return require('./b')");
+    let ambiguous_model = analyze(&ambiguous_block);
+    let ambiguous = bundle_modules(&mut ambiguous_block, &ambiguous_model, &ambiguous_provider)
+        .expect_err("an ambiguous type is rejected");
+
+    let mut duplicate_provider = MemoryModuleProvider::new();
+    duplicate_provider.insert("a", "export type Shared = number\nreturn 1");
+    duplicate_provider.insert("c", "export type Shared = string\nreturn 1");
+    let mut duplicate_block = luau("return require('./a'), require('./c')");
+    let duplicate_model = analyze(&duplicate_block);
+    let duplicate = bundle_modules(&mut duplicate_block, &duplicate_model, &duplicate_provider)
+        .expect_err("a duplicate exported type is rejected");
+
+    let mut bundle_missing_block = luau("return require('./missing')");
+    let bundle_missing_model = analyze(&bundle_missing_block);
+    let bundle_missing = bundle_modules(&mut bundle_missing_block, &bundle_missing_model, &empty)
+        .expect_err("a missing module is rejected");
+
+    let mut bundle_cycle_block = luau("return require('./a')");
+    let bundle_cycle_model = analyze(&bundle_cycle_block);
+    let bundle_cycle = bundle_modules(&mut bundle_cycle_block, &bundle_cycle_model, &cyclic)
+        .expect_err("a cycle is rejected");
+
+    let mut bundle_parse_block = luau("return require('./a')");
+    let bundle_parse_model = analyze(&bundle_parse_block);
+    let bundle_parse = bundle_modules(&mut bundle_parse_block, &bundle_parse_model, &bad_parse)
+        .expect_err("a parse error is rejected");
+
+    let mut bundle_non_literal_block = luau("return require('./a')");
+    let bundle_non_literal_model = analyze(&bundle_non_literal_block);
+    let bundle_non_literal = bundle_modules(
+        &mut bundle_non_literal_block,
+        &bundle_non_literal_model,
+        &non_literal,
+    )
+    .expect_err("a non-literal require is rejected");
+
+    let mut bundle_load_block = luau("return require('./a')");
+    let bundle_load_model = analyze(&bundle_load_block);
+    let bundle_load = bundle_modules(&mut bundle_load_block, &bundle_load_model, &FailingProvider)
+        .expect_err("a load error is rejected");
+
+    let mut bundle_analysis_block = luau("return require('./a')");
+    let bundle_analysis_model = analyze(&bundle_analysis_block);
+    let bundle_analysis = r4::rules::require::bundle_modules_with_config(
+        &mut bundle_analysis_block,
+        &bundle_analysis_model,
+        &strict_module,
+        Parser::default(),
+        r4::semantic::SemanticOptions {
+            strict_types: true,
+            ..Default::default()
+        },
+    )
+    .expect_err("strict types rejects the module during bundling");
+
+    let bundle_errors = vec![
+        bundle_missing,
+        bundle_cycle,
+        bundle_parse,
+        bundle_non_literal,
+        duplicate,
+        unimported,
+        bundle_load,
+        ambiguous,
+        bundle_analysis,
+    ];
+    let produced: BTreeSet<&'static str> = bundle_errors
+        .iter()
+        .map(|error| BundleErrorTag::of(error).name())
+        .collect();
+    let absent = missing(BundleErrorTag::ALL.iter().map(|tag| tag.name()), &produced);
+    assert!(
+        absent.is_empty(),
+        "bundle errors never triggered: {absent:?}"
+    );
+    for error in &bundle_errors {
+        assert!(!error.to_string().is_empty(), "{error:?} has no message");
+    }
+
+    let alias_errors = vec![
+        AliasRequireConverter::new([("pkg", "x")]).expect_err("malformed"),
+        AliasRequireConverter::new([("@pkg", "a"), ("@pkg", "b")]).expect_err("duplicate"),
+        AliasRequireConverter::new([("@pkg", "@other")]).expect_err("nested"),
+        {
+            let mut block = luau("local x = require('@unknown/util')\nreturn x");
+            let model = analyze(&block);
+            apply_path_aliases(&mut block, &model, [("@pkg", "src/pkg")])
+                .expect_err("unresolved alias")
+        },
+        {
+            let mut block = luau("local x = require(name)\nreturn x");
+            let model = analyze(&block);
+            apply_path_aliases(&mut block, &model, [("@pkg", "src/pkg")])
+                .expect_err("non-literal require under aliases")
+        },
+    ];
+    let produced: BTreeSet<&'static str> = alias_errors
+        .iter()
+        .map(|error| AliasErrorTag::of(error).name())
+        .collect();
+    let absent = missing(AliasErrorTag::ALL.iter().map(|tag| tag.name()), &produced);
+    assert!(
+        absent.is_empty(),
+        "alias errors never triggered: {absent:?}"
+    );
+    for error in &alias_errors {
+        assert!(!error.to_string().is_empty(), "{error:?} has no message");
+    }
+}

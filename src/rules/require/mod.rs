@@ -12,7 +12,7 @@ mod convert;
 mod link;
 
 pub use alias::{apply_path_aliases, AliasError, AliasRequireConverter};
-pub use bundler::{bundle_modules, BundleError};
+pub use bundler::{bundle_modules, bundle_modules_with_config, BundleError};
 pub use convert::{convert_require, ConvertRequireError, RequirePathConverter};
 
 pub use crate::modules::{

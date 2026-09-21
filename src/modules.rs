@@ -23,6 +23,7 @@ use crate::parser::ParserError;
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::semantic::{
     ModuleError, ModuleId, MultiModuleModel, SemanticAnalyzer, SemanticError, SemanticModel,
+    SemanticOptions,
 };
 use crate::Parser;
 
@@ -700,12 +701,37 @@ pub struct ResolvedModules {
 /// Discovers and analyzes a module graph.
 pub struct ModuleResolver<'a, P> {
     provider: &'a P,
+    parser: Parser,
+    options: SemanticOptions,
 }
 
 impl<'a, P: ModuleProvider> ModuleResolver<'a, P> {
     /// Creates a resolver over `provider`.
     pub fn new(provider: &'a P) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            parser: Parser::default(),
+            options: SemanticOptions::default(),
+        }
+    }
+
+    /// Uses `parser` to parse the discovered modules.
+    ///
+    /// The default is the crate's default (Luau) parser; a Lua 5.2 or Lua 5.3
+    /// graph is resolved by supplying the matching parser.
+    pub fn with_parser(mut self, parser: Parser) -> Self {
+        self.parser = parser;
+        self
+    }
+
+    /// Uses `options` to analyze the discovered modules.
+    ///
+    /// The default is the crate's default (non-strict) options; strict globals
+    /// or strict types can be enabled so a module that fails analysis is a
+    /// typed [`ResolveError::Analysis`] instead of a silent success.
+    pub fn with_semantic_options(mut self, options: SemanticOptions) -> Self {
+        self.options = options;
+        self
     }
 
     /// Resolves the graph starting from an already-analyzed root block.
@@ -732,6 +758,8 @@ impl<'a, P: ModuleProvider> ModuleResolver<'a, P> {
     ) -> Result<ResolvedModules, ResolveError> {
         let mut state = ResolveState {
             provider: self.provider,
+            parser: &self.parser,
+            options: &self.options,
             graph: MultiModuleModel::new(),
             by_key: HashMap::new(),
             visiting: Vec::new(),
@@ -765,6 +793,8 @@ impl<'a, P: ModuleProvider> ModuleResolver<'a, P> {
 
 struct ResolveState<'a, P> {
     provider: &'a P,
+    parser: &'a Parser,
+    options: &'a SemanticOptions,
     graph: MultiModuleModel,
     by_key: HashMap<String, ModuleId>,
     visiting: Vec<String>,
@@ -801,18 +831,19 @@ impl<P: ModuleProvider> ResolveState<'_, P> {
                 let analyzed = match self.cache.get(&source) {
                     Some(cached) => cached,
                     None => {
-                        let block = Parser::default().parse(&source).map_err(|error| {
-                            ResolveError::Parse {
+                        let block =
+                            self.parser
+                                .parse(&source)
+                                .map_err(|error| ResolveError::Parse {
+                                    path: normalized.clone(),
+                                    error,
+                                })?;
+                        let model = SemanticAnalyzer::with_options(self.options.clone())
+                            .analyze(&block)
+                            .map_err(|error| ResolveError::Analysis {
                                 path: normalized.clone(),
                                 error,
-                            }
-                        })?;
-                        let model = SemanticAnalyzer::new().analyze(&block).map_err(|error| {
-                            ResolveError::Analysis {
-                                path: normalized.clone(),
-                                error,
-                            }
-                        })?;
+                            })?;
                         self.cache.insert(AnalyzedModule {
                             source,
                             block,
