@@ -720,3 +720,106 @@ fn block_statement_operations() {
     assert!(block.get_identity().is_none());
     let _ = block.take_statements();
 }
+
+#[test]
+fn variable_assignment_removal_and_kind_methods() {
+    use r4::nodes::{
+        AssignmentKind, Expression, Token, TypedIdentifier, VariableAssignment,
+        VariableAssignmentTokens,
+    };
+
+    let mut assignment = VariableAssignment::new(
+        vec![TypedIdentifier::new("a"), TypedIdentifier::new("b")],
+        vec![Expression::from(1.0), Expression::from(2.0)],
+    );
+    assignment.set_tokens(VariableAssignmentTokens {
+        keyword: Token::from_content("local"),
+        equal: Some(Token::from_content("=")),
+        variable_commas: vec![Token::from_content(",")],
+        value_commas: vec![Token::from_content(",")],
+    });
+
+    assert_eq!(assignment.get_assignment_kind(), AssignmentKind::Local);
+    assignment.set_assignment_kind(AssignmentKind::Const);
+    assert_eq!(assignment.get_assignment_kind(), AssignmentKind::Const);
+    let _ = assignment
+        .clone()
+        .with_assignment_kind(AssignmentKind::Local);
+
+    assert!(assignment.remove_value(1).is_some());
+    assert!(assignment.remove_variable(1).is_some());
+    let _ = assignment.remove_value(0);
+    assert!(assignment.remove_value(99).is_none());
+    assert!(assignment.remove_variable(99).is_none());
+
+    let _ = assignment.last_value();
+    let _ = assignment.pop_value();
+    assignment.push_value(Expression::nil());
+    assignment.push_variable(TypedIdentifier::new("c"));
+    let _ = assignment.into_assignments();
+
+    let _ =
+        VariableAssignment::from_variable(TypedIdentifier::new("d")).with_value(Expression::nil());
+}
+
+#[test]
+fn last_statement_token_methods() {
+    use r4::nodes::{Expression, LastStatement, ReturnStatement};
+
+    let mut return_statement =
+        ReturnStatement::new(vec![Expression::from(1.0), Expression::from(2.0)]);
+    let _ = return_statement.mutate_tokens();
+    let mut statement = LastStatement::Return(return_statement);
+    let _ = statement.mutate_first_token();
+    let _ = statement.mutate_last_token();
+
+    let expressions: Vec<Expression> = ReturnStatement::new(vec![Expression::from(1.0)])
+        .into_iter_expressions()
+        .collect();
+    assert_eq!(expressions.len(), 1);
+
+    // `break`/`continue` synthesize their keyword token on first mutation.
+    for statement in [LastStatement::new_break(), LastStatement::new_continue()] {
+        let mut statement = statement;
+        let _ = statement.mutate_first_token();
+        let _ = statement.mutate_last_token();
+        let _ = statement.mutate_first_token();
+        let _ = statement.mutate_last_token();
+    }
+}
+
+#[test]
+fn function_and_intersection_type_methods() {
+    use r4::nodes::{
+        FunctionArgumentType, FunctionReturnType, FunctionType, GenericTypePack, IntersectionType,
+        ParentheseType, TypeName, VariadicTypePack,
+    };
+
+    let mut intersection = IntersectionType::new(TypeName::new("A"), TypeName::new("B"));
+    let _ = intersection.first_type();
+    let _ = intersection.last_type();
+    let _ = intersection.has_leading_token();
+    intersection.remove_leading_token();
+    assert!(!intersection.has_leading_token());
+    let _ = intersection.get_token();
+    let collected: IntersectionType = vec![TypeName::new("A").into(), TypeName::new("B").into()]
+        .into_iter()
+        .collect();
+    let _ = collected.iter_types().count();
+
+    let _ = FunctionReturnType::Type(Box::new(TypeName::new("A").into())).mutate_last_token();
+    let _ = FunctionReturnType::TypePack(Box::default()).mutate_last_token();
+    let _ = FunctionReturnType::GenericTypePack(Box::new(GenericTypePack::new("A")))
+        .mutate_last_token();
+    let _ = FunctionReturnType::VariadicTypePack(VariadicTypePack::new(TypeName::new("A")))
+        .mutate_last_token();
+    let _ = FunctionReturnType::from(ParentheseType::new(TypeName::new("A")));
+
+    let mut argument = FunctionArgumentType::new(TypeName::new("A"));
+    let _ = argument.get_token();
+    let _ = argument.mutate_name();
+
+    let mut function = FunctionType::new(TypeName::new("A"));
+    function = function.with_named_argument("x", TypeName::new("A"));
+    let _ = function;
+}
