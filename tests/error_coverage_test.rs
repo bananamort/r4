@@ -600,3 +600,160 @@ fn rule_errors_are_all_triggered() {
     );
     assert!(!convert_error.to_string().is_empty());
 }
+
+variant_registry!(CompilationErrorTag, r4::CompilationError,
+    UnknownTree => r4::CompilationError::UnknownTree(_),
+    StaleTree => r4::CompilationError::StaleTree(_),
+);
+
+variant_registry!(SessionErrorTag, r4::rules::SessionError<r4::annotation::AnnotationError>,
+    Parse => r4::rules::SessionError::Parse(_),
+    Semantic => r4::rules::SessionError::Semantic(_),
+    Pass => r4::rules::SessionError::Pass(_),
+);
+
+variant_registry!(AnalyzedParseErrorTag, r4::AnalyzedParseError,
+    Parse => r4::AnalyzedParseError::Parse(_),
+    Semantic => r4::AnalyzedParseError::Semantic(_),
+);
+
+variant_registry!(InjectGlobalValueErrorTag, r4::rules::InjectGlobalValueError,
+    UnrepresentableValue => r4::rules::InjectGlobalValueError::UnrepresentableValue { .. },
+);
+
+variant_registry!(ConvertRequireErrorTag, r4::rules::require::ConvertRequireError,
+    NonLiteralRequireArgument => r4::rules::require::ConvertRequireError::NonLiteralRequireArgument { .. },
+);
+
+#[test]
+fn compilation_session_parser_inject_errors_are_all_triggered() {
+    use std::collections::HashMap;
+
+    use r4::annotation::AnnotationError;
+    use r4::nodes::Expression;
+    use r4::process::LuaValue;
+    use r4::rules::require::{convert_require, RequirePathConverter};
+    use r4::rules::{inject_global_values, Session};
+    use r4::{Compilation, TreeId};
+
+    let mut compilation = Compilation::new();
+    let tree = compilation.add_tree("return 1").expect("valid code");
+    let compilation_errors = [
+        compilation
+            .model(TreeId(9_999))
+            .expect_err("an unknown tree id is rejected"),
+        {
+            compilation
+                .block_mut(tree)
+                .expect("tree exists")
+                .take_last_statement();
+            compilation
+                .model(tree)
+                .expect_err("a mutated tree's model is stale")
+        },
+    ];
+    let produced: BTreeSet<&'static str> = compilation_errors
+        .iter()
+        .map(|error| CompilationErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        CompilationErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "compilation errors never triggered: {absent:?}"
+    );
+
+    let parse_error = Parser::default()
+        .parse("local x = ")
+        .expect_err("a syntax error");
+    let semantic_block = Parser::default()
+        .lua52()
+        .parse("goto nowhere")
+        .expect("the chunk parses");
+    let semantic_error = SemanticAnalyzer::new()
+        .analyze(&semantic_block)
+        .expect_err("a semantic error");
+    let mut session = Session::parse("return 1").expect("valid code");
+    let session_errors: Vec<r4::rules::SessionError<AnnotationError>> = vec![
+        r4::rules::SessionError::Parse(parse_error),
+        r4::rules::SessionError::Semantic(semantic_error),
+        session
+            .apply_semantic_result(|_, _| {
+                Err::<usize, AnnotationError>(AnnotationError::UnknownBlock {
+                    identity: BlockIdentity(0),
+                })
+            })
+            .expect_err("the pass fails"),
+    ];
+    let produced: BTreeSet<&'static str> = session_errors
+        .iter()
+        .map(|error| SessionErrorTag::of(error).name())
+        .collect();
+    let absent = missing(SessionErrorTag::ALL.iter().map(|tag| tag.name()), &produced);
+    assert!(
+        absent.is_empty(),
+        "session errors never triggered: {absent:?}"
+    );
+    for error in &session_errors {
+        assert!(!error.to_string().is_empty());
+    }
+
+    let analyzed_errors = [
+        Parser::default()
+            .parse_analyzed("local x = ")
+            .expect_err("a syntax error"),
+        Parser::default()
+            .lua52()
+            .parse_analyzed("goto nowhere")
+            .expect_err("a semantic error"),
+    ];
+    let produced: BTreeSet<&'static str> = analyzed_errors
+        .iter()
+        .map(|error| AnalyzedParseErrorTag::of(error).name())
+        .collect();
+    let absent = missing(
+        AnalyzedParseErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "analyzed parse errors never triggered: {absent:?}"
+    );
+
+    let mut inject_block = luau("return math.pi");
+    let inject_model = analyze(&inject_block);
+    let inject_error = inject_global_values(
+        &mut inject_block,
+        &inject_model,
+        &HashMap::from([("math".to_owned(), LuaValue::Number(f64::INFINITY))]),
+    )
+    .expect_err("an unrepresentable value is rejected");
+    assert_eq!(InjectGlobalValueErrorTag::ALL.len(), 1);
+    assert_eq!(
+        InjectGlobalValueErrorTag::of(&inject_error).name(),
+        InjectGlobalValueErrorTag::UnrepresentableValue.name()
+    );
+    assert!(!inject_error.to_string().is_empty());
+
+    struct Echo;
+    impl RequirePathConverter for Echo {
+        fn convert(&self, path: &str) -> Option<Expression> {
+            Some(Expression::String(r4::nodes::StringExpression::from_value(
+                path,
+            )))
+        }
+    }
+
+    let mut require_block = luau("return require(name)");
+    let require_model = analyze(&require_block);
+    let convert_error = convert_require(&mut require_block, &require_model, &Echo)
+        .expect_err("a non-literal require argument is rejected");
+    assert_eq!(ConvertRequireErrorTag::ALL.len(), 1);
+    assert_eq!(
+        ConvertRequireErrorTag::of(&convert_error).name(),
+        ConvertRequireErrorTag::NonLiteralRequireArgument.name()
+    );
+    assert!(!convert_error.to_string().is_empty());
+}
