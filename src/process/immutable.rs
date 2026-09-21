@@ -36,6 +36,10 @@ pub trait ImmutableProcessor {
     fn process_attributes(&mut self, _: &Attributes) {}
     fn process_type(&mut self, _: &Type) {}
     fn process_type_name(&mut self, _: &TypeName) {}
+    fn process_literal_expression(&mut self, _: &LiteralExpression) {}
+    fn process_literal_table(&mut self, _: &LiteralTable) {}
+    fn process_number_expression(&mut self, _: &NumberExpression) {}
+    fn process_string_expression(&mut self, _: &StringExpression) {}
 }
 
 /// A read-only traversal driver. The default methods recurse through the whole
@@ -71,7 +75,7 @@ pub trait ImmutableVisitor {
                 Self::visit_expression(statement.get_value(), processor);
             }
             Statement::Function(function) => {
-                processor.process_attributes(function.attributes());
+                Self::visit_attributes(function.attributes(), processor);
                 Self::visit_identifier(function.get_name().get_name(), processor);
                 for field in function.get_name().get_field_names() {
                     Self::visit_identifier(field, processor);
@@ -117,7 +121,7 @@ pub trait ImmutableVisitor {
                 }
             }
             Statement::LocalFunction(function) => {
-                processor.process_attributes(function.attributes());
+                Self::visit_attributes(function.attributes(), processor);
                 Self::visit_identifier(function.get_identifier(), processor);
                 Self::visit_function_signature(
                     function.get_generic_parameters(),
@@ -191,7 +195,7 @@ pub trait ImmutableVisitor {
                 Self::visit_identifier(field.get_field(), processor);
             }
             Expression::Function(function) => {
-                processor.process_attributes(function.attributes());
+                Self::visit_attributes(function.attributes(), processor);
                 Self::visit_function_signature(
                     function.get_generic_parameters(),
                     function.iter_parameters(),
@@ -339,6 +343,44 @@ pub trait ImmutableVisitor {
         }
     }
 
+    fn visit_number_expression(number: &NumberExpression, processor: &mut impl ImmutableProcessor) {
+        processor.process_number_expression(number);
+    }
+
+    fn visit_string_expression(string: &StringExpression, processor: &mut impl ImmutableProcessor) {
+        processor.process_string_expression(string);
+    }
+
+    fn visit_literal_table(table: &LiteralTable, processor: &mut impl ImmutableProcessor) {
+        processor.process_literal_table(table);
+        for entry in table.iter_entries() {
+            match entry {
+                LiteralTableEntry::Field(field) => {
+                    Self::visit_identifier(field.get_field(), processor);
+                    Self::visit_literal_expression(field.get_value(), processor);
+                }
+                LiteralTableEntry::Value(value) => {
+                    Self::visit_literal_expression(value, processor);
+                }
+            }
+        }
+    }
+
+    fn visit_literal_expression(
+        expression: &LiteralExpression,
+        processor: &mut impl ImmutableProcessor,
+    ) {
+        processor.process_literal_expression(expression);
+        match expression {
+            LiteralExpression::Number(number) => Self::visit_number_expression(number, processor),
+            LiteralExpression::String(string) => Self::visit_string_expression(string, processor),
+            LiteralExpression::Table(table) => Self::visit_literal_table(table, processor),
+            LiteralExpression::True(_)
+            | LiteralExpression::False(_)
+            | LiteralExpression::Nil(_) => {}
+        }
+    }
+
     fn visit_attributes(attributes: &Attributes, processor: &mut impl ImmutableProcessor) {
         processor.process_attributes(attributes);
         for attribute in attributes.iter_attributes() {
@@ -349,6 +391,22 @@ pub trait ImmutableVisitor {
                 Attribute::Group(group) => {
                     for element in group.iter_attributes() {
                         Self::visit_identifier(element.name(), processor);
+
+                        if let Some(arguments) = element.get_arguments() {
+                            match arguments {
+                                AttributeArguments::Tuple(arguments) => {
+                                    for value in arguments.iter_values() {
+                                        Self::visit_literal_expression(value, processor);
+                                    }
+                                }
+                                AttributeArguments::String(string) => {
+                                    Self::visit_string_expression(string, processor);
+                                }
+                                AttributeArguments::Table(table) => {
+                                    Self::visit_literal_table(table, processor);
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -137,3 +137,13 @@ fn custom_processor_accumulates_a_result() {
     Walk::visit_block(&block, &mut collector);
     assert_eq!(collector.names, vec!["print", "format"]);
 }
+
+#[test]
+fn attribute_identifiers_are_collected() {
+    let block = Parser::default()
+        .parse("@native function f() end")
+        .expect("valid code");
+    let names = collect_identifier_names(&block);
+    assert!(names.contains(&"f".to_owned()), "{names:?}");
+    assert!(names.contains(&"native".to_owned()), "{names:?}");
+}

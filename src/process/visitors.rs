@@ -515,40 +515,41 @@ pub trait NodeVisitor<T: NodeProcessor> {
         for attribute in attributes.iter_mut_attributes() {
             match attribute {
                 Attribute::Group(group) => {
-                    for arguments in group
-                        .iter_mut_attributes()
-                        .flat_map(AttributeGroupElement::mutate_arguments)
-                    {
-                        match arguments {
-                            AttributeArguments::Tuple(arguments) => {
-                                for value in arguments.iter_mut_values() {
-                                    match value {
-                                        LiteralExpression::True(_)
-                                        | LiteralExpression::False(_)
-                                        | LiteralExpression::Nil(_) => {}
-                                        LiteralExpression::Number(number) => {
-                                            Self::visit_number_expression(number, processor);
-                                        }
-                                        LiteralExpression::String(string) => {
-                                            Self::visit_string_expression(string, processor);
-                                        }
-                                        LiteralExpression::Table(table) => {
-                                            Self::visit_literal_table(table, processor);
+                    for element in group.iter_mut_attributes() {
+                        Self::visit_identifier(element.mutate_name(), processor);
+
+                        if let Some(arguments) = element.mutate_arguments() {
+                            match arguments {
+                                AttributeArguments::Tuple(arguments) => {
+                                    for value in arguments.iter_mut_values() {
+                                        match value {
+                                            LiteralExpression::True(_)
+                                            | LiteralExpression::False(_)
+                                            | LiteralExpression::Nil(_) => {}
+                                            LiteralExpression::Number(number) => {
+                                                Self::visit_number_expression(number, processor);
+                                            }
+                                            LiteralExpression::String(string) => {
+                                                Self::visit_string_expression(string, processor);
+                                            }
+                                            LiteralExpression::Table(table) => {
+                                                Self::visit_literal_table(table, processor);
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            AttributeArguments::String(string) => {
-                                Self::visit_string_expression(string, processor);
-                            }
-                            AttributeArguments::Table(table) => {
-                                Self::visit_literal_table(table, processor);
+                                AttributeArguments::String(string) => {
+                                    Self::visit_string_expression(string, processor);
+                                }
+                                AttributeArguments::Table(table) => {
+                                    Self::visit_literal_table(table, processor);
+                                }
                             }
                         }
                     }
                 }
-                Attribute::Name(_) => {
-                    // nothing to do
+                Attribute::Name(named) => {
+                    Self::visit_identifier(named.mutate_identifier(), processor);
                 }
             }
         }
@@ -560,6 +561,7 @@ pub trait NodeVisitor<T: NodeProcessor> {
         for entry in table.iter_mut_entries() {
             match entry {
                 LiteralTableEntry::Field(field) => {
+                    Self::visit_identifier(field.mutate_field(), processor);
                     Self::visit_literal_expression(field.mutate_value(), processor);
                 }
                 LiteralTableEntry::Value(value) => {

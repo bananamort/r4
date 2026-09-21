@@ -1,3 +1,5 @@
+#![deny(clippy::all)]
+
 //! r4: A semantically-aware and control-flow tracking Lua analysis and transformation engine.
 
 pub mod annotation;
