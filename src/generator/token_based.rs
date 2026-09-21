@@ -169,6 +169,10 @@ impl<'a> TokenBasedLuaGenerator<'a> {
         if let Some(statement) = block.get_last_statement() {
             self.write_last_statement(statement);
         }
+
+        if let Some(token) = &tokens.last_semicolon {
+            self.write_token(token);
+        }
         self.depth -= 1;
 
         if let Some(token) = &tokens.final_token {

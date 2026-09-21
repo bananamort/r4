@@ -1338,3 +1338,195 @@ fn evaluator_folds_constant_expressions_to_their_values() {
         assert_eq!(evaluator.evaluate(expression), expected, "`{code}`");
     }
 }
+
+#[test]
+fn generated_output_is_equivalent_to_the_source() {
+    use r4::Equivalent;
+
+    let corpora: [(&[&str], Dialect); 4] = [
+        (CORPUS, Dialect::Luau),
+        (LUA52, Dialect::Lua52),
+        (LUA53, Dialect::Lua53),
+        (LUA54, Dialect::Lua54),
+    ];
+    for (codes, dialect) in corpora {
+        for &code in codes {
+            let block = parse_with(code, dialect);
+            for (name, output) in [
+                ("readable", {
+                    let mut generator = ReadableLuaGenerator::default();
+                    generator.write_block(&block);
+                    generator.into_string()
+                }),
+                ("dense", {
+                    let mut generator = DenseLuaGenerator::default();
+                    generator.write_block(&block);
+                    generator.into_string()
+                }),
+            ] {
+                let reparsed = Parser::default()
+                    .dialect(dialect)
+                    .parse(&output)
+                    .unwrap_or_else(|error| {
+                        panic!("{name} `{code}` does not reparse: {error}\n{output}")
+                    });
+                assert!(
+                    block.is_equivalent_to(&reparsed),
+                    "{name} changed the tree for `{code}`:\n{output}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn binary_parenthesization_round_trips_for_nested_operators() {
+    use r4::Equivalent;
+
+    fn generators(block: &Block) -> Vec<(&'static str, String)> {
+        let mut readable = ReadableLuaGenerator::default();
+        readable.write_block(block);
+        let mut dense = DenseLuaGenerator::default();
+        dense.write_block(block);
+        // The token-less token-based path synthesizes operators and parentheses.
+        let mut synthesized = TokenBasedLuaGenerator::new("");
+        synthesized.write_block(block);
+        vec![
+            ("readable", readable.into_string()),
+            ("dense", dense.into_string()),
+            ("synthesized", synthesized.into_string()),
+        ]
+    }
+
+    for code in [
+        "local x = a - (b - c)\nreturn x",
+        "local x = (a - b) - c\nreturn x",
+        "local x = a / (b / c)\nreturn x",
+        "local x = (a / b) / c\nreturn x",
+        "local x = a ^ (b ^ c)\nreturn x",
+        "local x = (a ^ b) ^ c\nreturn x",
+        "local x = a .. (b .. c)\nreturn x",
+        "local x = (a .. b) .. c\nreturn x",
+        "local x = a - (b + c)\nreturn x",
+        "local x = a + (b - c)\nreturn x",
+        "local x = a * (b / c)\nreturn x",
+        "local x = a / (b * c)\nreturn x",
+        "local x = a % (b % c)\nreturn x",
+        "local x = (a and b) and c\nreturn x",
+        "local x = a and (b or c)\nreturn x",
+        "local x = (a or b) and c\nreturn x",
+        "local x = a == (b < c)\nreturn x",
+        "local x = (a < b) == c\nreturn x",
+        "local x = -(a ^ b)\nreturn x",
+        "local x = a - -b\nreturn x",
+        "local x = -a ^ b\nreturn x",
+        "local x = (a and b) or c\nreturn x",
+        "local x = a and (b and c)\nreturn x",
+        "local x = (a .. b) == c\nreturn x",
+        "local x = a .. b .. c\nreturn x",
+    ] {
+        let block = parse_with(code, Dialect::Luau);
+        for (name, output) in generators(&block) {
+            let reparsed = Parser::default()
+                .dialect(Dialect::Luau)
+                .parse(&output)
+                .unwrap_or_else(|error| panic!("{name} `{code}`: {error}\n{output}"));
+            assert!(
+                block.is_equivalent_to(&reparsed),
+                "{name} changed the tree for `{code}`:\n{output}"
+            );
+        }
+    }
+}
+
+#[test]
+fn equivalence_is_trivia_insensitive_but_structure_sensitive() {
+    use r4::Equivalent;
+
+    let spaced = parse_with("local x = 1 + 2\nreturn x", Dialect::Luau);
+    let spaced_more = parse_with("local   x = 1  +   2\nreturn x", Dialect::Luau);
+    assert!(spaced.is_equivalent_to(&spaced_more));
+
+    let with_semicolon = parse_with("local x = 1 + 2;\nreturn x;", Dialect::Luau);
+    assert!(spaced.is_equivalent_to(&with_semicolon));
+
+    let different_operator = parse_with("local x = 1 - 2\nreturn x", Dialect::Luau);
+    assert!(!spaced.is_equivalent_to(&different_operator));
+
+    let different_value = parse_with("local x = 1 + 3\nreturn x", Dialect::Luau);
+    assert!(!spaced.is_equivalent_to(&different_value));
+
+    let different_structure = parse_with("local x = (1 + 2) * 3\nreturn x", Dialect::Luau);
+    let flat = parse_with("local x = 1 + 2 * 3\nreturn x", Dialect::Luau);
+    assert!(!different_structure.is_equivalent_to(&flat));
+
+    let field = parse_with("return t.x", Dialect::Luau);
+    let index = parse_with("return t['x']", Dialect::Luau);
+    assert!(!field.is_equivalent_to(&index));
+}
+
+#[test]
+fn tokenful_and_tokenless_trees_are_equivalent() {
+    use r4::Equivalent;
+
+    let corpora: [(&[&str], Dialect); 4] = [
+        (CORPUS, Dialect::Luau),
+        (LUA52, Dialect::Lua52),
+        (LUA53, Dialect::Lua53),
+        (LUA54, Dialect::Lua54),
+    ];
+    for (codes, dialect) in corpora {
+        for &code in codes {
+            let tokenful = parse_tokens(code, dialect);
+            let tokenless = parse_with(code, dialect);
+            assert!(
+                tokenful.is_equivalent_to(&tokenless),
+                "token data changed equivalence for `{code}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn token_based_generator_preserves_comments_and_spacing_exactly() {
+    for code in [
+        "-- leading\nlocal x = 1 -- trailing\nreturn x -- tail",
+        "local x = --[[inline]] 1\nreturn x",
+        "--- doc\n--!strict\nreturn 1",
+        "local t = { --[[a]] 1, --[[b]] 2 }",
+        "function --[[f]] f --[[p]] ( --[[arg]] a --[[endarg]] ) --[[body]] return a end",
+        "return --[[a]] 1 --[[b]] + --[[c]] 2",
+        "if --[[c]] a --[[then]] then --[[body]] return 1 end",
+        "return `text { --[[v]] x } more`",
+        "for --[[i]] i = 1, --[[n]] 10 do end",
+        "while --[[c]] true do --[[b]] break end",
+        "local x = 1   \n   return x",
+        "return 1 -- c1\n-- c2\n",
+        "local a,b,c = 1,2,3\nreturn a",
+        "\tlocal x\t=\t1\n\treturn\tx",
+        "local x = 1;\nreturn x;",
+        "return 1,2, --[[t]] 3",
+        "local t = { a = 1, ['b'] = 2; c = 3 }",
+        "type T = { a: number, [string]: number }",
+        "type F < A, B... > = (A, B...) -> A",
+        "return a  and  b  or  c",
+        "local function f ( a , b ) return a end\nreturn f",
+        "return 1 +\n2",
+        "return (1 + 2) * 3",
+        "return - - 1",
+        "return #t",
+        "return t [ 1 ] . x",
+        "return f ( 1 , 2 )",
+        "return a :: number",
+        "return `a` .. `b`",
+    ] {
+        let tokens = parse_tokens(code, Dialect::Luau);
+        let mut generator = TokenBasedLuaGenerator::new(code);
+        generator.write_block(&tokens);
+        assert_eq!(
+            generator.into_string(),
+            code,
+            "token round trip changed `{code}`"
+        );
+    }
+}
