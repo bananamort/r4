@@ -3,7 +3,6 @@
 //! Each rule module keeps its own `#[cfg(test)] mod test`; these helpers are the
 //! common parse/analyze/generate plumbing so a rule test states only what it is
 //! checking.
-#![allow(dead_code)]
 
 use crate::generator::{LuaGenerator, ReadableLuaGenerator};
 use crate::nodes::Block;

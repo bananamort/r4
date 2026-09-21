@@ -11,6 +11,7 @@
 mod name_generator;
 
 #[cfg(test)]
+#[cfg(test)]
 pub(crate) mod test_support;
 
 pub mod canonicalize;
