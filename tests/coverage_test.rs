@@ -363,8 +363,27 @@ fn comment_filtering_covers_every_node_kind() {
             remove_comments_where(&mut block, |_| true);
             // Remove everything: the other branch of the filter.
             remove_comments_where(&mut block, |_| false);
+            assert!(
+                r4::process::collect_trivia(&block)
+                    .iter()
+                    .all(|trivia| trivia.kind() != r4::nodes::TriviaKind::Comment),
+                "`{code}` still has comments after removing them all"
+            );
         }
     }
+
+    // With comments present, keeping and removing behave as expected.
+    let commented = "-- keep me\nlocal x = 1 -- trailing\nreturn x";
+    let mut kept = parse_tokens(commented, Dialect::Luau);
+    remove_comments_where(&mut kept, |_| true);
+    assert!(r4::process::collect_trivia(&kept)
+        .iter()
+        .any(|trivia| trivia.kind() == r4::nodes::TriviaKind::Comment));
+    let mut removed = parse_tokens(commented, Dialect::Luau);
+    remove_comments_where(&mut removed, |_| false);
+    assert!(r4::process::collect_trivia(&removed)
+        .iter()
+        .all(|trivia| trivia.kind() != r4::nodes::TriviaKind::Comment));
 }
 
 #[test]
@@ -416,6 +435,10 @@ fn token_operations_cover_every_node_kind() {
 
             let mut detokenized = parse_tokens(code, dialect);
             r4::process::detokenize(&mut detokenized);
+            assert!(
+                r4::process::collect_trivia(&detokenized).is_empty(),
+                "`{code}` still has trivia after detokenize"
+            );
         }
     }
 }
