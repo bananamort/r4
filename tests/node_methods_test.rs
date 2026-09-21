@@ -1167,3 +1167,32 @@ fn table_literal_property_tokens_and_indexer_conversion() {
     let entry: TableEntryType = TableIndexerType::new(number("number"), number("number")).into();
     assert!(matches!(entry, TableEntryType::Indexer(_)));
 }
+
+#[test]
+fn generic_parameters_with_defaults_iterates() {
+    use r4::nodes::{
+        GenericParameter, GenericParametersWithDefaults, GenericTypePack,
+        GenericTypePackWithDefault, TypePack, TypeVariableWithDefault,
+    };
+
+    let variables = GenericParametersWithDefaults::from_type_variable("A");
+    assert_eq!(variables.into_iter().count(), 1);
+
+    let packs = GenericParametersWithDefaults::from_generic_type_pack(GenericTypePack::new("A"));
+    assert_eq!(packs.into_iter().count(), 1);
+
+    let defaults = GenericParametersWithDefaults::from_type_variable_with_default(
+        TypeVariableWithDefault::new(Identifier::new("A"), number("number")),
+    );
+    assert_eq!(defaults.into_iter().count(), 1);
+
+    let with_pack_default = GenericParametersWithDefaults::from_generic_type_pack_with_default(
+        GenericTypePackWithDefault::new(GenericTypePack::new("A"), TypePack::default()),
+    );
+    assert_eq!(with_pack_default.into_iter().count(), 1);
+
+    let mut mixed = GenericParametersWithDefaults::from_type_variable("A");
+    mixed.push_type_variable("B");
+    let collected: Vec<GenericParameter> = mixed.into_iter().collect();
+    assert_eq!(collected.len(), 2);
+}
