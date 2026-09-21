@@ -1038,3 +1038,109 @@ fn table_entry_from_string_key_and_value() {
         TableEntry::Index(_)
     ));
 }
+
+#[test]
+fn binary_operator_parenthesization_helpers() {
+    use r4::nodes::{
+        BinaryOperator, Expression, FunctionReturnType, FunctionType, GenericTypePack,
+        IfExpression, IntersectionType, OptionalType, ParentheseType, TableType,
+        TypeCastExpression, TypeName, UnionType, VariadicTypePack,
+    };
+
+    let number = || TypeName::new("number");
+    let casts = vec![
+        Expression::from(TypeCastExpression::new(Expression::from(1.0), number())),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            TypeName::new("A").with_type_parameters(r4::nodes::TypeParameters::new(number())),
+        )),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            FunctionType::new(number()),
+        )),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            FunctionType::new(FunctionReturnType::TypePack(Box::default())),
+        )),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            FunctionType::new(FunctionReturnType::GenericTypePack(Box::new(
+                GenericTypePack::new("A"),
+            ))),
+        )),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            FunctionType::new(FunctionReturnType::VariadicTypePack(VariadicTypePack::new(
+                number(),
+            ))),
+        )),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            IntersectionType::new(number(), TypeName::new("B")),
+        )),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            UnionType::new(number(), TypeName::new("B")),
+        )),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            OptionalType::new(number()),
+        )),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            ParentheseType::new(number()),
+        )),
+        Expression::from(TypeCastExpression::new(
+            Expression::from(1.0),
+            TableType::default(),
+        )),
+    ];
+
+    let expressions: Vec<Expression> = casts
+        .iter()
+        .cloned()
+        .chain([
+            Expression::from(IfExpression::new(
+                Expression::identifier("a"),
+                Expression::from(1.0),
+                casts[0].clone(),
+            )),
+            Expression::from(r4::nodes::BinaryExpression::new(
+                BinaryOperator::Plus,
+                Expression::from(1.0),
+                casts[0].clone(),
+            )),
+            Expression::from(r4::nodes::UnaryExpression::new(
+                r4::nodes::UnaryOperator::Minus,
+                casts[0].clone(),
+            )),
+        ])
+        .collect();
+
+    for operator in [
+        BinaryOperator::Plus,
+        BinaryOperator::Minus,
+        BinaryOperator::Asterisk,
+        BinaryOperator::Slash,
+        BinaryOperator::DoubleSlash,
+        BinaryOperator::Caret,
+        BinaryOperator::Percent,
+        BinaryOperator::Concat,
+        BinaryOperator::And,
+        BinaryOperator::Or,
+        BinaryOperator::Equal,
+        BinaryOperator::NotEqual,
+        BinaryOperator::LowerThan,
+        BinaryOperator::GreaterThan,
+    ] {
+        let _ = operator.precedes(BinaryOperator::Plus);
+        let _ = operator.precedes_unary_expression();
+        let _ = operator.is_left_associative();
+        let _ = operator.is_right_associative();
+        let _ = operator.to_str();
+        for expression in &expressions {
+            let _ = operator.left_needs_parentheses(expression);
+            let _ = operator.right_needs_parentheses(expression);
+        }
+    }
+}
