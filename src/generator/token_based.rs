@@ -248,6 +248,38 @@ impl<'a> TokenBasedLuaGenerator<'a> {
                 self.write_symbol(":");
             }
             self.write_identifier(method);
+
+            if let Some(type_tokens) = &tokens.type_instantiation_tokens {
+                self.write_token(&type_tokens.first_opening_list);
+                self.write_token(&type_tokens.second_opening_list);
+
+                let types: Vec<&Type> = call.get_method_type_instantiation().collect();
+                let last_index = types.len().saturating_sub(1);
+                for (i, r#type) in types.iter().enumerate() {
+                    self.write_type(r#type);
+                    if i < last_index {
+                        if let Some(comma) = type_tokens.commas.get(i) {
+                            self.write_token(comma);
+                        } else {
+                            self.write_symbol(",");
+                        }
+                    }
+                }
+
+                self.write_token(&type_tokens.first_closing_list);
+                self.write_token(&type_tokens.second_closing_list);
+            } else if call.has_method_type_instantiation() {
+                self.write_symbol("<<");
+                let types: Vec<&Type> = call.get_method_type_instantiation().collect();
+                let last_index = types.len().saturating_sub(1);
+                for (i, r#type) in types.iter().enumerate() {
+                    self.write_type(r#type);
+                    if i < last_index {
+                        self.write_symbol(",");
+                    }
+                }
+                self.write_symbol(">>");
+            }
         }
         self.write_arguments(call.get_arguments());
     }

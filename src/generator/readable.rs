@@ -1091,6 +1091,19 @@ impl LuaGenerator for ReadableLuaGenerator {
         if let Some(method) = &call.get_method() {
             self.push_char(':');
             self.push_str(method.get_name());
+
+            if call.has_method_type_instantiation() {
+                self.push_str("<<");
+                let types: Vec<&nodes::Type> = call.get_method_type_instantiation().collect();
+                let last_index = types.len().saturating_sub(1);
+                for (i, r#type) in types.iter().enumerate() {
+                    self.write_type(r#type);
+                    if i < last_index {
+                        self.push_char(',');
+                    }
+                }
+                self.push_str(">>");
+            }
         }
 
         self.write_arguments(call.get_arguments());

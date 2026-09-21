@@ -1741,3 +1741,60 @@ fn wrapped_generator_output_is_equivalent() {
         }
     }
 }
+
+#[test]
+fn token_based_generator_round_trips_exotic_prefixes() {
+    use r4::Equivalent;
+
+    for code in [
+        "return obj:m<<T>>()",
+        "return a.b<<T>>:c()",
+        "return (f)<<T>>()",
+        "return f<< T , U >>()",
+        "return (a).b.c[1]",
+        "return a[b][c].d",
+        "return f{ 1, 2 }.x",
+        "return f'str'.x",
+        "return a:b():c()",
+        "return (function() end)()",
+        "return ({ 1 })[1]",
+        "return f(...)",
+        "return f(a, b, c)",
+        "return a and (b or c)",
+        "local x = a.b.c.d.e.f\nreturn x",
+        "return t:x() + t:y()",
+    ] {
+        let tokens = parse_tokens(code, Dialect::Luau);
+        let mut generator = TokenBasedLuaGenerator::new(code);
+        generator.write_block(&tokens);
+        assert_eq!(
+            generator.into_string(),
+            code,
+            "token round trip changed `{code}`"
+        );
+
+        // Every generator, including the token-synthesizing path, must preserve
+        // the method's explicit type arguments.
+        let block = parse_with(code, Dialect::Luau);
+        let mut readable = ReadableLuaGenerator::default();
+        readable.write_block(&block);
+        let mut dense = DenseLuaGenerator::default();
+        dense.write_block(&block);
+        let mut synthesized = TokenBasedLuaGenerator::new("");
+        synthesized.write_block(&block);
+        for (name, output) in [
+            ("readable", readable.into_string()),
+            ("dense", dense.into_string()),
+            ("synthesized", synthesized.into_string()),
+        ] {
+            let reparsed = Parser::default()
+                .dialect(Dialect::Luau)
+                .parse(&output)
+                .unwrap_or_else(|error| panic!("{name} `{code}`: {error}\n{output}"));
+            assert!(
+                block.is_equivalent_to(&reparsed),
+                "{name} changed the tree for `{code}`:\n{output}"
+            );
+        }
+    }
+}
