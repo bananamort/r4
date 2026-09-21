@@ -1576,3 +1576,44 @@ fn synthesized_token_output_is_equivalent_to_the_source() {
         }
     }
 }
+
+#[test]
+fn token_based_generator_round_trips_tricky_literals_and_layouts() {
+    for code in [
+        "return 'a\\n\\t\\\"b'",
+        "return [[long\nstring]]",
+        "return [==[with ]] inside]==]",
+        "return 0xFF, 1e10, 1E-3, 0b1010, 1_000",
+        "return { { 1 }, { 2, 3 } }",
+        "return { [1] = 'a', [2] = 'b' }",
+        "return f ( { a = 1 } , 'x' )",
+        "return a [ 1 ] [ 2 ] . b . c",
+        "return `a { b } c { d }`",
+        "local x = if a then 1 else 2\nreturn x",
+        "local x = a :: number\nreturn x",
+        "local x = f<<T>>()\nreturn x",
+        "type T = { [string]: number }\nreturn 1",
+        "type T = (a: number, b: string) -> boolean\nreturn 1",
+        "return function ( a : number , ... : string ) : boolean return true end",
+        "for i = 1, 10, 2 do print ( i ) end",
+        "for k, v in pairs ( t ) do print ( k ) end",
+        "repeat print ( 1 ) until true",
+        "do end",
+        "@native function f () end",
+        "local x = 1 --[[a]] + --[[b]] 2 --[[c]]\nreturn x",
+        "return ( 1 + 2 )",
+        "return - x",
+        "return not x",
+        "return # x",
+        "local a, b = 1, 2\nreturn a, b",
+    ] {
+        let tokens = parse_tokens(code, Dialect::Luau);
+        let mut generator = TokenBasedLuaGenerator::new(code);
+        generator.write_block(&tokens);
+        assert_eq!(
+            generator.into_string(),
+            code,
+            "token round trip changed `{code}`"
+        );
+    }
+}
