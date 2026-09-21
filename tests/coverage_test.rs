@@ -1840,3 +1840,58 @@ fn token_based_generator_round_trips_a_kitchen_sink_program() {
         );
     }
 }
+
+#[test]
+fn token_based_generator_round_trips_table_property_modifiers() {
+    for code in [
+        "type T = { read x: number }\nreturn 1",
+        "type T = { write x: number }\nreturn 1",
+        "type T = { read x: number, write y: string }\nreturn 1",
+        "type T = { read [string]: number }\nreturn 1",
+        "type T = { write [string]: number, z: boolean }\nreturn 1",
+    ] {
+        let tokens = parse_tokens(code, Dialect::Luau);
+        let mut generator = TokenBasedLuaGenerator::new(code);
+        generator.write_block(&tokens);
+        assert_eq!(
+            generator.into_string(),
+            code,
+            "token round trip changed `{code}`"
+        );
+    }
+}
+
+#[test]
+fn generators_preserve_table_property_modifiers() {
+    use r4::Equivalent;
+
+    for code in [
+        "type T = { read x: number }\nreturn 1",
+        "type T = { write x: number }\nreturn 1",
+        "type T = { read x: number, write y: string }\nreturn 1",
+        "type T = { read [string]: number }\nreturn 1",
+        "type T = { write [string]: number, z: boolean }\nreturn 1",
+    ] {
+        let block = parse_with(code, Dialect::Luau);
+        let mut readable = ReadableLuaGenerator::default();
+        readable.write_block(&block);
+        let mut dense = DenseLuaGenerator::default();
+        dense.write_block(&block);
+        let mut synthesized = TokenBasedLuaGenerator::new("");
+        synthesized.write_block(&block);
+        for (name, output) in [
+            ("readable", readable.into_string()),
+            ("dense", dense.into_string()),
+            ("synthesized", synthesized.into_string()),
+        ] {
+            let reparsed = Parser::default()
+                .dialect(Dialect::Luau)
+                .parse(&output)
+                .unwrap_or_else(|error| panic!("{name} `{code}`: {error}\n{output}"));
+            assert!(
+                block.is_equivalent_to(&reparsed),
+                "{name} dropped the property modifier for `{code}`:\n{output}"
+            );
+        }
+    }
+}

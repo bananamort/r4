@@ -1,4 +1,10 @@
 //! Tests that both visitors traverse attribute names and arguments.
+//!
+//! Attribute names and literal-table field names are *not* variable
+//! expressions: they are delivered to `process_attributes` /
+//! `process_literal_table` (and, for the non-mutating walk, to
+//! `process_identifier`). Delivering them to `process_variable_expression`
+//! would make every consumer treat a field name as a variable binding.
 
 use r4::nodes::{
     Attribute, AttributeArguments, AttributeGroup, AttributeGroupElement, AttributeTupleArguments,
@@ -24,6 +30,57 @@ struct ImmutableIdentifierNames(Vec<String>);
 impl ImmutableProcessor for ImmutableIdentifierNames {
     fn process_identifier(&mut self, identifier: &Identifier) {
         self.0.push(identifier.get_name().clone());
+    }
+}
+
+fn collect_attribute_names(attributes: &Attributes, names: &mut Vec<String>) {
+    for attribute in attributes.iter_attributes() {
+        match attribute {
+            Attribute::Name(named) => names.push(named.get_identifier().get_name().clone()),
+            Attribute::Group(group) => {
+                for element in group.iter_attributes() {
+                    names.push(element.name().get_name().clone());
+                }
+            }
+        }
+    }
+}
+
+fn collect_field_names(table: &mut LiteralTable, names: &mut Vec<String>) {
+    for entry in table.iter_mut_entries() {
+        if let r4::nodes::LiteralTableEntry::Field(field) = entry {
+            names.push(field.mutate_field().get_name().clone());
+        }
+    }
+}
+
+/// Collects attribute names and literal-table field names through the
+/// container hooks (the mutable visitor).
+struct ContainerNames(Vec<String>);
+
+impl NodeProcessor for ContainerNames {
+    fn process_attributes(&mut self, attributes: &mut Attributes) {
+        collect_attribute_names(attributes, &mut self.0);
+    }
+
+    fn process_literal_table(&mut self, table: &mut LiteralTable) {
+        collect_field_names(table, &mut self.0);
+    }
+}
+
+/// Collects attribute names and literal-table field names through the
+/// container hooks (the post-order visitor).
+struct PostContainerNames(Vec<String>);
+
+impl NodeProcessor for PostContainerNames {}
+
+impl NodePostProcessor for PostContainerNames {
+    fn process_after_attributes(&mut self, attributes: &mut Attributes) {
+        collect_attribute_names(attributes, &mut self.0);
+    }
+
+    fn process_after_literal_table(&mut self, table: &mut LiteralTable) {
+        collect_field_names(table, &mut self.0);
     }
 }
 
@@ -61,10 +118,21 @@ fn mutable_visitor_visits_attribute_names_and_arguments() {
     let mut block = Parser::default()
         .parse("@native function f() end")
         .expect("valid code");
+
+    // The function name is a variable expression; the attribute name is not.
     let mut names = IdentifierNames(Vec::new());
     DefaultVisitor::visit_block(&mut block, &mut names);
     assert!(names.0.contains(&"f".to_owned()), "{:?}", names.0);
-    assert!(names.0.contains(&"native".to_owned()), "{:?}", names.0);
+    assert!(!names.0.contains(&"native".to_owned()), "{:?}", names.0);
+
+    // The attribute name is reachable through the container hook.
+    let mut container = ContainerNames(Vec::new());
+    DefaultVisitor::visit_block(&mut block, &mut container);
+    assert!(
+        container.0.contains(&"native".to_owned()),
+        "{:?}",
+        container.0
+    );
 
     struct Literals(Vec<String>);
     impl NodeProcessor for Literals {
@@ -102,10 +170,16 @@ fn mutable_visitor_visits_attribute_names_and_arguments() {
         literals.0
     );
 
-    let mut names = IdentifierNames(Vec::new());
-    DefaultVisitor::visit_block(&mut attribute_block(), &mut names);
+    // Attribute group names and literal-table field names are reachable
+    // through their container hooks, not as variable expressions.
+    let mut container = ContainerNames(Vec::new());
+    DefaultVisitor::visit_block(&mut attribute_block(), &mut container);
     for name in ["tuple", "table", "string", "k"] {
-        assert!(names.0.contains(&name.to_owned()), "{name}: {:?}", names.0);
+        assert!(
+            container.0.contains(&name.to_owned()),
+            "{name}: {:?}",
+            container.0
+        );
     }
 }
 
@@ -180,7 +254,7 @@ fn post_visitor_visits_attribute_names_and_arguments() {
     let mut names = Names(Vec::new());
     DefaultPostVisitor::visit_block(&mut block, &mut names);
     assert!(names.0.contains(&"f".to_owned()), "{:?}", names.0);
-    assert!(names.0.contains(&"native".to_owned()), "{:?}", names.0);
+    assert!(!names.0.contains(&"native".to_owned()), "{:?}", names.0);
 
     struct Literals(Vec<String>);
     impl NodeProcessor for Literals {}
@@ -211,9 +285,13 @@ fn post_visitor_visits_attribute_names_and_arguments() {
         literals.0
     );
 
-    let mut names = Names(Vec::new());
-    DefaultPostVisitor::visit_block(&mut attribute_block(), &mut names);
+    let mut container = PostContainerNames(Vec::new());
+    DefaultPostVisitor::visit_block(&mut attribute_block(), &mut container);
     for name in ["tuple", "table", "string", "k"] {
-        assert!(names.0.contains(&name.to_owned()), "{name}: {:?}", names.0);
+        assert!(
+            container.0.contains(&name.to_owned()),
+            "{name}: {:?}",
+            container.0
+        );
     }
 }

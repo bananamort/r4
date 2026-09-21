@@ -516,8 +516,9 @@ pub trait NodeVisitor<T: NodeProcessor> {
             match attribute {
                 Attribute::Group(group) => {
                     for element in group.iter_mut_attributes() {
-                        Self::visit_identifier(element.mutate_name(), processor);
-
+                        // The attribute name is not a variable expression, so it
+                        // is not delivered to `process_variable_expression`; it
+                        // remains reachable through `process_attributes`.
                         if let Some(arguments) = element.mutate_arguments() {
                             match arguments {
                                 AttributeArguments::Tuple(arguments) => {
@@ -548,9 +549,7 @@ pub trait NodeVisitor<T: NodeProcessor> {
                         }
                     }
                 }
-                Attribute::Name(named) => {
-                    Self::visit_identifier(named.mutate_identifier(), processor);
-                }
+                Attribute::Name(_) => {}
             }
         }
     }
@@ -561,7 +560,8 @@ pub trait NodeVisitor<T: NodeProcessor> {
         for entry in table.iter_mut_entries() {
             match entry {
                 LiteralTableEntry::Field(field) => {
-                    Self::visit_identifier(field.mutate_field(), processor);
+                    // The field name is not a variable expression; it stays
+                    // reachable through `process_literal_table`.
                     Self::visit_literal_expression(field.mutate_value(), processor);
                 }
                 LiteralTableEntry::Value(value) => {

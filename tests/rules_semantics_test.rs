@@ -276,3 +276,51 @@ fn pipeline_preserves_strict_semantics_of_a_shadowing_program() {
         "the shadowing alias must be renamed: {output}"
     );
 }
+
+/// Attribute names, field names and type names are not variable bindings, so
+/// they must never reach `process_variable_expression`: renaming must succeed
+/// on attribute code and leave every name that is not a binding untouched.
+#[test]
+fn renaming_survives_names_that_are_not_bindings() {
+    for (code, preserved) in [
+        ("@native function f() end", &["@native", "native", "f"][..]),
+        ("@native local function g() end", &["@native", "native"][..]),
+        (
+            "local h = @native function() end",
+            &["@native", "native"][..],
+        ),
+        (
+            "local obj = { field_name = 1 }\nreturn obj",
+            &["field_name"][..],
+        ),
+        (
+            "local obj = {}\nfunction obj:method_name() end\nreturn obj",
+            &["method_name"][..],
+        ),
+        (
+            "local obj = {}\nfunction obj.inner.deep:method_name() end\nreturn obj",
+            &["inner", "deep", "method_name"][..],
+        ),
+        (
+            "local obj = {}\nlocal value = obj.field_name\nreturn value",
+            &["field_name"][..],
+        ),
+        (
+            "local obj = {}\nobj.field_name = 1\nreturn obj",
+            &["field_name"][..],
+        ),
+    ] {
+        let (mut block, model) = analyze_with_tokens(code);
+        rename_variables::rename_variables(&mut block, &model)
+            .unwrap_or_else(|error| panic!("renaming `{code}` must succeed: {error}"));
+
+        let output = generate(&block);
+        for token in preserved {
+            assert!(
+                output.contains(token),
+                "`{token}` lost in `{code}`: {output}"
+            );
+        }
+        analyze_output(&output);
+    }
+}
