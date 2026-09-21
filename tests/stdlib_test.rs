@@ -145,3 +145,83 @@ fn classifies_pure_and_impure_calls() {
     let impure = Expression::from(returned_call(&block).clone());
     assert!(has_side_effects(&model, &evaluator, &impure));
 }
+
+#[test]
+fn classifies_every_pure_library_path() {
+    for name in [
+        "type",
+        "tostring",
+        "tonumber",
+        "rawequal",
+        "rawlen",
+        "rawget",
+        "getmetatable",
+        "select",
+    ] {
+        let code = format!("return {name}(1)");
+        let (block, model) = analyze(&code);
+        assert!(call_is_pure(&model, returned_call(&block)), "`{code}`");
+    }
+
+    let libraries: [(&str, &[&str]); 6] = [
+        (
+            "math",
+            &[
+                "abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "cosh", "deg",
+                "exp", "floor", "fmod", "frexp", "ldexp", "log", "log10", "max", "min", "modf",
+                "noise", "pow", "rad", "round", "sign", "sin", "sinh", "sqrt", "tan", "tanh",
+            ],
+        ),
+        (
+            "string",
+            &[
+                "byte", "char", "find", "format", "len", "lower", "match", "rep", "reverse",
+                "split", "sub", "upper", "pack", "unpack", "packsize",
+            ],
+        ),
+        ("table", &["concat", "pack", "unpack"]),
+        (
+            "utf8",
+            &[
+                "char",
+                "codepoint",
+                "len",
+                "offset",
+                "codes",
+                "nfcnormalize",
+                "nfdnormalize",
+                "graphemes",
+            ],
+        ),
+        (
+            "bit32",
+            &[
+                "arshift", "band", "bnot", "bor", "btest", "bxor", "extract", "lrotate", "lshift",
+                "replace", "rrotate", "rshift",
+            ],
+        ),
+        ("os", &["clock", "date", "difftime", "getenv", "time"]),
+    ];
+    for (root, names) in libraries {
+        for name in names {
+            let code = format!("return {root}.{name}(1)");
+            let (block, model) = analyze(&code);
+            assert!(call_is_pure(&model, returned_call(&block)), "`{code}`");
+        }
+    }
+
+    for code in [
+        "return unknown.path(1)",
+        "return math.not_a_function(1)",
+        "local math = {}\nreturn math.sqrt(1)",
+    ] {
+        let (block, model) = analyze(code);
+        assert!(!call_is_pure(&model, returned_call(&block)), "`{code}`");
+    }
+
+    // An immutable alias of a pure library table is still pure.
+    let (block, model) = analyze("local m = math\nreturn m.sqrt(1)");
+    assert!(call_is_pure(&model, returned_call(&block)));
+    let (block, model) = analyze("local sqrt = math.sqrt\nreturn sqrt(1)");
+    assert!(!call_is_pure(&model, returned_call(&block)));
+}
