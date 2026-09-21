@@ -416,20 +416,22 @@ fn cfg_and_semantic_analyses_cover_every_statement_kind() {
     for (codes, dialect) in corpora {
         for &code in codes {
             let block = parse_with(code, dialect);
-            let Ok(model) = SemanticAnalyzer::new().analyze(&block) else {
-                continue;
-            };
+            let model = SemanticAnalyzer::new()
+                .analyze(&block)
+                .unwrap_or_else(|error| panic!("`{code}` analysis failed: {error}"));
 
             let _ = EscapeAnalysis::analyze(&block, &model);
 
-            let Ok(cfg) = build_chunk(&block, &model) else {
-                continue;
-            };
-            let _ = cfg.verify_invariants();
+            let cfg = build_chunk(&block, &model)
+                .unwrap_or_else(|error| panic!("`{code}` cfg failed: {error}"));
+            cfg.verify_invariants()
+                .unwrap_or_else(|violations| panic!("`{code}` invariants: {violations:?}"));
             let _ = Reachability::analyze(&cfg);
             let _ = DominatorTree::analyze(&cfg);
-            let _ = Liveness::analyze(&cfg, &model);
-            let _ = ConstantPropagation::analyze(&cfg, &model);
+            Liveness::analyze(&cfg, &model)
+                .unwrap_or_else(|error| panic!("`{code}` liveness failed: {error}"));
+            ConstantPropagation::analyze(&cfg, &model)
+                .unwrap_or_else(|error| panic!("`{code}` constant propagation failed: {error}"));
         }
     }
 }
@@ -452,10 +454,14 @@ fn navigation_modules_and_diagnostics_cover_the_corpus() {
 
     for (codes, dialect) in corpora {
         for &code in codes {
-            if let Ok((block, model)) = Parser::default().dialect(dialect).parse_analyzed(code) {
-                let _ = SyntaxIndex::build(&block);
-                let _ = graph.add_module(format!("m{index}"), block, model);
-            }
+            let (block, model) = Parser::default()
+                .dialect(dialect)
+                .preserve_tokens()
+                .parse_analyzed(code)
+                .unwrap_or_else(|error| panic!("`{code}` analysis failed: {error}"));
+            let index_result = SyntaxIndex::build(&block);
+            assert!(index_result.is_ok(), "`{code}` index: {index_result:?}");
+            let _ = graph.add_module(format!("m{index}"), block, model);
             // Record all diagnostics for both well formed and recovered sources.
             let _ = compilation.add_tree_recovering(code);
             if let Ok(tree) = compilation.add_tree(code) {
@@ -1237,5 +1243,48 @@ fn type_cast_line_break_helpers_are_driven() {
     ] {
         let block = parse_with(code, Dialect::Luau);
         assert_generates(&block, code, Dialect::Luau);
+    }
+}
+
+#[test]
+fn evaluator_folds_constant_expressions_to_their_values() {
+    use r4::process::LuaValue;
+
+    let evaluator = Evaluator::default();
+    for (code, expected) in [
+        ("return 1 + 2", LuaValue::Number(3.0)),
+        ("return 7 % 3", LuaValue::Number(1.0)),
+        ("return 2 ^ 3", LuaValue::Number(8.0)),
+        ("return 10 / 4", LuaValue::Number(2.5)),
+        ("return 7 // 2", LuaValue::Number(3.0)),
+        ("return 1 < 2", LuaValue::True),
+        ("return 1 ~= 2", LuaValue::True),
+        ("return 1 == 1", LuaValue::True),
+        ("return true and false", LuaValue::False),
+        ("return true or false", LuaValue::True),
+        ("return not true", LuaValue::False),
+        ("return -3", LuaValue::Number(-3.0)),
+        ("return #'abc'", LuaValue::Number(3.0)),
+        ("return 'a' .. 'b'", LuaValue::String(b"ab".to_vec())),
+        ("return (5)", LuaValue::Number(5.0)),
+        ("return if true then 1 else 2", LuaValue::Number(1.0)),
+        ("return if false then 1 else 2", LuaValue::Number(2.0)),
+        ("return nil", LuaValue::Nil),
+        ("return true", LuaValue::True),
+        ("return false", LuaValue::False),
+        ("return 'text'", LuaValue::String(b"text".to_vec())),
+        // Non-constant operands decline instead of guessing.
+        ("return a", LuaValue::Unknown),
+        ("return a + 1", LuaValue::Unknown),
+        ("return f()", LuaValue::Unknown),
+        ("return 'a' + 'b'", LuaValue::Unknown),
+        ("return a and b", LuaValue::Unknown),
+    ] {
+        let block = parse_with(code, Dialect::Luau);
+        let Some(r4::nodes::LastStatement::Return(statement)) = block.get_last_statement() else {
+            panic!("`{code}` must return");
+        };
+        let expression = statement.iter_expressions().next().expect("an expression");
+        assert_eq!(evaluator.evaluate(expression), expected, "`{code}`");
     }
 }
