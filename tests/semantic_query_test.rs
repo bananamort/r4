@@ -151,6 +151,7 @@ fn resolves_type_declarations_and_annotations() {
     let annotation = annotation.expect("a type annotation");
     assert_eq!(model.type_of(&annotation), Some(type_id));
     assert_eq!(model.try_declared_type(&annotation), Ok(type_id));
+    assert!(model.try_scope_of_identifier(&type_name).is_ok());
 
     let _ = model.analysis_origin();
 
@@ -183,6 +184,7 @@ fn resolves_label_declarations() {
         .try_declared_label(&label)
         .expect("the label resolves");
     assert_eq!(model.label_of(&label), Some(label_id));
+    assert!(model.try_scope_of_identifier(&label).is_ok());
 
     // Goto occurrences are resolved through the goto binding list.
     let binding = model
@@ -201,4 +203,38 @@ fn resolves_label_declarations() {
         model.try_declared_label(&Identifier::new("never")),
         Err(SemanticQueryError::UnboundLabel { .. })
     ));
+}
+
+#[test]
+fn function_scope_of_walks_to_the_enclosing_function() {
+    use r4::semantic::ScopeKind;
+
+    let (block, model) =
+        analyze("local x = 1\ndo local y = 2 end\nlocal function f() return x end\nreturn f");
+
+    let chunk = model.chunk_scope();
+    assert_eq!(model.function_scope_of(chunk), Some(chunk));
+
+    let block_scope = model
+        .scopes
+        .iter()
+        .find(|scope| scope.kind == ScopeKind::Block)
+        .map(|scope| scope.id);
+    if let Some(block_scope) = block_scope {
+        assert_eq!(model.function_scope_of(block_scope), Some(chunk));
+    }
+
+    let function_scope = model
+        .scopes
+        .iter()
+        .find(|scope| scope.kind == ScopeKind::Function)
+        .map(|scope| scope.id);
+    if let Some(function_scope) = function_scope {
+        assert_eq!(
+            model.function_scope_of(function_scope),
+            Some(function_scope)
+        );
+    }
+
+    let _ = block;
 }
