@@ -1025,6 +1025,12 @@ fn generator_spacing_and_line_break_helper_inputs() {
         "return \"\\0\\1\\2\\7\\8\\9\\11\\12\\13\"".to_owned(),
         "return \"a\\rb\\nc\\td\\\\e\\\"f\\'g\"".to_owned(),
         "return [==[x]]y]==]".to_owned(),
+        "local x\n(f)()".to_owned(),
+        "x = 1\n(f)()".to_owned(),
+        "if a then end\n(f)()".to_owned(),
+        "while a do end\n(f)()".to_owned(),
+        "return {1} == t".to_owned(),
+        "return {1} and t".to_owned(),
     ];
     for code in cases {
         let block = parse_with(&code, Dialect::Luau);
