@@ -148,6 +148,13 @@ impl FunctionCall {
             .flat_map(|method| method.types.iter().flatten())
     }
 
+    /// Returns a mutable iterator over the type instantiations of the method.
+    pub fn iter_mut_method_type_instantiation(&mut self) -> impl Iterator<Item = &mut Type> {
+        self.method
+            .iter_mut()
+            .flat_map(|method| method.types.iter_mut().flatten())
+    }
+
     /// Returns whether this call has a method with a type instantiation.
     pub fn has_method_type_instantiation(&self) -> bool {
         self.method

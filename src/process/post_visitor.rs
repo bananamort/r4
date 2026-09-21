@@ -504,6 +504,9 @@ pub trait NodePostVisitor<T: NodeProcessor + NodePostProcessor> {
         processor.process_function_call(call);
 
         Self::visit_prefix_expression(call.mutate_prefix(), processor);
+        for r#type in call.iter_mut_method_type_instantiation() {
+            Self::visit_type(r#type, processor);
+        }
         Self::visit_arguments(call.mutate_arguments(), processor);
         processor.process_after_function_call(call);
     }

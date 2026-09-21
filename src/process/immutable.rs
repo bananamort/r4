@@ -300,6 +300,9 @@ pub trait ImmutableVisitor {
         if let Some(method) = call.get_method() {
             Self::visit_identifier(method, processor);
         }
+        for r#type in call.get_method_type_instantiation() {
+            Self::visit_type(r#type, processor);
+        }
         Self::visit_arguments(call.get_arguments(), processor);
     }
 
@@ -587,6 +590,9 @@ pub trait ImmutableVisitor {
                         Self::visit_identifier(name, processor);
                     }
                     Self::visit_type(argument.get_type(), processor);
+                }
+                if let Some(variadic) = function.get_variadic_argument_type() {
+                    Self::visit_variadic_argument_type(variadic, processor);
                 }
                 Self::visit_function_return_type(function.get_return_type(), processor);
             }
