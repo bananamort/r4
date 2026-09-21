@@ -3525,3 +3525,93 @@ mod test {
         }
     }
 }
+
+#[cfg(test)]
+mod full_moon_nodes {
+    use super::*;
+    use full_moon::ast::punctuated::{Pair, Punctuated};
+    use full_moon::ast::{
+        Assignment, Block as FmBlock, Expression, Stmt, Suffix, Var, VarExpression,
+    };
+    use full_moon::tokenizer::TokenReference;
+
+    fn parse(code: &str) -> full_moon::ast::Ast {
+        full_moon::parse(code).expect("valid code parses")
+    }
+
+    fn rhs(code: &str) -> Expression {
+        parse(code)
+            .nodes()
+            .stmts()
+            .find_map(|statement| match statement {
+                Stmt::Assignment(assignment) => assignment.expressions().iter().next().cloned(),
+                _ => None,
+            })
+            .expect("an assignment")
+    }
+
+    fn first_value<T>(code: &str, select: impl Fn(&Stmt) -> Option<T>) -> T {
+        parse(code)
+            .nodes()
+            .stmts()
+            .find_map(&select)
+            .expect("a matching statement")
+    }
+
+    fn name(code: &str) -> TokenReference {
+        first_value(code, |statement| match statement {
+            Stmt::Assignment(assignment) => {
+                assignment
+                    .variables()
+                    .iter()
+                    .find_map(|variable| match variable {
+                        Var::Name(name) => Some(name.clone()),
+                        _ => None,
+                    })
+            }
+            _ => None,
+        })
+    }
+
+    fn call_suffix(code: &str) -> Suffix {
+        first_value(code, |statement| match statement {
+            Stmt::FunctionCall(call) => call.suffixes().next().cloned(),
+            _ => None,
+        })
+    }
+
+    fn convert_target(variable: Var) -> ConvertError {
+        let mut variables = Punctuated::new();
+        variables.push(Pair::new(variable, None));
+        let mut expressions = Punctuated::new();
+        expressions.push(Pair::new(rhs("x = 1"), None));
+        let assignment = Assignment::new(variables, expressions);
+        let block = FmBlock::new().with_stmts(vec![(Stmt::Assignment(assignment), None)]);
+        AstConverter::new(false)
+            .convert(&parse("").with_nodes(block))
+            .expect_err("the target is not a valid variable")
+    }
+
+    #[test]
+    fn assignment_target_with_a_call_is_rejected() {
+        let variable = Var::Expression(Box::new(
+            VarExpression::new(full_moon::ast::Prefix::Name(name("x = 1")))
+                .with_suffixes(vec![call_suffix("f()")]),
+        ));
+        assert!(matches!(
+            convert_target(variable),
+            ConvertError::Variable { .. }
+        ));
+    }
+
+    #[test]
+    fn assignment_target_with_parentheses_is_rejected() {
+        let variable = Var::Expression(Box::new(VarExpression::new(
+            full_moon::ast::Prefix::Expression(Box::new(rhs("y = (x)"))),
+        )));
+        assert!(matches!(
+            convert_target(variable),
+            ConvertError::Variable { .. }
+        ));
+    }
+}
