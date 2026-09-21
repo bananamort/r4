@@ -214,3 +214,35 @@ fn method_call_type_arguments_are_visited() {
         immutable.0
     );
 }
+
+/// The read-only token/trivia walk must reach the tokens inside a method's
+/// explicit type arguments, exactly once (the syntax walk and the node token
+/// walk are disjoint).
+#[test]
+fn token_walk_reaches_method_type_argument_trivia() {
+    use r4::nodes::TriviaKind;
+
+    let block = Parser::default()
+        .preserve_tokens()
+        .parse("return obj:m<< --[[inner]] T >>()")
+        .expect("parse");
+
+    let comments: Vec<_> = r4::process::collect_trivia(&block)
+        .into_iter()
+        .filter(|piece| piece.kind() == TriviaKind::Comment)
+        .collect();
+    assert_eq!(
+        comments.len(),
+        1,
+        "the method type argument's comment must be visited exactly once"
+    );
+
+    // The type node itself is reachable through the syntax walk.
+    let mut types = ImmutableTypes(Vec::new());
+    Walk::visit_block(&block, &mut types);
+    assert!(
+        types.0.iter().any(|r#type| r#type.contains("T")),
+        "{:?}",
+        types.0
+    );
+}
