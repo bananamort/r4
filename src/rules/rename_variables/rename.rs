@@ -252,6 +252,126 @@ impl NodeProcessor for Renamer<'_> {
     }
 }
 
+/// An error produced while renaming one symbol to a chosen name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RenameSymbolError {
+    /// The requested name is not a valid Lua identifier.
+    UnsupportedIdentifier {
+        /// The requested name.
+        name: String,
+    },
+    /// The symbol is not part of the semantic model.
+    UnknownSymbol,
+    /// A variable with the requested name is visible where the renamed symbol
+    /// is, so the rename would capture or be captured.
+    Conflict {
+        /// The requested name.
+        name: String,
+    },
+    /// The tree does not match the model: an identifier is unbound.
+    UnresolvedIdentifier {
+        /// The unbound identifier.
+        name: String,
+    },
+}
+
+impl RenameSymbolError {
+    /// Returns a stable machine readable code for this error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            RenameSymbolError::UnsupportedIdentifier { .. } => "rename/unsupported-identifier",
+            RenameSymbolError::UnknownSymbol => "rename/unknown-symbol",
+            RenameSymbolError::Conflict { .. } => "rename/conflict",
+            RenameSymbolError::UnresolvedIdentifier { .. } => "rename/unresolved-identifier",
+        }
+    }
+}
+
+impl fmt::Display for RenameSymbolError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RenameSymbolError::UnsupportedIdentifier { name } => {
+                write!(f, "`{name}` is not a valid identifier")
+            }
+            RenameSymbolError::UnknownSymbol => write!(f, "the symbol is not in the model"),
+            RenameSymbolError::Conflict { name } => write!(
+                f,
+                "renaming to `{name}` would conflict with a visible variable"
+            ),
+            RenameSymbolError::UnresolvedIdentifier { name } => {
+                write!(f, "identifier `{name}` is not bound in the semantic model")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RenameSymbolError {}
+
+/// Renames a single symbol to `new_name`, rewriting its declaration and every
+/// reference bound to it.
+///
+/// The rename is rejected before any mutation when `new_name` is not a valid
+/// identifier, the symbol is not part of the model, the tree does not match the
+/// model, or a different variable with that name is visible anywhere the
+/// renamed symbol is visible (its declaring scope and every descendant), which
+/// would capture or be captured by the rename.
+pub fn rename_symbol(
+    block: &mut crate::nodes::Block,
+    model: &SemanticModel,
+    symbol: SymbolId,
+    new_name: &str,
+) -> Result<(), RenameSymbolError> {
+    if !is_valid_identifier(new_name) {
+        return Err(RenameSymbolError::UnsupportedIdentifier {
+            name: new_name.to_owned(),
+        });
+    }
+    if model.symbols.get(symbol.index()).map(|symbol| symbol.id) != Some(symbol) {
+        return Err(RenameSymbolError::UnknownSymbol);
+    }
+    validate_identifiers(block, model).map_err(|error| match error {
+        RenameError::UnresolvedIdentifier { name } => {
+            RenameSymbolError::UnresolvedIdentifier { name }
+        }
+    })?;
+
+    // Sound, conservative conflict check: no other declaration of the new name
+    // is visible where the renamed symbol is visible.
+    let declaring = model.symbol(symbol).declaring_scope;
+    let mut visible = vec![declaring];
+    let mut index = 0;
+    while index < visible.len() {
+        let scope = visible[index];
+        visible.extend(model.scope(scope).children.iter().copied());
+        index += 1;
+    }
+    for scope in &visible {
+        for &other in &model.scope(*scope).symbols {
+            if other != symbol && model.symbol(other).name == new_name {
+                return Err(RenameSymbolError::Conflict {
+                    name: new_name.to_owned(),
+                });
+            }
+        }
+    }
+    if model.symbols.iter().any(|candidate| {
+        candidate.kind == SymbolKind::Global && candidate.name == new_name && candidate.id != symbol
+    }) {
+        return Err(RenameSymbolError::Conflict {
+            name: new_name.to_owned(),
+        });
+    }
+
+    let mut renames = HashMap::new();
+    renames.insert(symbol, new_name.to_owned());
+    let mut renamer = Renamer {
+        model,
+        renames: &renames,
+    };
+    DefaultVisitor::visit_block(block, &mut renamer);
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -403,5 +523,60 @@ mod test {
             "the local must be renamed: {}",
             generate(&block)
         );
+    }
+
+    #[test]
+    fn rename_symbol_rewrites_one_variable_only() {
+        let (mut block, model) = analyze_with_tokens("local a = 2\nlocal function a() end");
+        let first_a = model
+            .scope(model.chunk_scope())
+            .symbols
+            .iter()
+            .copied()
+            .find(|symbol| model.symbol(*symbol).name == "a")
+            .expect("the first a");
+
+        rename_symbol(&mut block, &model, first_a, "b").expect("the rename is conflict-free");
+
+        let output = generate(&block);
+        assert!(output.contains("local b = 2"), "unexpected: {output}");
+        assert!(
+            output.contains("local function a()"),
+            "the shadowing declaration must be untouched: {output}"
+        );
+    }
+
+    #[test]
+    fn rename_symbol_rejects_an_unsupported_name() {
+        let (mut block, model) = analyze_with_tokens("local a = 1");
+        let a = model.scope(model.chunk_scope()).symbols[0];
+
+        let error = rename_symbol(&mut block, &model, a, "\u{FEFF}").expect_err("invalid name");
+        assert_eq!(error.code(), "rename/unsupported-identifier");
+        assert_eq!(generate(&block).trim(), "local a = 1");
+    }
+
+    #[test]
+    fn rename_symbol_rejects_a_visible_conflict() {
+        let (mut block, model) = analyze_with_tokens("local a, b = 1, 2");
+        let a = model
+            .scope(model.chunk_scope())
+            .symbols
+            .iter()
+            .copied()
+            .find(|symbol| model.symbol(*symbol).name == "a")
+            .expect("a");
+
+        let error = rename_symbol(&mut block, &model, a, "b").expect_err("b is visible");
+        assert_eq!(error.code(), "rename/conflict");
+        assert_eq!(generate(&block).trim(), "local a, b = 1, 2");
+    }
+
+    #[test]
+    fn rename_symbol_rejects_an_unknown_symbol() {
+        let (mut block, model) = analyze_with_tokens("local a = 1");
+        let error = rename_symbol(&mut block, &model, SymbolId(9_999), "b")
+            .expect_err("the symbol is not in the model");
+        assert_eq!(error.code(), "rename/unknown-symbol");
     }
 }

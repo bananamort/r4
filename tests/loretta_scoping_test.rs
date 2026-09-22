@@ -24,9 +24,13 @@ fn parse(code: &str) -> Block {
 
 fn analyze(code: &str) -> SemanticModel {
     let block = parse(code);
+    analyze_block(&block)
+}
+
+fn analyze_block(block: &Block) -> SemanticModel {
     SemanticAnalyzer::new()
-        .analyze(&block)
-        .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"))
+        .analyze(block)
+        .unwrap_or_else(|error| panic!("failed to analyze: {error}"))
 }
 
 /// The scope-kind rank Loretta uses for its kind-filtered search.
@@ -287,75 +291,64 @@ end",
 
 #[test]
 fn rename_scoping_matches_loretta() {
-    use r4::rules::rename_variables::rename_variables;
+    use r4::generator::{LuaGenerator, ReadableLuaGenerator};
+    use r4::rules::rename_variables::{rename_symbol, RenameSymbolError};
 
-    // RenameVariable_ReturnsErrorForConflictingVariable: `a` and `b` are
-    // distinct variables, so renaming `a` cannot capture `b`.
+    fn symbol_named(model: &SemanticModel, scope: ScopeId, name: &str) -> SymbolId {
+        model
+            .scope(scope)
+            .symbols
+            .iter()
+            .copied()
+            .find(|symbol| model.symbol(*symbol).name == name)
+            .unwrap_or_else(|| panic!("symbol `{name}`"))
+    }
+
+    // RenameVariable_ReturnsErrorForUnsupportedIdentifier.
+    let code = "local a = 2";
+    let mut block = parse(code);
+    let model = analyze_block(&block);
+    let a = symbol_named(&model, model.chunk_scope(), "a");
+    let error = rename_symbol(&mut block, &model, a, "\u{FEFF}").expect_err("the name is invalid");
+    assert_eq!(error.code(), "rename/unsupported-identifier");
+    assert!(matches!(
+        error,
+        RenameSymbolError::UnsupportedIdentifier { .. }
+    ));
+
+    // RenameVariable_ReturnsErrorForConflictingVariable.
     let code = "local a, b = 2, 3";
-    let mut model = analyze(code);
-    let file = model.chunk_scope();
-    let a = model
-        .scope(file)
-        .symbols
-        .iter()
-        .find(|symbol| model.symbol(**symbol).name == "a")
-        .copied()
-        .expect("a");
-    let b = model
-        .scope(file)
-        .symbols
-        .iter()
-        .find(|symbol| model.symbol(**symbol).name == "b")
-        .copied()
-        .expect("b");
-    assert_ne!(a, b);
-
     let mut block = parse(code);
-    model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
-    rename_variables(&mut block, &model).expect("rename");
-    let renamed = SemanticAnalyzer::new().analyze(&block).expect("re-analyze");
-    let names: Vec<&str> = renamed
-        .symbols
-        .iter()
-        .map(|symbol| symbol.name.as_str())
-        .collect();
-    assert_eq!(names.len(), 2);
-    assert_ne!(names[0], names[1], "distinct variables keep distinct names");
+    let model = analyze_block(&block);
+    let a = symbol_named(&model, model.chunk_scope(), "a");
+    let error = rename_symbol(&mut block, &model, a, "b").expect_err("b is visible");
+    assert_eq!(error.code(), "rename/conflict");
+    assert!(matches!(error, RenameSymbolError::Conflict { .. }));
 
-    // RenameVariable_ReturnsCorrectlyRenamedScript: `local a = 2` followed by
-    // `local function a()` are two distinct locals; renaming must not merge
-    // them. The first `a` and the local function `a` are separate symbols.
-    let code = "local a = 2
-local function a() end";
-    let model = analyze(code);
-    let file = model.chunk_scope();
-    let locals: Vec<SymbolId> = model
-        .scope(file)
+    // RenameVariable_ReturnsCorrectlyRenamedScript: the first `a` is shadowed
+    // by the local function `a`, and only the first is renamed.
+    let code = "local a = 2\nlocal function a() end";
+    let mut block = parse(code);
+    let model = analyze_block(&block);
+    let first_a = model
+        .scope(model.chunk_scope())
         .symbols
         .iter()
         .copied()
-        .filter(|symbol| model.symbol(*symbol).name == "a")
-        .collect();
-    assert_eq!(
-        locals.len(),
-        2,
-        "shadowed `a` declarations are distinct symbols"
+        .find(|symbol| model.symbol(*symbol).name == "a")
+        .expect("the first a");
+    rename_symbol(&mut block, &model, first_a, "b").expect("the rename is conflict-free");
+
+    let mut generator = ReadableLuaGenerator::default();
+    generator.write_block(&block);
+    let output = generator.into_string();
+    assert!(output.contains("local b = 2"), "unexpected: {output}");
+    assert!(
+        output.contains("local function a()"),
+        "the shadowing local function must be untouched: {output}"
     );
-    assert_ne!(locals[0], locals[1]);
-
-    let mut block = parse(code);
-    let model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
-    rename_variables(&mut block, &model).expect("rename");
-    let renamed = SemanticAnalyzer::new().analyze(&block).expect("re-analyze");
-    let names: Vec<String> = renamed
-        .scope(renamed.chunk_scope())
-        .symbols
-        .iter()
-        .map(|symbol| renamed.symbol(*symbol).name.clone())
-        .collect();
-    assert_eq!(names.len(), 2);
-    assert_ne!(
-        names[0], names[1],
-        "the shadowed locals are renamed distinctly"
+    assert!(
+        !output.contains("local function b()"),
+        "the rename must not touch the shadowing declaration: {output}"
     );
 }
