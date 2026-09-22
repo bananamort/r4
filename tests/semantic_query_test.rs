@@ -1,7 +1,7 @@
 //! Tests for node-keyed semantic queries and their typed errors.
 
 use r4::nodes::{Block, Identifier, Statement};
-use r4::semantic::{SemanticModel, SemanticQueryError};
+use r4::semantic::{ScopeId, ScopeKind, SemanticModel, SemanticQueryError, SymbolId};
 use r4::Parser;
 
 fn analyze(code: &str) -> (Block, SemanticModel) {
@@ -237,4 +237,188 @@ fn function_scope_of_walks_to_the_enclosing_function() {
     }
 
     let _ = block;
+}
+
+fn symbol_named(model: &SemanticModel, scope: ScopeId, name: &str) -> SymbolId {
+    model
+        .scope(scope)
+        .symbols
+        .iter()
+        .copied()
+        .find(|symbol| model.symbol(*symbol).name == name)
+        .unwrap_or_else(|| panic!("scope does not declare `{name}`"))
+}
+
+fn do_blocks(block: &Block) -> Vec<&Block> {
+    block
+        .iter_statements()
+        .filter_map(|statement| match statement {
+            Statement::Do(do_statement) => Some(do_statement.get_block()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn scope_of_kind(model: &SemanticModel, kind: ScopeKind) -> ScopeId {
+    model
+        .scopes
+        .iter()
+        .find(|scope| scope.kind == kind)
+        .unwrap_or_else(|| panic!("the model has no {kind:?} scope"))
+        .id
+}
+
+#[test]
+fn scope_kind_rank_orders_global_to_block() {
+    assert!(ScopeKind::Global.rank() < ScopeKind::File.rank());
+    assert!(ScopeKind::File.rank() < ScopeKind::Function.rank());
+    assert!(ScopeKind::Function.rank() < ScopeKind::Block.rank());
+}
+
+#[test]
+fn find_variable_is_bounded_by_scope_kind() {
+    let (_, model) = analyze("local a = 1\nlocal function f(b)\n\tdo\n\t\tlocal c = 3\n\tend\nend");
+    let block = scope_of_kind(&model, ScopeKind::Block);
+
+    // The starting scope is always searched, regardless of `kind`.
+    assert!(model
+        .try_find_variable(block, "c", ScopeKind::Block)
+        .expect("the scope belongs to the model")
+        .is_some());
+    assert!(model
+        .try_find_variable(block, "c", ScopeKind::Global)
+        .expect("the scope belongs to the model")
+        .is_some());
+
+    // The parameter is reachable at `Function` but not through a `Block` bound.
+    assert!(model
+        .try_find_variable(block, "b", ScopeKind::Function)
+        .expect("the scope belongs to the model")
+        .is_some());
+    assert!(model
+        .try_find_variable(block, "b", ScopeKind::Block)
+        .expect("the scope belongs to the model")
+        .is_none());
+
+    // The file local is reachable at `File` but never through a `Function` bound.
+    assert!(model
+        .try_find_variable(block, "a", ScopeKind::File)
+        .expect("the scope belongs to the model")
+        .is_some());
+    assert!(model
+        .try_find_variable(block, "a", ScopeKind::Function)
+        .expect("the scope belongs to the model")
+        .is_none());
+
+    assert!(model
+        .try_find_variable(block, "missing", ScopeKind::Global)
+        .expect("the scope belongs to the model")
+        .is_none());
+}
+
+#[test]
+fn find_variable_returns_the_most_recent_declaration() {
+    let (_, model) = analyze("local x = 1\nlocal x = 2\nreturn x");
+    let file = model.chunk_scope();
+    let symbols = &model.scope(file).symbols;
+    assert_eq!(symbols.len(), 2);
+
+    let found = model
+        .try_find_variable(file, "x", ScopeKind::Block)
+        .expect("the scope belongs to the model")
+        .expect("x is declared");
+    assert_eq!(
+        found, symbols[1],
+        "the latest declaration shadows the first"
+    );
+}
+
+#[test]
+fn accessibility_descends_and_stops_at_siblings() {
+    let (block, model) = analyze("local a = 1\ndo local b = 2 end\ndo local c = 3 end");
+    let file = model.chunk_scope();
+    let blocks = do_blocks(&block);
+    assert_eq!(blocks.len(), 2);
+    let first = model
+        .try_scope_of(blocks[0])
+        .expect("the do block has a scope");
+    let second = model
+        .try_scope_of(blocks[1])
+        .expect("the do block has a scope");
+
+    let a = symbol_named(&model, file, "a");
+    let b = symbol_named(&model, first, "b");
+    let c = symbol_named(&model, second, "c");
+
+    assert!(model
+        .try_can_be_accessed_in(a, file)
+        .expect("the scope belongs to the model"));
+    assert!(model
+        .try_can_be_accessed_in(a, first)
+        .expect("the scope belongs to the model"));
+    assert!(model
+        .try_can_be_accessed_in(a, second)
+        .expect("the scope belongs to the model"));
+
+    assert!(model
+        .try_can_be_accessed_in(b, first)
+        .expect("the scope belongs to the model"));
+    assert!(!model
+        .try_can_be_accessed_in(b, file)
+        .expect("the scope belongs to the model"));
+    assert!(!model
+        .try_can_be_accessed_in(b, second)
+        .expect("the scope belongs to the model"));
+
+    assert!(model
+        .try_can_be_accessed_in(c, second)
+        .expect("the scope belongs to the model"));
+    assert!(!model
+        .try_can_be_accessed_in(c, first)
+        .expect("the scope belongs to the model"));
+}
+
+#[test]
+fn accessibility_stops_at_function_boundaries() {
+    let (_, model) = analyze("local a = 1\nlocal function f() local b = 2 return a + b end");
+    let file = model.chunk_scope();
+    let function = scope_of_kind(&model, ScopeKind::Function);
+
+    let a = symbol_named(&model, file, "a");
+    let b = symbol_named(&model, function, "b");
+
+    // A file local is visible inside the nested function.
+    assert!(model
+        .try_can_be_accessed_in(a, function)
+        .expect("the scope belongs to the model"));
+    // A function local is not visible outside of it.
+    assert!(model
+        .try_can_be_accessed_in(b, function)
+        .expect("the scope belongs to the model"));
+    assert!(!model
+        .try_can_be_accessed_in(b, file)
+        .expect("the scope belongs to the model"));
+}
+
+#[test]
+fn scoping_queries_fail_fast_on_unknown_ids() {
+    let (_, model) = analyze("local x = 1");
+
+    let error = model
+        .try_find_variable(ScopeId(9_999), "x", ScopeKind::Block)
+        .expect_err("an unknown scope is rejected");
+    assert_eq!(error.code(), "query/unknown-scope");
+    assert!(matches!(error, SemanticQueryError::UnknownScope { .. }));
+
+    let error = model
+        .try_can_be_accessed_in(SymbolId(9_999), model.chunk_scope())
+        .expect_err("an unknown symbol is rejected");
+    assert_eq!(error.code(), "query/unknown-symbol");
+    assert!(matches!(error, SemanticQueryError::UnknownSymbol { .. }));
+
+    let declared = symbol_named(&model, model.chunk_scope(), "x");
+    let error = model
+        .try_can_be_accessed_in(declared, ScopeId(9_999))
+        .expect_err("an unknown scope is rejected");
+    assert_eq!(error.code(), "query/unknown-scope");
 }

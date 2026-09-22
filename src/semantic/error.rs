@@ -3,7 +3,8 @@ use std::fmt;
 use crate::diagnostic::{Diagnostic, TextSpan};
 use crate::nodes::BlockIdentity;
 
-use super::scope::ScopeKind;
+use super::scope::{ScopeId, ScopeKind};
+use super::symbol::SymbolId;
 
 /// Options controlling semantic analysis.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -219,6 +220,16 @@ pub enum SemanticQueryError {
         /// The identifier's name.
         name: String,
     },
+    /// The symbol id is not present in this model.
+    UnknownSymbol {
+        /// The symbol's id.
+        id: SymbolId,
+    },
+    /// The scope id is not present in this model.
+    UnknownScope {
+        /// The scope's id.
+        id: ScopeId,
+    },
 }
 
 impl fmt::Display for SemanticQueryError {
@@ -254,6 +265,12 @@ impl fmt::Display for SemanticQueryError {
                     name
                 )
             }
+            SemanticQueryError::UnknownSymbol { id } => {
+                write!(f, "symbol {} does not belong to this model", id.0)
+            }
+            SemanticQueryError::UnknownScope { id } => {
+                write!(f, "scope {} does not belong to this model", id.0)
+            }
         }
     }
 }
@@ -272,6 +289,8 @@ impl SemanticQueryError {
             SemanticQueryError::UnboundLabel { .. } => "query/unbound-label",
             SemanticQueryError::UnboundType { .. } => "query/unbound-type",
             SemanticQueryError::UnboundOccurrence { .. } => "query/unbound-occurrence",
+            SemanticQueryError::UnknownSymbol { .. } => "query/unknown-symbol",
+            SemanticQueryError::UnknownScope { .. } => "query/unknown-scope",
         }
     }
 
@@ -414,6 +433,14 @@ mod test {
                     name: "y".to_owned(),
                 },
                 "query/unbound-occurrence",
+            ),
+            (
+                SemanticQueryError::UnknownSymbol { id: SymbolId(4) },
+                "query/unknown-symbol",
+            ),
+            (
+                SemanticQueryError::UnknownScope { id: ScopeId(7) },
+                "query/unknown-scope",
             ),
         ];
 

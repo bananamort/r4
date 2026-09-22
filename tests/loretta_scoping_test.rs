@@ -10,7 +10,10 @@
 //! The query tests port Loretta's `Scoping` suite (`FindScopeTests`,
 //! `FindVariableTests`, `CanBeAccessedInTests`, `RenameVariableTests`) onto
 //! r4's semantic model: scope lookup, kind-filtered variable lookup, scope
-//! accessibility and shadowing/rename facts.
+//! accessibility and shadowing/rename facts. They exercise the public
+//! [`SemanticModel::try_find_variable`] and
+//! [`SemanticModel::try_can_be_accessed_in`] queries rather than
+//! re-implementing the algorithms locally.
 
 use r4::nodes::Block;
 use r4::semantic::{ScopeId, ScopeKind, SemanticAnalyzer, SemanticModel, SymbolId};
@@ -31,16 +34,6 @@ fn analyze_block(block: &Block) -> SemanticModel {
     SemanticAnalyzer::new()
         .analyze(block)
         .unwrap_or_else(|error| panic!("failed to analyze: {error}"))
-}
-
-/// The scope-kind rank Loretta uses for its kind-filtered search.
-fn rank(kind: ScopeKind) -> u8 {
-    match kind {
-        ScopeKind::Global => 0,
-        ScopeKind::File => 1,
-        ScopeKind::Function => 2,
-        ScopeKind::Block => 3,
-    }
 }
 
 /// A canonical, index-independent rendering of the scope tree, matching the
@@ -82,42 +75,6 @@ fn canonical(model: &SemanticModel) -> String {
     }
 
     render(model, model.scope(model.root_scope()))
-}
-
-/// Loretta's `IScope.FindVariable(name, kind)`.
-fn find_variable(
-    model: &SemanticModel,
-    scope: ScopeId,
-    name: &str,
-    kind: ScopeKind,
-) -> Option<SymbolId> {
-    let current = model.scope(scope);
-    if let Some(symbol) = current
-        .symbols
-        .iter()
-        .find(|symbol| model.symbol(**symbol).name == name)
-    {
-        return Some(*symbol);
-    }
-    let parent = current.parent?;
-    if rank(model.scope(parent).kind) >= rank(kind) {
-        find_variable(model, parent, name, kind)
-    } else {
-        None
-    }
-}
-
-/// Loretta's `IVariable.CanBeAccessedIn(scope)`.
-fn can_be_accessed_in(model: &SemanticModel, variable: SymbolId, scope: ScopeId) -> bool {
-    let declaring = model.symbol(variable).declaring_scope;
-    let mut current = Some(scope);
-    while let Some(scope) = current {
-        if scope == declaring {
-            return true;
-        }
-        current = model.scope(scope).parent;
-    }
-    false
 }
 
 /// `(source, canonical scope tree)` produced by the packaged Loretta engine.
@@ -218,7 +175,10 @@ end";
         (ScopeKind::Block, "c"),
     ] {
         assert!(
-            find_variable(&model, do_scope, name, kind).is_some(),
+            model
+                .try_find_variable(do_scope, name, kind)
+                .expect("the scope belongs to the model")
+                .is_some(),
             "`{name}` must be found with kind {kind:?}"
         );
     }
@@ -229,7 +189,10 @@ end";
         (ScopeKind::Block, "b"),
     ] {
         assert!(
-            find_variable(&model, do_scope, name, kind).is_none(),
+            model
+                .try_find_variable(do_scope, name, kind)
+                .expect("the scope belongs to the model")
+                .is_none(),
             "`{name}` must not be found with kind {kind:?}"
         );
     }
@@ -247,11 +210,9 @@ fn can_be_accessed_in_matches_loretta() {
         .find(|symbol| model.symbol(**symbol).name == "a")
         .copied()
         .expect("a");
-    assert!(can_be_accessed_in(
-        &model,
-        a,
-        model.symbol(a).declaring_scope
-    ));
+    assert!(model
+        .try_can_be_accessed_in(a, model.symbol(a).declaring_scope)
+        .expect("the scope belongs to the model"));
 
     // Child scope.
     let model = analyze(
@@ -272,7 +233,9 @@ end",
         .find(|symbol| symbol.name == "a")
         .expect("a")
         .id;
-    assert!(can_be_accessed_in(&model, a, block));
+    assert!(model
+        .try_can_be_accessed_in(a, block)
+        .expect("the scope belongs to the model"));
 
     // Parent scope.
     let model = analyze(
@@ -286,7 +249,9 @@ end",
         .find(|symbol| symbol.name == "a")
         .expect("a")
         .id;
-    assert!(!can_be_accessed_in(&model, a, model.chunk_scope()));
+    assert!(!model
+        .try_can_be_accessed_in(a, model.chunk_scope())
+        .expect("the scope belongs to the model"));
 }
 
 #[test]

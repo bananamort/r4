@@ -10,7 +10,8 @@ use std::collections::BTreeSet;
 use r4::cfg::{build_chunk, CfgError, CfgErrorKind};
 use r4::nodes::{Block, BlockIdentity, GotoStatement, Identifier, Statement, TypedIdentifier};
 use r4::semantic::{
-    ScopeKind, SemanticAnalyzer, SemanticErrorKind, SemanticModel, SemanticQueryError,
+    ScopeId, ScopeKind, SemanticAnalyzer, SemanticErrorKind, SemanticModel, SemanticQueryError,
+    SymbolId,
 };
 use r4::Parser;
 
@@ -51,6 +52,8 @@ variant_registry!(QueryErrorTag, SemanticQueryError,
     UnboundLabel => SemanticQueryError::UnboundLabel { .. },
     UnboundType => SemanticQueryError::UnboundType { .. },
     UnboundOccurrence => SemanticQueryError::UnboundOccurrence { .. },
+    UnknownSymbol => SemanticQueryError::UnknownSymbol { .. },
+    UnknownScope => SemanticQueryError::UnknownScope { .. },
 );
 
 variant_registry!(CfgErrorTag, CfgErrorKind,
@@ -177,6 +180,12 @@ fn query_errors_are_all_triggered() {
         model
             .try_binding(&never)
             .expect_err("the occurrence is unbound"),
+        model
+            .try_can_be_accessed_in(SymbolId(9_999), model.chunk_scope())
+            .expect_err("an unknown symbol is rejected"),
+        model
+            .try_find_variable(ScopeId(9_999), "x", ScopeKind::Block)
+            .expect_err("an unknown scope is rejected"),
     ];
 
     let produced: BTreeSet<&'static str> = errors

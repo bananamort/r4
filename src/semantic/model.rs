@@ -429,6 +429,84 @@ impl SemanticModel {
         None
     }
 
+    /// Returns whether `symbol` is accessible from `scope`.
+    ///
+    /// A symbol is accessible from its declaring scope and from every scope
+    /// nested inside it; it is not accessible from an enclosing or unrelated
+    /// scope.
+    ///
+    /// Fails fast with [`SemanticQueryError::UnknownSymbol`] or
+    /// [`SemanticQueryError::UnknownScope`] when an id does not belong to this
+    /// model.
+    pub fn try_can_be_accessed_in(
+        &self,
+        symbol: SymbolId,
+        scope: ScopeId,
+    ) -> Result<bool, SemanticQueryError> {
+        let declaring = self.checked_symbol(symbol)?.declaring_scope;
+        let mut current = Some(scope);
+        while let Some(id) = current {
+            if id == declaring {
+                return Ok(true);
+            }
+            current = self.checked_scope(id)?.parent;
+        }
+        Ok(false)
+    }
+
+    /// Resolves `name` from `scope`, considering only scopes at least as narrow
+    /// as `kind`.
+    ///
+    /// This is the bounded form of [`Self::resolve_in_scope`]: the search starts
+    /// at `scope` and walks outwards, but stops before the first scope whose
+    /// [`ScopeKind::rank`] is smaller than `kind`'s rank. `scope` itself is
+    /// always searched regardless of its kind, matching Loretta's
+    /// `IScope.FindVariable`. Returns `None` when no visible scope declares
+    /// `name`.
+    ///
+    /// Fails fast with [`SemanticQueryError::UnknownScope`] when `scope` does not
+    /// belong to this model.
+    pub fn try_find_variable(
+        &self,
+        scope: ScopeId,
+        name: &str,
+        kind: ScopeKind,
+    ) -> Result<Option<SymbolId>, SemanticQueryError> {
+        let mut current = Some(scope);
+        while let Some(id) = current {
+            let scope = self.checked_scope(id)?;
+            if let Some(symbol) = scope
+                .symbols
+                .iter()
+                .rev()
+                .find(|&&symbol| self.symbols[symbol.index()].name == name)
+            {
+                return Ok(Some(*symbol));
+            }
+            current = match scope.parent {
+                Some(parent) if self.checked_scope(parent)?.kind.rank() >= kind.rank() => {
+                    Some(parent)
+                }
+                _ => None,
+            };
+        }
+        Ok(None)
+    }
+
+    /// Returns the symbol with this id, or a typed error when it is unknown.
+    fn checked_symbol(&self, id: SymbolId) -> Result<&Symbol, SemanticQueryError> {
+        self.symbols
+            .get(id.index())
+            .ok_or(SemanticQueryError::UnknownSymbol { id })
+    }
+
+    /// Returns the scope with this id, or a typed error when it is unknown.
+    fn checked_scope(&self, id: ScopeId) -> Result<&Scope, SemanticQueryError> {
+        self.scopes
+            .get(id.index())
+            .ok_or(SemanticQueryError::UnknownScope { id })
+    }
+
     /// Resolves `name` at a declaration position inside `scope`.
     ///
     /// `declared` maps scopes of the active chain (starting at `scope`) to the

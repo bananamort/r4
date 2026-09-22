@@ -47,6 +47,24 @@ impl ScopeKind {
             ScopeKind::Block => "block",
         }
     }
+
+    /// The narrowing rank of this kind, from the outermost `Global` (`0`) to the
+    /// innermost `Block` (`3`).
+    ///
+    /// Bounded lookups such as
+    /// [`SemanticModel::try_find_variable`](super::SemanticModel::try_find_variable)
+    /// only leave a scope through its parent while the parent's rank is greater
+    /// than or equal to the requested kind's rank, so a `Block` request never
+    /// reaches an enclosing file or function scope.
+    #[inline]
+    pub const fn rank(self) -> u8 {
+        match self {
+            ScopeKind::Global => 0,
+            ScopeKind::File => 1,
+            ScopeKind::Function => 2,
+            ScopeKind::Block => 3,
+        }
+    }
 }
 
 /// A lexical scope.
