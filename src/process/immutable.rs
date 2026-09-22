@@ -4,8 +4,7 @@
 //! [`ImmutableProcessor`] through its hooks. Unlike
 //! [`NodeProcessor`](crate::process::NodeProcessor), it never mutates a node and
 //! never clones the tree to inspect it, and the processor accumulates a result
-//! across the traversal (the result-carrying counterpart of Loretta's
-//! `LuaSyntaxVisitor<TResult>`).
+//! across the traversal (a result-carrying traversal).
 //!
 //! The traversal covers every statement, expression, prefix, variable, type and
 //! function signature, so a processor cannot miss a node because a kind was not

@@ -1,4 +1,4 @@
-//! Tests for the programmatic (Loretta/Roslyn-style) API surface:
+//! Tests for the programmatic AST-building API surface:
 //! semantic constant injection, path aliases, exported-type hoisting and
 //! generator-level minification.
 

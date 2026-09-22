@@ -1,19 +1,24 @@
-//! Loretta scoping parity against a frozen snapshot of the published engine.
+//! Scope-tree and scoping-query expectations.
 //!
-//! The expected scope trees below were captured from the published
-//! `Loretta.CodeAnalysis.Lua` 0.2.14-nightly.26 package (nuget.org), the
-//! release this snapshot was taken from; they are recorded data that r4 must
-//! reproduce exactly. The snapshot drops Loretta's implicit `...`/`arg` file
-//! and variadic parameters, which r4 does not model as symbols; every other
-//! scope kind, nesting, declaration and label must match.
+//! Two kinds of expectation live here:
 //!
-//! The query tests port Loretta's `Scoping` suite (`FindScopeTests`,
-//! `FindVariableTests`, `CanBeAccessedInTests`, `RenameVariableTests`) onto
-//! r4's semantic model: scope lookup, kind-filtered variable lookup, scope
-//! accessibility and shadowing/rename facts. They exercise the public
-//! [`SemanticModel::try_find_variable`] and
-//! [`SemanticModel::try_can_be_accessed_in`] queries rather than
-//! re-implementing the algorithms locally.
+//! * [`EXPECTED_SCOPE_TREES`] records the exact scope tree a corpus of programs
+//!   must produce — every scope kind, nesting, declared variable and label;
+//! * the query tests pin scope lookup, kind-bounded variable lookup, symbol
+//!   accessibility and single-symbol rename through the public
+//!   [`SemanticModel::try_find_variable`] and
+//!   [`SemanticModel::try_can_be_accessed_in`] queries.
+//!
+//! The recorded trees are fixed expectations, not something the repository can
+//! re-derive; change them only deliberately. They omit the implicit `...` and
+//! `arg` parameters of the chunk and of variadic functions, which r4 does not
+//! model as symbols.
+//!
+//! A second, parallel scope model is deliberately *not* used as an oracle here:
+//! it would share the same author, spec reading and AST as the analyzer and so
+//! would mostly restate it. The independent check is the brute-force positional
+//! differential in `bounded_enumeration_test.rs`, which uses a different method
+//! rather than a second implementation.
 
 use r4::nodes::Block;
 use r4::semantic::{ScopeId, ScopeKind, SemanticAnalyzer, SemanticModel, SymbolId};
@@ -36,8 +41,9 @@ fn analyze_block(block: &Block) -> SemanticModel {
         .unwrap_or_else(|error| panic!("failed to analyze: {error}"))
 }
 
-/// A canonical, index-independent rendering of the scope tree, matching the
-/// oracle's format.
+/// A canonical, index-independent rendering of the scope tree: each scope is
+/// `Kind(vars=[name:Kind,...];labels=[...];children=[...])` with every list
+/// sorted, so the rendering does not depend on arena order.
 fn canonical(model: &SemanticModel) -> String {
     fn render(model: &SemanticModel, scope: &r4::semantic::Scope) -> String {
         let mut variables: Vec<String> = scope
@@ -77,8 +83,8 @@ fn canonical(model: &SemanticModel) -> String {
     render(model, model.scope(model.root_scope()))
 }
 
-/// `(source, canonical scope tree)` produced by the packaged Loretta engine.
-const LORETTA_SCOPE_TREES: &[(&str, &str)] = &[
+/// `(source, canonical scope tree)` that each program must produce exactly.
+const EXPECTED_SCOPE_TREES: &[(&str, &str)] = &[
     ("print 'Hello'", "Global(vars=[print:Global];labels=[];children=[File(vars=[];labels=[];children=[])])"),
     ("local function a() end", "Global(vars=[];labels=[];children=[File(vars=[a:Local];labels=[];children=[Function(vars=[];labels=[];children=[])])])"),
     ("(function(Variable) end)()", "Global(vars=[];labels=[];children=[File(vars=[];labels=[];children=[Function(vars=[Variable:Parameter];labels=[];children=[])])])"),
@@ -97,11 +103,12 @@ const LORETTA_SCOPE_TREES: &[(&str, &str)] = &[
     ("local f = function(p, ...) return p end", "Global(vars=[];labels=[];children=[File(vars=[f:Local];labels=[];children=[Function(vars=[p:Parameter];labels=[];children=[])])])"),
     ("local a, b = 1, 2\nreturn a, b", "Global(vars=[];labels=[];children=[File(vars=[a:Local,b:Local];labels=[];children=[])])"),
     ("local a = 1\nlocal function f() return a end\nreturn f", "Global(vars=[];labels=[];children=[File(vars=[a:Local,f:Local];labels=[];children=[Function(vars=[];labels=[];children=[])])])"),
-    ("local x = 1\nlocal function outer()\n\tlocal y = 2\n\tlocal function inner() return x + y end\n\treturn inner\nend\nreturn outer", "Global(vars=[];labels=[];children=[File(vars=[outer:Local,x:Local];labels=[];children=[Function(vars=[inner:Local,y:Local];labels=[];children=[Function(vars=[];labels=[];children=[])])])])"),];
+    ("local x = 1\nlocal function outer()\n\tlocal y = 2\n\tlocal function inner() return x + y end\n\treturn inner\nend\nreturn outer", "Global(vars=[];labels=[];children=[File(vars=[outer:Local,x:Local];labels=[];children=[Function(vars=[inner:Local,y:Local];labels=[];children=[Function(vars=[];labels=[];children=[])])])])"),
+];
 
 #[test]
-fn scope_trees_match_the_packaged_loretta_engine() {
-    for (code, expected) in LORETTA_SCOPE_TREES {
+fn scope_trees_match_the_recorded_expectations() {
+    for (code, expected) in EXPECTED_SCOPE_TREES {
         let model = analyze(code);
         assert_eq!(
             canonical(&model),
@@ -112,15 +119,15 @@ fn scope_trees_match_the_packaged_loretta_engine() {
 }
 
 #[test]
-fn find_scope_matches_loretta() {
-    // CompilationUnit_HasFileScope / FindScope_OnRootElement_ReturnsRootScope.
+fn find_scope_returns_the_nearest_enclosing_scope() {
+    // The chunk block is a file scope whose parent is the global scope.
     let model = analyze("print 'Hello'");
     let chunk = model.try_scope_of(&parse("print 'Hello'")).ok();
     let chunk = chunk.unwrap_or_else(|| model.chunk_scope());
     assert_eq!(model.scope(chunk).kind, ScopeKind::File);
     assert_eq!(model.scope(chunk).parent, Some(model.root_scope()));
 
-    // FindScope_LocalFunctionIsParsed.
+    // A local function adds exactly one function scope.
     let model = analyze("local function a() end");
     let file = model.chunk_scope();
     assert_eq!(model.scope(file).children.len(), 1);
@@ -129,7 +136,7 @@ fn find_scope_matches_loretta() {
         ScopeKind::Function
     );
 
-    // FindScope_AnonymousFunctionIsParsed.
+    // An anonymous function adds exactly one function scope too.
     let model = analyze("(function(Variable) end)()");
     let file = model.chunk_scope();
     assert_eq!(model.scope(file).children.len(), 1);
@@ -140,10 +147,9 @@ fn find_scope_matches_loretta() {
 }
 
 #[test]
-fn find_variable_matches_loretta() {
-    // ScriptTestsBase::SetupScriptAsync, flattened into one file (`glob = 2` is
-    // a global, so it lands in the global scope exactly as in the two-tree
-    // Script).
+fn find_variable_respects_the_scope_kind_bound() {
+    // `glob` is a global, `a` a file local, `b` a parameter and `c` a block
+    // local; the query starts from the innermost `do` block.
     let code = "glob = 2
 local a = 1
 function f(b)
@@ -154,14 +160,15 @@ function f(b)
 end";
     let model = analyze(code);
 
-    // The innermost scope is the `do` block inside `f`.
     let do_scope = model
         .scopes
         .iter()
         .find(|scope| scope.kind == ScopeKind::Block)
-        .expect("the script has a do block")
+        .expect("the program has a do block")
         .id;
 
+    // A lookup reaches each declaration exactly when the bound is at least as
+    // narrow as the declaring scope.
     for (kind, name) in [
         (ScopeKind::Global, "glob"),
         (ScopeKind::Global, "a"),
@@ -183,6 +190,7 @@ end";
         );
     }
 
+    // A lookup never widens past the requested kind.
     for (kind, name) in [
         (ScopeKind::File, "glob"),
         (ScopeKind::Function, "a"),
@@ -199,8 +207,8 @@ end";
 }
 
 #[test]
-fn can_be_accessed_in_matches_loretta() {
-    // Same scope.
+fn can_be_accessed_in_walks_the_scope_chain() {
+    // A symbol is accessible in its own scope.
     let model = analyze("local a = 1 print(a)");
     let file = model.chunk_scope();
     let a = model
@@ -214,7 +222,7 @@ fn can_be_accessed_in_matches_loretta() {
         .try_can_be_accessed_in(a, model.symbol(a).declaring_scope)
         .expect("the scope belongs to the model"));
 
-    // Child scope.
+    // ... and in every nested scope.
     let model = analyze(
         "local a = 1
 do
@@ -237,7 +245,7 @@ end",
         .try_can_be_accessed_in(a, block)
         .expect("the scope belongs to the model"));
 
-    // Parent scope.
+    // ... but not in an enclosing scope.
     let model = analyze(
         "do
 	local a = 1
@@ -255,7 +263,7 @@ end",
 }
 
 #[test]
-fn rename_scoping_matches_loretta() {
+fn rename_symbol_renames_a_single_shadowed_local() {
     use r4::generator::{LuaGenerator, ReadableLuaGenerator};
     use r4::rules::rename_variables::{rename_symbol, RenameSymbolError};
 
@@ -269,7 +277,7 @@ fn rename_scoping_matches_loretta() {
             .unwrap_or_else(|| panic!("symbol `{name}`"))
     }
 
-    // RenameVariable_ReturnsErrorForUnsupportedIdentifier.
+    // A name that is not a valid identifier is rejected.
     let code = "local a = 2";
     let mut block = parse(code);
     let model = analyze_block(&block);
@@ -281,7 +289,7 @@ fn rename_scoping_matches_loretta() {
         RenameSymbolError::UnsupportedIdentifier { .. }
     ));
 
-    // RenameVariable_ReturnsErrorForConflictingVariable.
+    // Renaming onto a name that is already visible is a conflict.
     let code = "local a, b = 2, 3";
     let mut block = parse(code);
     let model = analyze_block(&block);
@@ -290,8 +298,8 @@ fn rename_scoping_matches_loretta() {
     assert_eq!(error.code(), "rename/conflict");
     assert!(matches!(error, RenameSymbolError::Conflict { .. }));
 
-    // RenameVariable_ReturnsCorrectlyRenamedScript: the first `a` is shadowed
-    // by the local function `a`, and only the first is renamed.
+    // Only the targeted declaration is renamed: a later declaration that
+    // shadows it keeps its own name.
     let code = "local a = 2\nlocal function a() end";
     let mut block = parse(code);
     let model = analyze_block(&block);
@@ -310,7 +318,7 @@ fn rename_scoping_matches_loretta() {
     assert!(output.contains("local b = 2"), "unexpected: {output}");
     assert!(
         output.contains("local function a()"),
-        "the shadowing local function must be untouched: {output}"
+        "the shadowing declaration must be untouched: {output}"
     );
     assert!(
         !output.contains("local function b()"),

@@ -1,7 +1,7 @@
 //! A cohesive factory for constructing syntax nodes, tokens and trivia.
 //!
-//! [`SyntaxFactory`] is the Loretta-style entry point for building an AST
-//! programmatically. It groups the node constructors and the `with_*` builders
+//! [`SyntaxFactory`] is the entry point for building an AST programmatically.
+//! It groups the node constructors and the `with_*` builders
 //! behind one namespace and adds the convenience combinations that otherwise
 //! take several calls. Everything it returns is an ordinary node: the factory
 //! never attaches tokens or trivia unless a caller adds them, so a built tree

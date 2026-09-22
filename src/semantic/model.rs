@@ -460,9 +460,8 @@ impl SemanticModel {
     /// This is the bounded form of [`Self::resolve_in_scope`]: the search starts
     /// at `scope` and walks outwards, but stops before the first scope whose
     /// [`ScopeKind::rank`] is smaller than `kind`'s rank. `scope` itself is
-    /// always searched regardless of its kind, matching Loretta's
-    /// `IScope.FindVariable`. Returns `None` when no visible scope declares
-    /// `name`.
+    /// always searched regardless of its kind. Returns `None` when no visible
+    /// scope declares `name`.
     ///
     /// Fails fast with [`SemanticQueryError::UnknownScope`] when `scope` does not
     /// belong to this model.
