@@ -1,11 +1,11 @@
-//! Loretta scoping parity, verified against the published Loretta NuGet package.
+//! Loretta scoping parity against a frozen snapshot of the published engine.
 //!
-//! The expected scope trees below were produced by running the official latest
-//! published package (`Loretta.CodeAnalysis.Lua` 0.2.14-nightly.26, restored
-//! from nuget.org) through `tools/loretta-oracle`, never the vendored checkout
-//! under `references/`. The oracle drops Loretta's implicit `...`/`arg` file
+//! The expected scope trees below were captured from the published
+//! `Loretta.CodeAnalysis.Lua` 0.2.14-nightly.26 package (nuget.org), the
+//! release this snapshot was taken from; they are recorded data that r4 must
+//! reproduce exactly. The snapshot drops Loretta's implicit `...`/`arg` file
 //! and variadic parameters, which r4 does not model as symbols; every other
-//! scope kind, nesting, declaration and label must match exactly.
+//! scope kind, nesting, declaration and label must match.
 //!
 //! The query tests port Loretta's `Scoping` suite (`FindScopeTests`,
 //! `FindVariableTests`, `CanBeAccessedInTests`, `RenameVariableTests`) onto
