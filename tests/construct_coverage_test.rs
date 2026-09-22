@@ -23,13 +23,13 @@ use r4::nodes::{
     Arguments, AssignmentKind, Attribute, AttributeArguments, AttributeGroup,
     AttributeGroupElement, AttributeTupleArguments, Attributes, BinaryExpression, BinaryOperator,
     Block, ChildVisitor, CompoundOperator, DecimalNumber, Expression, FunctionReturnType,
-    FunctionStatement, FunctionVariadicType, GenericParameterRef, GenericParameters,
-    GenericParametersWithDefaults, GenericTypePack, Identifier, InterpolationSegment,
-    LastStatement, LiteralExpression, LiteralTable, LiteralTableEntry, NumberExpression, Prefix,
-    ReadOnlyChildren, ReturnStatement, Statement, StringExpression, TableEntry, TableEntryType,
-    TableExpression, TablePropertyModifier, TriviaKind, Type, TypeName, TypePack, TypeParameter,
-    TypedIdentifier, UnaryExpression, UnaryOperator, Variable, VariadicArgumentType,
-    VariadicTypePack,
+    FunctionStatement, FunctionVariadicType, GenericParameter, GenericParameterRef,
+    GenericParameters, GenericParametersWithDefaults, GenericTypePack, GenericTypePackDefault,
+    Identifier, InterpolationSegment, LastStatement, LiteralExpression, LiteralTable,
+    LiteralTableEntry, NumberExpression, Prefix, ReadOnlyChildren, ReturnStatement, Statement,
+    StringExpression, TableEntry, TableEntryType, TableExpression, TablePropertyModifier,
+    TriviaKind, Type, TypeName, TypePack, TypeParameter, TypedIdentifier, UnaryExpression,
+    UnaryOperator, Variable, VariadicArgumentType, VariadicTypePack,
 };
 use r4::process::collect_trivia;
 use r4::semantic::SemanticAnalyzer;
@@ -43,6 +43,7 @@ use r4::{Equivalent, Parser};
 macro_rules! variant_registry {
     ($tag:ident, $ast:ty, $( $variant:ident => $pattern:pat ),* $(,)?) => {
         #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+        #[allow(clippy::enum_variant_names)]
         enum $tag { $( $variant ),* }
 
         impl $tag {
@@ -269,6 +270,25 @@ variant_registry!(GenericParameterTag, GenericParameterRef<'_>,
     GenericTypePackWithDefault => GenericParameterRef::GenericTypePackWithDefault(_),
 );
 
+variant_registry!(ArgumentsTag, Arguments,
+    Tuple => Arguments::Tuple(_),
+    String => Arguments::String(_),
+    Table => Arguments::Table(_),
+);
+
+variant_registry!(GenericTypePackDefaultTag, GenericTypePackDefault,
+    TypePack => GenericTypePackDefault::TypePack(_),
+    VariadicTypePack => GenericTypePackDefault::VariadicTypePack(_),
+    GenericTypePack => GenericTypePackDefault::GenericTypePack(_),
+);
+
+variant_registry!(OwnedGenericParameterTag, GenericParameter,
+    TypeVariable => GenericParameter::TypeVariable(_),
+    TypeVariableWithDefault => GenericParameter::TypeVariableWithDefault(_),
+    GenericTypePack => GenericParameter::GenericTypePack(_),
+    GenericTypePackWithDefault => GenericParameter::GenericTypePackWithDefault(_),
+);
+
 variant_registry!(TriviaKindTag, TriviaKind,
     Shebang => TriviaKind::Shebang,
     Comment => TriviaKind::Comment,
@@ -307,6 +327,9 @@ fn all_tags() -> BTreeSet<String> {
         FunctionVariadicTypeTag,
         TypeParameterTag,
         GenericParameterTag,
+        OwnedGenericParameterTag,
+        ArgumentsTag,
+        GenericTypePackDefaultTag,
         TriviaKindTag,
     );
     tags
@@ -433,17 +456,27 @@ impl ChildVisitor for TagCollector {
     }
 
     fn generic_parameters(&mut self, parameters: &GenericParameters) {
-        for _ in parameters.iter_type_variable() {
+        for identifier in parameters.iter_type_variable() {
             self.seen.insert(format!(
                 "GenericParameterTag::{}",
                 GenericParameterTag::TypeVariable.name()
             ));
+            record!(
+                self.seen,
+                OwnedGenericParameterTag,
+                &GenericParameter::TypeVariable(identifier.clone())
+            );
         }
-        for _ in parameters.iter_generic_type_pack() {
+        for generic in parameters.iter_generic_type_pack() {
             self.seen.insert(format!(
                 "GenericParameterTag::{}",
                 GenericParameterTag::GenericTypePack.name()
             ));
+            record!(
+                self.seen,
+                OwnedGenericParameterTag,
+                &GenericParameter::GenericTypePack(Box::new(generic.clone()))
+            );
         }
         parameters.for_each_child(self);
     }
@@ -451,6 +484,26 @@ impl ChildVisitor for TagCollector {
     fn generic_parameters_with_defaults(&mut self, parameters: &GenericParametersWithDefaults) {
         for parameter in parameters.iter() {
             record!(self.seen, GenericParameterTag, &parameter);
+            let owned = match &parameter {
+                GenericParameterRef::TypeVariable(identifier) => {
+                    GenericParameter::TypeVariable((*identifier).clone())
+                }
+                GenericParameterRef::TypeVariableWithDefault(default) => {
+                    GenericParameter::TypeVariableWithDefault(Box::new((*default).clone()))
+                }
+                GenericParameterRef::GenericTypePack(generic) => {
+                    GenericParameter::GenericTypePack(Box::new((*generic).clone()))
+                }
+                GenericParameterRef::GenericTypePackWithDefault(default) => {
+                    record!(
+                        self.seen,
+                        GenericTypePackDefaultTag,
+                        default.get_default_type()
+                    );
+                    GenericParameter::GenericTypePackWithDefault(Box::new((*default).clone()))
+                }
+            };
+            record!(self.seen, OwnedGenericParameterTag, &owned);
         }
         parameters.for_each_child(self);
     }
@@ -514,6 +567,7 @@ impl ChildVisitor for TagCollector {
     }
 
     fn arguments(&mut self, arguments: &Arguments) {
+        record!(self.seen, ArgumentsTag, arguments);
         arguments.for_each_child(self);
     }
 }
@@ -629,6 +683,7 @@ fn corpus() -> &'static [(&'static str, bool)] {
         ("type A<T, U...> = number", false),
         ("type A<T = string, U... = ...number> = number", false),
         ("type A<T... = (number, string)> = number", false),
+        ("type A<G..., H... = G...> = number", false),
         // function signatures with variadic types
         ("local function f(...: number) end", false),
         ("local function f<T...>(...: T...) end", false),
