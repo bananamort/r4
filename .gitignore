@@ -15,3 +15,7 @@ Thumbs.db
 # Insta snapshot temporary diffs
 *.snap.new
 *.pending-snap
+
+# .NET build output for the Loretta oracle
+tools/**/bin/
+tools/**/obj/
