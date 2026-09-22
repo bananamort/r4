@@ -195,8 +195,9 @@ impl Visibilities {
     }
 }
 
-fn collect_visibilities(block: &Block, model: &SemanticModel) -> Visibilities {
+fn collect_visibilities(code: &str, block: &Block, model: &SemanticModel) -> Visibilities {
     struct Collector<'a> {
+        code: &'a str,
         model: &'a SemanticModel,
         starts: HashMap<SymbolId, usize>,
     }
@@ -205,8 +206,15 @@ fn collect_visibilities(block: &Block, model: &SemanticModel) -> Visibilities {
         fn process_local_assign_statement(&mut self, assignment: &mut VariableAssignment) {
             // A `local` becomes visible after its whole statement, so the last
             // token of its values is the boundary (`local x = x` therefore
-            // binds the initializer to the outer `x`).
-            let end = assignment.mutate_last_token().get_end().unwrap_or(0);
+            // binds the initializer to the outer `x`). The program is parsed
+            // with tokens preserved, so a missing position is a defect, not a
+            // case to paper over.
+            let end = assignment.mutate_last_token().get_end().unwrap_or_else(|| {
+                panic!(
+                    "a local declaration has no positioned last token in `{}`",
+                    self.code
+                )
+            });
             for variable in assignment.iter_variables() {
                 if let Ok(symbol) = self.model.try_declared_symbol(variable.get_identifier()) {
                     self.starts.insert(symbol, end);
@@ -219,6 +227,7 @@ fn collect_visibilities(block: &Block, model: &SemanticModel) -> Visibilities {
     // from a scratch copy to leave the analyzed tree untouched.
     let mut scratch = block.clone();
     let mut collector = Collector {
+        code,
         model,
         starts: HashMap::new(),
     };
@@ -294,7 +303,7 @@ fn brute_force_symbol(
 /// program, and returns how many reference resolutions were compared. The AST
 /// must have been parsed with tokens preserved.
 fn assert_resolution_is_sound(code: &str, block: &Block, model: &SemanticModel) -> usize {
-    let visibilities = collect_visibilities(block, model);
+    let visibilities = collect_visibilities(code, block, model);
     let mut checked = 0;
 
     // The source name of every identifier, keyed by its offset, so an

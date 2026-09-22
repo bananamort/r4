@@ -9,10 +9,11 @@
 //!   [`SemanticModel::try_find_variable`] and
 //!   [`SemanticModel::try_can_be_accessed_in`] queries.
 //!
-//! The recorded trees are fixed expectations, not something the repository can
-//! re-derive; change them only deliberately. They omit the implicit `...` and
-//! `arg` parameters of the chunk and of variadic functions, which r4 does not
-//! model as symbols.
+//! The recorded trees were produced by the scoping engine of an external,
+//! independently written Lua compiler and are fixed expectations, not something
+//! the repository can re-derive; change them only deliberately. They omit the
+//! implicit `...` and `arg` parameters of the chunk and of variadic functions,
+//! which r4 does not model as symbols.
 //!
 //! A second, parallel scope model is deliberately *not* used as an oracle here:
 //! it would share the same author, spec reading and AST as the analyzer and so
