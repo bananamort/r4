@@ -295,3 +295,55 @@ fn require_passes_produce_valid_output_without_requires() {
         });
     }
 }
+
+/// A rename must preserve the shape of the symbol graph: the same symbols with
+/// the same kinds, implicitness and access counts. Only names may change, so a
+/// bug that renames a syntactically fixed symbol (a colon receiver has no
+/// declaration to rename) shows up as a changed shape or a spurious global.
+fn symbol_shape(model: &SemanticModel) -> Vec<(&'static str, bool, usize, usize)> {
+    let mut shape: Vec<_> = model
+        .symbols
+        .iter()
+        .map(|symbol| {
+            (
+                symbol.kind.as_str(),
+                symbol.is_implicit(),
+                symbol.read_count,
+                symbol.write_count,
+            )
+        })
+        .collect();
+    shape.sort_unstable();
+    shape
+}
+
+/// Programs that only the rename oracle uses: colon methods, whose implicit
+/// receiver must survive renaming.
+const RENAME_PROGRAMS: &[&str] = &[
+    "local t = {}\nfunction t:m(x) return self, x end\nreturn t",
+    "local t = {}\nfunction t:m() local y = self return y end\nreturn t",
+];
+
+#[test]
+fn rename_preserves_the_symbol_graph() {
+    for code in PROGRAMS.iter().chain(RENAME_PROGRAMS).copied() {
+        let block = parse(code);
+        let model = analyze(&block);
+        let before = symbol_shape(&model);
+
+        let mut renamed = block.clone();
+        ensure_ok(
+            rename_variables::rename_variables(&mut renamed, &model),
+            "rename_variables",
+            code,
+        );
+
+        let output = render(&renamed);
+        let after = symbol_shape(&analyze(&parse(&output)));
+
+        assert_eq!(
+            before, after,
+            "renaming changed the symbol graph of `{code}`:\n{output}"
+        );
+    }
+}

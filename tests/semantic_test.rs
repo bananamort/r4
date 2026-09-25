@@ -274,6 +274,11 @@ fn method_functions_declare_implicit_self() {
     assert_eq!(self_symbol.len(), 1);
     assert_eq!(self_symbol[0].kind, SymbolKind::Parameter);
     assert_eq!(self_symbol[0].read_count, 1);
+    assert_eq!(self_symbol[0].name, "self");
+    assert!(
+        self_symbol[0].is_implicit(),
+        "a colon receiver has no declaration node, so it must be flagged implicit"
+    );
 }
 
 #[test]

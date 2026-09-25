@@ -279,7 +279,8 @@ fn pipeline_preserves_strict_semantics_of_a_shadowing_program() {
 
 /// Attribute names, field names and type names are not variable bindings, so
 /// they must never reach `process_variable_expression`: renaming must succeed
-/// on attribute code and leave every name that is not a binding untouched.
+/// on attribute code and leave every name that is not a renamable binding
+/// untouched — including the receiver a colon method introduces implicitly.
 #[test]
 fn renaming_survives_names_that_are_not_bindings() {
     for (code, preserved) in [
@@ -294,12 +295,12 @@ fn renaming_survives_names_that_are_not_bindings() {
             &["field_name"][..],
         ),
         (
-            "local obj = {}\nfunction obj:method_name() end\nreturn obj",
-            &["method_name"][..],
+            "local obj = {}\nfunction obj:method_name() return self end\nreturn obj",
+            &["method_name", "self"][..],
         ),
         (
-            "local obj = {}\nfunction obj.inner.deep:method_name() end\nreturn obj",
-            &["inner", "deep", "method_name"][..],
+            "local obj = {}\nfunction obj.inner.deep:method_name(a) return self, a end\nreturn obj",
+            &["inner", "deep", "method_name", "self"][..],
         ),
         (
             "local obj = {}\nlocal value = obj.field_name\nreturn value",
