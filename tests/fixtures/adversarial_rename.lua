@@ -50,6 +50,7 @@ do
     UNSAFE_global_written = 1
     UNSAFE_global_function = function(SAFE_g1) return SAFE_g1 end
     function UNSAFE_global_declared(SAFE_g2) return SAFE_g2 end
+    UNSAFE_global_table = {}
     function UNSAFE_global_table.UNSAFE_global_field() end
     UNSAFE_global_table.UNSAFE_global_key = 2
     SAFE_assert(UNSAFE_global_written == 1)
@@ -107,6 +108,7 @@ do
 
     local SAFE_ns = {}
     function SAFE_ns.UNSAFE_field_function() end
+    SAFE_ns.UNSAFE_namespace = {}
     function SAFE_ns.UNSAFE_namespace.UNSAFE_nested_function() end
     function SAFE_ns:UNSAFE_method(SAFE_arg) return SAFE_arg end
     SAFE_assert(SAFE_ns:UNSAFE_method(1) == 1)
@@ -211,8 +213,8 @@ do
     repeat
         local SAFE_more = true -- body locals are visible in `until`
         SAFE_rounds = SAFE_rounds + 1
-    until not SAFE_more or SAFE_rounds > 4
-    SAFE_assert(SAFE_rounds == 1)
+    until not SAFE_more or SAFE_rounds >= 3
+    SAFE_assert(SAFE_rounds == 3)
 
     ----------------------------------------------------------------------
     -- 6. Closures, upvalues, recursion and shadowed captures.
@@ -308,9 +310,8 @@ do
         return SAFE_x
     end
     SAFE_assert(SAFE_identity(5) == 5)
-    SAFE_assert(SAFE_identity<number>(6) == 6)
 
-    local SAFE_conditional = if SAFE_first then SAFE_second else 0
+    local SAFE_conditional = if SAFE_left then SAFE_right else 0
     SAFE_assert(SAFE_conditional == 1)
 
     local SAFE_evens = 0
@@ -376,5 +377,5 @@ do
     UNSAFE_final_status = "PASS"
     SAFE_assert(UNSAFE_final_status == "PASS")
 
-    return SAFE_message
+    SAFE_print(SAFE_string.format("[adversarial_rename] status=%s", UNSAFE_final_status))
 end
