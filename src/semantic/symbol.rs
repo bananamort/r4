@@ -56,6 +56,13 @@ pub struct Symbol {
     pub name: String,
     /// The kind of declaration that introduced this symbol.
     pub kind: SymbolKind,
+    /// Whether analysis synthesized this symbol instead of reading it from an
+    /// explicit declaration node.
+    ///
+    /// A colon method (`function t:m() ... end`) binds an implicit receiver, and
+    /// an implicit global is never declared by a node. Neither has a declaration
+    /// to rewrite, so a rename pass must leave their occurrences alone.
+    pub implicit: bool,
     /// The scope in which this symbol was declared.
     pub declaring_scope: ScopeId,
     /// Function scopes that capture this symbol as an upvalue. The direct use is
@@ -83,6 +90,16 @@ impl Symbol {
     #[inline]
     pub fn is_local(&self) -> bool {
         self.kind != SymbolKind::Global
+    }
+
+    /// Returns whether analysis synthesized this symbol rather than reading it
+    /// from an explicit declaration node.
+    ///
+    /// An implicit symbol has no declaration to rewrite, so its occurrences must
+    /// not be renamed.
+    #[inline]
+    pub fn is_implicit(&self) -> bool {
+        self.implicit
     }
 }
 

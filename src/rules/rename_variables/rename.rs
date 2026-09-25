@@ -44,13 +44,16 @@ pub struct RenameOptions {
     pub reserved_names: Vec<String>,
 }
 
-/// Renames every non-global symbol to a short generated identifier.
+/// Renames every renamable non-global symbol to a short generated identifier.
 ///
 /// Symbols are renamed by their [`SymbolId`] bindings, so shadowed locals,
 /// parameters, iteration variables and captured upvalues are rewritten
-/// consistently regardless of their names. Global symbols keep their names;
-/// generated identifiers are globally unique and avoid every global, every
-/// original symbol name, the default host globals and Lua keywords.
+/// consistently regardless of their names. Global symbols keep their names, and
+/// so do implicit symbols: a symbol analysis synthesized — the receiver a colon
+/// method introduces, or an implicit global — has no declaration to rewrite, so
+/// renaming only its occurrences would break the program. Generated identifiers
+/// are globally unique and avoid every global, every original symbol name, the
+/// default host globals and Lua keywords.
 ///
 /// Identifiers are resolved through the structural bindings recorded by
 /// semantic analysis, so the pass works on token-less trees. When any
@@ -71,7 +74,7 @@ pub fn rename_variables_with_options(
     let candidates: Vec<SymbolId> = model
         .symbols
         .iter()
-        .filter(|symbol| symbol.kind != SymbolKind::Global)
+        .filter(|symbol| symbol.kind != SymbolKind::Global && !symbol.is_implicit())
         .map(|symbol| symbol.id)
         .collect();
 
@@ -262,6 +265,8 @@ pub enum RenameSymbolError {
     },
     /// The symbol is not part of the semantic model.
     UnknownSymbol,
+    /// The symbol was synthesized by analysis and has no declaration to rename.
+    ImplicitSymbol,
     /// A variable with the requested name is visible where the renamed symbol
     /// is, so the rename would capture or be captured.
     Conflict {
@@ -281,6 +286,7 @@ impl RenameSymbolError {
         match self {
             RenameSymbolError::UnsupportedIdentifier { .. } => "rename/unsupported-identifier",
             RenameSymbolError::UnknownSymbol => "rename/unknown-symbol",
+            RenameSymbolError::ImplicitSymbol => "rename/implicit-symbol",
             RenameSymbolError::Conflict { .. } => "rename/conflict",
             RenameSymbolError::UnresolvedIdentifier { .. } => "rename/unresolved-identifier",
         }
@@ -294,6 +300,9 @@ impl fmt::Display for RenameSymbolError {
                 write!(f, "`{name}` is not a valid identifier")
             }
             RenameSymbolError::UnknownSymbol => write!(f, "the symbol is not in the model"),
+            RenameSymbolError::ImplicitSymbol => {
+                write!(f, "the symbol has no declaration to rename")
+            }
             RenameSymbolError::Conflict { name } => write!(
                 f,
                 "renaming to `{name}` would conflict with a visible variable"
@@ -328,6 +337,9 @@ pub fn rename_symbol(
     }
     if model.symbols.get(symbol.index()).map(|symbol| symbol.id) != Some(symbol) {
         return Err(RenameSymbolError::UnknownSymbol);
+    }
+    if model.symbol(symbol).is_implicit() {
+        return Err(RenameSymbolError::ImplicitSymbol);
     }
     validate_identifiers(block, model).map_err(|error| match error {
         RenameError::UnresolvedIdentifier { name } => {

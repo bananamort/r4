@@ -324,3 +324,177 @@ fn renaming_survives_names_that_are_not_bindings() {
         analyze_output(&output);
     }
 }
+
+#[test]
+fn colon_method_receiver_is_not_renamed() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local t = {}
+        function t:method(a)
+            self.value = a
+            return self.value
+        end
+        return t
+        "#,
+    );
+
+    let receiver = model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "self")
+        .expect("the colon method binds an implicit receiver");
+    assert!(receiver.is_implicit());
+    assert_eq!(receiver.kind, SymbolKind::Parameter);
+
+    // Only `t` and the explicit parameter `a` are renamable.
+    let renamed = rename_variables::rename_variables(&mut block, &model)
+        .expect("renaming must succeed with tokens");
+    assert_eq!(renamed, 2);
+
+    let output = generate(&block);
+    let after = analyze_output(&output);
+
+    let receivers: Vec<_> = after
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.name == "self")
+        .collect();
+    assert_eq!(
+        receivers.len(),
+        1,
+        "the implicit receiver must keep `self`: {output}"
+    );
+    assert!(receivers[0].is_implicit());
+    assert_eq!(
+        receivers[0].read_count, 2,
+        "both `self` reads must still bind to the receiver: {output}"
+    );
+    assert!(
+        !after
+            .symbols
+            .iter()
+            .any(|symbol| symbol.kind == SymbolKind::Parameter && symbol.name == "a"),
+        "the explicit parameter must be renamed: {output}"
+    );
+}
+
+#[test]
+fn colon_method_explicit_self_parameter_is_renamed() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local t = {}
+        function t:m(self)
+            return self * 3
+        end
+        return t
+        "#,
+    );
+
+    // The explicit parameter shadows the implicit receiver in the same scope.
+    let self_symbols: Vec<_> = model.symbols.iter().filter(|s| s.name == "self").collect();
+    assert_eq!(self_symbols.len(), 2);
+    assert_eq!(
+        self_symbols.iter().filter(|s| s.is_implicit()).count(),
+        1,
+        "exactly one of the two `self` symbols is the implicit receiver"
+    );
+
+    let renamed = rename_variables::rename_variables(&mut block, &model)
+        .expect("renaming must succeed with tokens");
+    assert_eq!(renamed, 2, "`t` and the explicit `self` are renamable");
+
+    let output = generate(&block);
+    let after = analyze_output(&output);
+
+    let remaining: Vec<_> = after.symbols.iter().filter(|s| s.name == "self").collect();
+    assert_eq!(
+        remaining.len(),
+        1,
+        "only the implicit receiver keeps `self`: {output}"
+    );
+    assert!(remaining[0].is_implicit());
+    assert_eq!(
+        remaining[0].read_count, 0,
+        "the body referred to the explicit parameter, not the receiver: {output}"
+    );
+    assert!(
+        after
+            .symbols
+            .iter()
+            .any(|symbol| symbol.kind == SymbolKind::Parameter
+                && !symbol.is_implicit()
+                && symbol.read_count == 1),
+        "the explicit parameter and its use must rename together: {output}"
+    );
+}
+
+#[test]
+fn dot_method_explicit_self_parameter_is_renamed() {
+    let (mut block, model) = analyze_with_tokens(
+        r#"
+        local t = {}
+        function t.m(self)
+            return self * 3
+        end
+        return t
+        "#,
+    );
+
+    // Dot syntax declares `self` explicitly; there is no implicit receiver.
+    let self_symbols: Vec<_> = model.symbols.iter().filter(|s| s.name == "self").collect();
+    assert_eq!(self_symbols.len(), 1);
+    assert!(!self_symbols[0].is_implicit());
+
+    let renamed = rename_variables::rename_variables(&mut block, &model)
+        .expect("renaming must succeed with tokens");
+    assert_eq!(renamed, 2);
+
+    let output = generate(&block);
+    let after = analyze_output(&output);
+    assert!(
+        !after.symbols.iter().any(|symbol| symbol.name == "self"),
+        "the explicit parameter must be renamed: {output}"
+    );
+}
+
+#[test]
+fn local_named_self_is_renamed() {
+    let (mut block, model) = analyze_with_tokens("local self = 10\nreturn self");
+
+    let local = model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "self")
+        .expect("the local declaration");
+    assert_eq!(local.kind, SymbolKind::Local);
+    assert!(!local.is_implicit());
+
+    let renamed = rename_variables::rename_variables(&mut block, &model)
+        .expect("renaming must succeed with tokens");
+    assert_eq!(renamed, 1);
+
+    let output = generate(&block);
+    let after = analyze_output(&output);
+    assert!(
+        !after.symbols.iter().any(|symbol| symbol.name == "self"),
+        "a local named `self` must rename normally: {output}"
+    );
+}
+
+#[test]
+fn targeted_rename_rejects_an_implicit_receiver() {
+    use r4::rules::rename_variables::{rename_symbol, RenameSymbolError};
+
+    let (mut block, model) =
+        analyze_with_tokens("local t = {}\nfunction t:m() return self end\nreturn t");
+    let receiver = model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.is_implicit())
+        .expect("the implicit receiver")
+        .id;
+
+    let error = rename_symbol(&mut block, &model, receiver, "x").expect_err("implicit receiver");
+    assert_eq!(error.code(), "rename/implicit-symbol");
+    assert!(matches!(error, RenameSymbolError::ImplicitSymbol));
+}
