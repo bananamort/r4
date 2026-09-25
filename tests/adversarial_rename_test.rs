@@ -17,7 +17,9 @@
 use std::collections::BTreeSet;
 
 use r4::generator::{LuaGenerator, ReadableLuaGenerator};
-use r4::nodes::{Block, Expression, FunctionCall, Prefix, Statement, TableEntry, TableExpression};
+use r4::nodes::{
+    Block, Expression, FunctionCall, Prefix, Statement, TableEntry, TableExpression, TypeName,
+};
 use r4::process::{ImmutableProcessor, ImmutableVisitor, Walk};
 use r4::rules::rename_variables::rename_variables;
 use r4::semantic::{AccessKind, SemanticAnalyzer, SemanticModel, SymbolKind};
@@ -65,15 +67,28 @@ impl ImmutableProcessor for NonVariableNames {
     }
 
     fn process_expression(&mut self, expression: &Expression) {
-        if let Expression::Field(field) = expression {
-            self.names.insert(field.get_field().get_name().clone());
+        match expression {
+            Expression::Field(field) => {
+                self.names.insert(field.get_field().get_name().clone());
+            }
+            Expression::Index(index) => self.collect_index_key(index.get_index()),
+            _ => {}
         }
     }
 
     fn process_prefix(&mut self, prefix: &Prefix) {
-        if let Prefix::Field(field) = prefix {
-            self.names.insert(field.get_field().get_name().clone());
+        match prefix {
+            Prefix::Field(field) => {
+                self.names.insert(field.get_field().get_name().clone());
+            }
+            Prefix::Index(index) => self.collect_index_key(index.get_index()),
+            _ => {}
         }
+    }
+
+    fn process_type_name(&mut self, type_name: &TypeName) {
+        self.names
+            .insert(type_name.get_type_name().get_name().clone());
     }
 
     fn process_function_call(&mut self, call: &FunctionCall) {
@@ -88,14 +103,20 @@ impl ImmutableProcessor for NonVariableNames {
                 TableEntry::Field(field) => {
                     self.names.insert(field.get_field().get_name().clone());
                 }
-                TableEntry::Index(index) => {
-                    if let Expression::String(string) = index.get_key() {
-                        if let Some(value) = string.get_string_value() {
-                            self.names.insert(value.to_owned());
-                        }
-                    }
-                }
+                TableEntry::Index(index) => self.collect_index_key(index.get_key()),
                 TableEntry::Value(_) => {}
+            }
+        }
+    }
+}
+
+impl NonVariableNames {
+    /// Records a string literal used as an index (`t["key"]`), which is a name
+    /// but not a binding.
+    fn collect_index_key(&mut self, key: &Expression) {
+        if let Expression::String(string) = key {
+            if let Some(value) = string.get_string_value() {
+                self.names.insert(value.to_owned());
             }
         }
     }
@@ -143,6 +164,16 @@ fn receivers(model: &SemanticModel) -> Vec<usize> {
     counts
 }
 
+fn scope_shape(model: &SemanticModel) -> Vec<(&'static str, usize)> {
+    let mut shape: Vec<_> = model
+        .scopes
+        .iter()
+        .map(|scope| (scope.kind.as_str(), scope.symbols.len()))
+        .collect();
+    shape.sort_unstable();
+    shape
+}
+
 #[test]
 fn adversarial_program_survives_renaming() {
     let block = parse(FIXTURE);
@@ -164,6 +195,24 @@ fn adversarial_program_survives_renaming() {
     let before_globals = global_names(&model);
     let before_receivers = receivers(&model);
     let before_access = access_totals(&model);
+    let before_scopes = scope_shape(&model);
+
+    // Non-vacuity: the fixture must actually exercise a broad surface.
+    assert!(
+        before_keys.len() >= 30,
+        "the fixture must name many non-binding positions, found {}",
+        before_keys.len()
+    );
+    assert!(
+        before_globals.len() >= 15,
+        "the fixture must reference many globals, found {}",
+        before_globals.len()
+    );
+    assert!(
+        before_receivers.len() >= 3,
+        "the fixture must exercise several implicit receivers, found {}",
+        before_receivers.len()
+    );
 
     let mut renamed_block = block.clone();
     let renamed = rename_variables(&mut renamed_block, &model).expect("renaming must succeed");
@@ -199,6 +248,16 @@ fn adversarial_program_survives_renaming() {
         "__tostring",
         "__concat",
         "__add",
+        "__sub",
+        "__mul",
+        "__div",
+        "__mod",
+        "__pow",
+        "__unm",
+        "__len",
+        "__eq",
+        "__lt",
+        "__le",
     ] {
         assert!(
             before_keys.contains(preserved),
@@ -216,8 +275,58 @@ fn adversarial_program_survives_renaming() {
         before_globals,
         "globals must keep their names"
     );
-    assert!(before_globals.contains("UNSAFE_1"));
-    assert!(before_globals.contains("UNSAFE_global_state"));
+    for global in [
+        "UNSAFE_global_written",
+        "UNSAFE_global_function",
+        "UNSAFE_global_declared",
+        "UNSAFE_global_table",
+        "UNSAFE_final_status",
+        "_ENV",
+        "print",
+        "math",
+        "string",
+        "table",
+        "select",
+        "type",
+        "pairs",
+        "setmetatable",
+        "rawget",
+        "rawset",
+        "tostring",
+        "assert",
+    ] {
+        assert!(
+            before_globals.contains(global),
+            "the fixture must reference the global `{global}`"
+        );
+    }
+
+    // `UNSAFE_` is a non-binding naming convention: the fixture never names a
+    // local, parameter or upvalue `UNSAFE_*`, so a rename can never be blamed on
+    // a mis-tagged binding.
+    for symbol in &model.symbols {
+        assert!(
+            symbol.kind == SymbolKind::Global || !symbol.name.starts_with("UNSAFE_"),
+            "`{}` is a `UNSAFE_`-named runtime binding; only non-bindings may be tagged `UNSAFE_`",
+            symbol.name
+        );
+    }
+
+    // Type aliases are type bindings, never runtime symbols: they keep their names.
+    let type_names = |model: &SemanticModel| -> BTreeSet<String> {
+        model
+            .types
+            .iter()
+            .map(|symbol| symbol.name.clone())
+            .collect()
+    };
+    assert_eq!(
+        type_names(&output_model),
+        type_names(&model),
+        "type aliases must keep their names"
+    );
+    assert!(type_names(&model).contains("UNSAFE_Alias"));
+    assert!(type_names(&model).contains("UNSAFE_Exported"));
 
     // The implicit colon receivers stay `self` with the same use counts.
     assert_eq!(
@@ -230,11 +339,16 @@ fn adversarial_program_survives_renaming() {
         .iter()
         .any(|symbol| { symbol.is_implicit() && symbol.name == "self" && symbol.read_count > 0 }));
 
-    // Def-use structure and symbol count are unchanged by renaming.
+    // Def-use structure, the scope skeleton and the symbol count are unchanged.
     assert_eq!(
         access_totals(&output_model),
         before_access,
         "renaming must not change the def-use structure"
+    );
+    assert_eq!(
+        scope_shape(&output_model),
+        before_scopes,
+        "renaming must not change the scope skeleton"
     );
     assert_eq!(
         output_model.symbols.len(),
@@ -242,27 +356,16 @@ fn adversarial_program_survives_renaming() {
         "renaming must not add or remove symbols"
     );
 
-    // The three `UNSAFE_`-named locals are locals despite the fixture's label, so
-    // a symbol-based rename renames them (which is always safe). This documents
-    // the fixture's convention rather than applying a name-based exemption.
-    let unsafe_locals: BTreeSet<&str> = model
-        .symbols
-        .iter()
-        .filter(|symbol| symbol.kind != SymbolKind::Global && symbol.name.starts_with("UNSAFE_"))
-        .map(|symbol| symbol.name.as_str())
-        .collect();
-    assert_eq!(
-        unsafe_locals,
-        BTreeSet::from(["UNSAFE_game", "UNSAFE_Instance", "UNSAFE_TweenInfo"]),
-        "only these `UNSAFE_` names are locals; the rest are globals or field keys"
-    );
-    for local in unsafe_locals {
+    // String literals, interpolated-string text and attributes are not
+    // identifiers, so a rename must leave them byte-identical.
+    for literal in [
+        "UNSAFE_string_literal_marker",
+        "UNSAFE_literal_text",
+        "@native",
+    ] {
         assert!(
-            !output_model
-                .symbols
-                .iter()
-                .any(|symbol| symbol.name == local),
-            "the local `{local}` is renamed like any other local"
+            output.contains(literal),
+            "`{literal}` must survive renaming untouched:\n{output}"
         );
     }
 }

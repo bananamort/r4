@@ -1,345 +1,380 @@
 --[====[
 Legend:
 
-SAFE_<N>   : Safe to rename (local variables, parameters, loop variables, upvalues, implicit self)
-UNSAFE_<N> : Unsafe to rename (table keys, globals, metamethods, external APIs)
+SAFE_<name>   : a runtime binding — a local, a parameter, a loop variable, an
+                upvalue, or the receiver a colon method introduces. Renaming it
+                must not change program behavior.
+
+UNSAFE_<name> : a name that is not a renamable runtime binding — a global, a
+                table key, a string key, a field name, a method name, a
+                metamethod, a type name, a generic parameter or an attribute.
+                It must be byte-identical after renaming.
+
+The suite is checked by tests/adversarial_rename_test.rs, which renames the whole
+program and asserts, from the semantic model, that every SAFE_ binding is renamed
+consistently, every UNSAFE_ name survives, the symbol graph is unchanged and the
+output re-parses and re-analyzes.
 ]====]
 
+-- Type aliases and generics are type bindings, never runtime symbols.
+type UNSAFE_Alias = { value: number }
+export type UNSAFE_Exported = { n: number }
+
 do
-    -- Environment and runtime compatibility setup
-    local SAFE_1 = _ENV or (getfenv and getfenv()) or _G -- [SAFE: Local Variable]
+    ----------------------------------------------------------------------
+    -- 1. Globals, and locals that shadow their names.
+    --
+    -- A global is looked up by name in the environment, so it must never be
+    -- renamed. A local with the same name as a global is an ordinary local.
+    ----------------------------------------------------------------------
+    local SAFE_env = _ENV or _G
+    local SAFE_print = print
+    local SAFE_math = math
+    local SAFE_string = string
+    local SAFE_table = table
+    local SAFE_select = select
+    local SAFE_type = type
+    local SAFE_pairs = pairs
+    local SAFE_ipairs = ipairs
+    local SAFE_setmetatable = setmetatable
+    local SAFE_rawget = rawget
+    local SAFE_rawset = rawset
+    local SAFE_tostring = tostring
+    local SAFE_pcall = pcall
+    local SAFE_assert = assert
 
-    -- Bitwise operations (fallback for Lua 5.1/LuaJIT/standalone environments)
-    local SAFE_2 = bit32 or (pcall(require, "bit") and require("bit")) or {} -- [SAFE: Local Variable]
-    local SAFE_3 = SAFE_2.bxor or function(SAFE_4, SAFE_5) -- [SAFE: Local Variable] -- [SAFE: Function Argument]
-        local SAFE_6, SAFE_7 = 1, 0 -- [SAFE: Local Variable]
-        while SAFE_4 > 0 or SAFE_5 > 0 do
-            local SAFE_8 = SAFE_4 % 2 -- [SAFE: Local Variable]
-            local SAFE_9 = SAFE_5 % 2 -- [SAFE: Local Variable]
-            if SAFE_8 ~= SAFE_9 then
-                SAFE_7 = SAFE_7 + SAFE_6 -- [SAFE: Upvalue Usage]
-            end
-            SAFE_4 = math.floor(SAFE_4 / 2)
-            SAFE_5 = math.floor(SAFE_5 / 2)
-            SAFE_6 = SAFE_6 * 2 -- [SAFE: Upvalue Usage]
-        end
-        return SAFE_7 -- [SAFE: Upvalue Usage]
+    SAFE_assert(SAFE_print == print and SAFE_math == math)
+    SAFE_assert(SAFE_type(SAFE_env) == "table")
+
+    -- Writing a global creates a global; it must keep its name.
+    UNSAFE_global_written = 1
+    UNSAFE_global_function = function(SAFE_g1) return SAFE_g1 end
+    function UNSAFE_global_declared(SAFE_g2) return SAFE_g2 end
+    function UNSAFE_global_table.UNSAFE_global_field() end
+    UNSAFE_global_table.UNSAFE_global_key = 2
+    SAFE_assert(UNSAFE_global_written == 1)
+    SAFE_assert(UNSAFE_global_function(2) == 2)
+    SAFE_assert(UNSAFE_global_declared(3) == 3)
+
+    ----------------------------------------------------------------------
+    -- 2. Implicit `self`, explicit `self`, and a local named `self`.
+    ----------------------------------------------------------------------
+    local SAFE_obj = { UNSAFE_counter = 10 }
+
+    function SAFE_obj:UNSAFE_increment(SAFE_delta)
+        local SAFE_this = self -- the implicit receiver must stay `self`
+        SAFE_this.UNSAFE_counter = SAFE_this.UNSAFE_counter + SAFE_delta
+        return SAFE_this.UNSAFE_counter
     end
 
-    -- Roblox API mock / passthrough
-    local UNSAFE_game = rawget(_G, "game") or { -- [UNSAFE: Global Variable]
-        GetService = function(self, SAFE_10) -- [UNSAFE: External API Field]
-            return {
-                Create = function(self, SAFE_11, SAFE_12, SAFE_13) -- [UNSAFE: External API Field]
-                    return {
-                        Play = function(self) -- [UNSAFE: External API Field]
-                            return true
-                        end
-                    }
-                end
-            }
-        end
-    }
-    local UNSAFE_Instance = rawget(_G, "Instance") or { -- [UNSAFE: Global Variable]
-        new = function(SAFE_14) return { ClassName = SAFE_14 } end -- [UNSAFE: External API Field]
-    }
-    local UNSAFE_TweenInfo = rawget(_G, "TweenInfo") or { -- [UNSAFE: Global Variable]
-        new = function(...) return { ... } end -- [UNSAFE: External API Field]
-    }
+    function SAFE_obj:UNSAFE_scale(self) -- explicit `self` shadows the receiver
+        return self * 3
+    end
 
-    -- repeat ... until scoping (SAFE_15 remains in scope in until condition)
-    local SAFE_15 = "outer_repeat" -- [SAFE: Local Variable]
-    local SAFE_16 = 0 -- [SAFE: Local Variable]
+    function SAFE_obj.UNSAFE_dot(self) -- dot syntax: `self` is an ordinary parameter
+        return self
+    end
+
+    local SAFE_n = 5
+    SAFE_assert(SAFE_obj:UNSAFE_increment(SAFE_n) == 15)
+    SAFE_assert(SAFE_obj:UNSAFE_scale(10) == 30)
+    SAFE_assert(SAFE_obj.UNSAFE_dot(7) == 7)
+
+    do
+        local self = 10 -- a local named `self` is renamed like any other local
+        SAFE_assert(self == 10)
+    end
+
+    ----------------------------------------------------------------------
+    -- 3. Table keys, string keys, field access and method names.
+    ----------------------------------------------------------------------
+    local SAFE_dynamic_key = "UNSAFE_dynamic"
+    local SAFE_dict = {
+        UNSAFE_field = 1,
+        ["UNSAFE_string_key"] = 2,
+        [SAFE_dynamic_key] = 3,
+        -- a positional entry, not a key
+        4,
+    }
+    SAFE_assert(SAFE_dict.UNSAFE_field == 1)
+    SAFE_assert(SAFE_dict["UNSAFE_string_key"] == 2)
+    SAFE_assert(SAFE_dict[SAFE_dynamic_key] == 3)
+
+    SAFE_dict.UNSAFE_added_field = 5
+    SAFE_dict["UNSAFE_added_string_key"] = 6
+    SAFE_assert(SAFE_dict.UNSAFE_added_field == 5)
+    SAFE_assert(SAFE_dict["UNSAFE_added_string_key"] == 6)
+
+    local SAFE_ns = {}
+    function SAFE_ns.UNSAFE_field_function() end
+    function SAFE_ns.UNSAFE_namespace.UNSAFE_nested_function() end
+    function SAFE_ns:UNSAFE_method(SAFE_arg) return SAFE_arg end
+    SAFE_assert(SAFE_ns:UNSAFE_method(1) == 1)
+
+    ----------------------------------------------------------------------
+    -- 4. Metamethods. The keys are never variables.
+    ----------------------------------------------------------------------
+    local SAFE_subject = {}
+    local SAFE_meta = {
+        __index = function(SAFE_t, SAFE_k)
+            return SAFE_rawget(SAFE_t, SAFE_k)
+        end,
+        __newindex = function(SAFE_t, SAFE_k, SAFE_v)
+            SAFE_rawset(SAFE_t, SAFE_k, SAFE_v)
+        end,
+        __call = function(SAFE_t, ...)
+            return SAFE_select("#", ...)
+        end,
+        __tostring = function(SAFE_t)
+            return "<object>"
+        end,
+        __concat = function(SAFE_a, SAFE_b)
+            return SAFE_tostring(SAFE_a) .. SAFE_tostring(SAFE_b)
+        end,
+        __add = function(SAFE_a, SAFE_b)
+            return SAFE_a
+        end,
+        __sub = function(SAFE_a, SAFE_b)
+            return SAFE_a
+        end,
+        __mul = function(SAFE_a, SAFE_b)
+            return SAFE_a
+        end,
+        __div = function(SAFE_a, SAFE_b)
+            return SAFE_a
+        end,
+        __mod = function(SAFE_a, SAFE_b)
+            return SAFE_a
+        end,
+        __pow = function(SAFE_a, SAFE_b)
+            return SAFE_a
+        end,
+        __unm = function(SAFE_a)
+            return SAFE_a
+        end,
+        __len = function(SAFE_a)
+            return 0
+        end,
+        __eq = function(SAFE_a, SAFE_b)
+            return SAFE_a == SAFE_b
+        end,
+        __lt = function(SAFE_a, SAFE_b)
+            return false
+        end,
+        __le = function(SAFE_a, SAFE_b)
+            return true
+        end,
+    }
+    SAFE_setmetatable(SAFE_subject, SAFE_meta)
+
+    ----------------------------------------------------------------------
+    -- 5. Scoping: self-reference, shadowing, sibling scopes, loop headers.
+    ----------------------------------------------------------------------
+    local SAFE_outer = 42
+    do
+        local SAFE_outer = SAFE_outer + 8 -- the initializer sees the outer local
+        SAFE_assert(SAFE_outer == 50)
+    end
+    SAFE_assert(SAFE_outer == 42)
+
+    local SAFE_sibling = 1
+    do
+        local SAFE_sibling = 2
+        SAFE_assert(SAFE_sibling == 2)
+    end
+    do
+        local SAFE_sibling = 3
+        SAFE_assert(SAFE_sibling == 3)
+    end
+    SAFE_assert(SAFE_sibling == 1)
+
+    local SAFE_index = 10
+    local SAFE_total = 0
+    for SAFE_index = SAFE_index, SAFE_index + 2 do -- the header sees the outer local
+        SAFE_total = SAFE_total + SAFE_index
+    end
+    SAFE_assert(SAFE_index == 10 and SAFE_total == 33)
+
+    local SAFE_key, SAFE_value = "UNSAFE_outer_key", "UNSAFE_outer_value"
+    local SAFE_source = { [SAFE_key] = SAFE_value }
+    local SAFE_seen = 0
+    for SAFE_key, SAFE_value in SAFE_pairs(SAFE_source) do
+        SAFE_assert(SAFE_key == "UNSAFE_outer_key")
+        SAFE_assert(SAFE_value == "UNSAFE_outer_value")
+        SAFE_seen = SAFE_seen + 1
+    end
+    SAFE_assert(SAFE_key == "UNSAFE_outer_key")
+    SAFE_assert(SAFE_value == "UNSAFE_outer_value")
+    SAFE_assert(SAFE_seen == 1)
+
+    local SAFE_rounds = 0
     repeat
-        local SAFE_15 = "inner_repeat" -- [SAFE: Local Shadowing]
-        local SAFE_17 = true -- [SAFE: Local Variable]
-        SAFE_16 = SAFE_16 + 1 -- [SAFE: Upvalue Usage]
-    until SAFE_17 and SAFE_15 == "inner_repeat" -- [SAFE: Upvalue Usage]
-    assert(SAFE_15 == "outer_repeat")
-    assert(SAFE_16 == 1)
+        local SAFE_more = true -- body locals are visible in `until`
+        SAFE_rounds = SAFE_rounds + 1
+    until not SAFE_more or SAFE_rounds > 4
+    SAFE_assert(SAFE_rounds == 1)
 
-    -- Numeric for header scope isolation (range expressions resolve to outer scope)
-    local SAFE_18 = 10 -- [SAFE: Local Variable]
-    local SAFE_19 = 0 -- [SAFE: Local Variable]
-    for SAFE_18 = SAFE_18, SAFE_18 + 2, 1 do -- [SAFE: Loop Variable] -- [SAFE: Upvalue Usage]
-        SAFE_19 = SAFE_19 + SAFE_18 -- [SAFE: Upvalue Usage]
-    end
-    assert(SAFE_18 == 10)
-    assert(SAFE_19 == 33)
-
-    -- Generic for iterator expression isolation
-    local SAFE_20, SAFE_21 = "outer_k", "outer_v" -- [SAFE: Local Variable]
-    local SAFE_22 = { [SAFE_20] = SAFE_21 } -- [SAFE: Local Variable] -- [SAFE: Upvalue Usage]
-    local SAFE_23 = 0 -- [SAFE: Local Variable]
-    for SAFE_20, SAFE_21 in pairs(SAFE_22) do -- [SAFE: Loop Variable]
-        assert(SAFE_20 == "outer_k")
-        assert(SAFE_21 == "outer_v")
-        SAFE_23 = SAFE_23 + 1 -- [SAFE: Upvalue Usage]
-    end
-    assert(SAFE_20 == "outer_k" and SAFE_21 == "outer_v")
-    assert(SAFE_23 == 1)
-
-    -- Recursive local function
-    local function SAFE_24(SAFE_25) -- [SAFE: Local Function Name] -- [SAFE: Function Argument]
-        if SAFE_25 <= 1 then return 1 end
-        return SAFE_25 * SAFE_24(SAFE_25 - 1) -- [SAFE: Upvalue Usage]
-    end
-    assert(SAFE_24(4) == 24)
-
-    -- Anonymous function assigned to local vs global resolution
-    UNSAFE_1 = function(SAFE_26) return SAFE_26 * 10 end -- [UNSAFE: Global Variable]
-    local SAFE_27 = function(SAFE_28) -- [SAFE: Local Variable] -- [SAFE: Function Argument]
-        return UNSAFE_1(SAFE_28) -- [UNSAFE: Global Variable]
-    end
-    assert(SAFE_27(5) == 50)
-
-    -- Mutually recursive local functions
-    local SAFE_29, SAFE_30 -- [SAFE: Local Variable]
-    SAFE_29 = function(SAFE_31) -- [SAFE: Upvalue Usage] -- [SAFE: Function Argument]
-        if SAFE_31 <= 0 then return true end
-        return SAFE_30(SAFE_31 - 1) -- [SAFE: Upvalue Usage]
-    end
-    SAFE_30 = function(SAFE_32) -- [SAFE: Upvalue Usage] -- [SAFE: Function Argument]
-        if SAFE_32 <= 0 then return false end
-        return SAFE_29(SAFE_32 - 1) -- [SAFE: Upvalue Usage]
-    end
-    assert(SAFE_29(4) == true and SAFE_29(3) == false)
-
-    -- The 'local x = x' self-shadowing idiom
-    local SAFE_33 = 42 -- [SAFE: Local Variable]
-    do
-        local SAFE_33 = SAFE_33 + 8 -- [SAFE: Local Shadowing]
-        assert(SAFE_33 == 50)
-    end
-    assert(SAFE_33 == 42)
-
-    -- Shadowing standard library globals into local scope
-    local SAFE_34 = print -- [SAFE: Local Variable]
-    local SAFE_35 = math  -- [SAFE: Local Variable]
-    local SAFE_36 = select -- [SAFE: Local Variable]
-    assert(type(SAFE_34) == "function" and type(SAFE_35) == "table")
-
-    -- Multiple assignment and swap evaluation order
-    local SAFE_37, SAFE_38 = 100, 200 -- [SAFE: Local Variable]
-    SAFE_37, SAFE_38 = SAFE_38, SAFE_37
-    assert(SAFE_37 == 200 and SAFE_38 == 100)
-
-    local SAFE_39, SAFE_40, SAFE_41 = 1, 2 -- [SAFE: Local Variable]
-    assert(SAFE_39 == 1 and SAFE_40 == 2 and SAFE_41 == nil)
-
-    -- Table key vs. local identifier disambiguation
-    local SAFE_42 = "dynamic_table_key" -- [SAFE: Local Variable]
-    local SAFE_43 = "property_value_1"  -- [SAFE: Local Variable]
-    local SAFE_44 = "property_value_2"  -- [SAFE: Local Variable]
-
-    local SAFE_45 = { -- [SAFE: Local Variable]
-        UNSAFE_2 = SAFE_43,      -- [UNSAFE: Table Field Key] -- [SAFE: Upvalue Usage]
-        ["UNSAFE_3"] = SAFE_44,  -- [UNSAFE: Table Field Key] -- [SAFE: Upvalue Usage]
-        [SAFE_42] = 999,         -- [SAFE: Upvalue Usage]
-    }
-
-    local SAFE_46 = SAFE_45.UNSAFE_2 -- [SAFE: Local Variable] -- [UNSAFE: Table Field Key]
-    assert(SAFE_46 == "property_value_1")
-
-    local SAFE_47 = SAFE_45["UNSAFE_3"] -- [SAFE: Local Variable] -- [UNSAFE: Table Field Key]
-    assert(SAFE_47 == "property_value_2")
-
-    local SAFE_48 = SAFE_45[SAFE_42] -- [SAFE: Local Variable] -- [SAFE: Upvalue Usage]
-    assert(SAFE_48 == 999)
-
-    SAFE_45.UNSAFE_4 = "dynamically_added_prop" -- [UNSAFE: Table Field Key]
-    SAFE_45["UNSAFE_5"] = "dynamically_added_bracket" -- [UNSAFE: Table Field Key]
-    assert(SAFE_45.UNSAFE_4 == "dynamically_added_prop")
-    assert(SAFE_45.UNSAFE_5 == "dynamically_added_bracket")
-
-    -- Method syntax and implicit 'self' parameter
-    local SAFE_49 = { -- [SAFE: Local Variable]
-        UNSAFE_counter = 10 -- [UNSAFE: Table Field Key]
-    }
-
-    function SAFE_49:UNSAFE_method_increment(SAFE_50) -- [UNSAFE: Table Field Key] -- [SAFE: Function Argument]
-        local SAFE_51 = self -- [SAFE: Local Variable] -- [SAFE: Implicit Parameter]
-        SAFE_51.UNSAFE_counter = SAFE_51.UNSAFE_counter + SAFE_50 -- [UNSAFE: Table Field Key]
-        return SAFE_51.UNSAFE_counter -- [UNSAFE: Table Field Key]
-    end
-
-    function SAFE_49:UNSAFE_method_override(self) -- [UNSAFE: Table Field Key] -- [SAFE: Function Argument]
-        return self * 3 -- [SAFE: Upvalue Usage]
-    end
-
-    local SAFE_52 = 5 -- [SAFE: Local Variable]
-    local SAFE_53 = SAFE_49:UNSAFE_method_increment(SAFE_52) -- [SAFE: Local Variable] -- [UNSAFE: Table Field Key]
-    assert(SAFE_53 == 15)
-    assert(SAFE_49:UNSAFE_method_override(10) == 30)
-
-    -- Metamethods and external API protections
-    local SAFE_54 = {} -- [SAFE: Local Variable]
-    local SAFE_55 = { -- [SAFE: Local Variable]
-        __index = function(SAFE_56, SAFE_57) -- [UNSAFE: Metamethod Name] -- [SAFE: Function Argument]
-            if SAFE_57 == "UNSAFE_virtual" then -- [UNSAFE: Table Field Key]
-                return rawget(SAFE_56, "UNSAFE_backing") or 100 -- [UNSAFE: Table Field Key]
-            end
-            return rawget(SAFE_56, SAFE_57)
-        end,
-        __newindex = function(SAFE_58, SAFE_59, SAFE_60) -- [UNSAFE: Metamethod Name] -- [SAFE: Function Argument]
-            rawset(SAFE_58, SAFE_59, SAFE_60)
-        end,
-        __call = function(SAFE_61, ...) -- [UNSAFE: Metamethod Name] -- [SAFE: Function Argument]
-            local SAFE_62 = select("#", ...) -- [SAFE: Local Variable]
-            return SAFE_62 * 10
-        end,
-        __tostring = function(SAFE_63) -- [UNSAFE: Metamethod Name] -- [SAFE: Function Argument]
-            return "<SafeObject>"
-        end,
-        __concat = function(SAFE_64, SAFE_65) -- [UNSAFE: Metamethod Name] -- [SAFE: Function Argument]
-            return tostring(SAFE_64) .. ":" .. tostring(SAFE_65)
-        end,
-        __add = function(SAFE_66, SAFE_67) -- [UNSAFE: Metamethod Name] -- [SAFE: Function Argument]
-            return 777
-        end,
-    }
-    setmetatable(SAFE_54, SAFE_55)
-
-    SAFE_54.UNSAFE_backing = 42 -- [UNSAFE: Table Field Key]
-    assert(SAFE_54.UNSAFE_virtual == 42)
-    assert(SAFE_54(1, 2, 3) == 30)
-    assert(tostring(SAFE_54) == "<SafeObject>")
-    assert(SAFE_54 + 5 == 777)
-
-    -- External API protection
-    local SAFE_68 = {
-        Transparency = 0.5, -- [UNSAFE: External API Field]
-        Size = 10,          -- [UNSAFE: External API Field]
-    }
-    local SAFE_69 = UNSAFE_game:GetService("TweenService") -- [UNSAFE: External API Field]
-    local SAFE_70 = UNSAFE_Instance.new("Part")             -- [UNSAFE: External API Field]
-    local SAFE_71 = UNSAFE_TweenInfo.new(1)                 -- [UNSAFE: External API Field]
-    local SAFE_72 = SAFE_69:Create(SAFE_70, SAFE_71, SAFE_68) -- [UNSAFE: External API Field]
-    assert(SAFE_72:Play() == true)
-
-    -- False-negative traps (locals named like reserved identifiers)
-    do
-        local SAFE_73 = 111 -- [SAFE: Local Variable]
-        local SAFE_74 = function(SAFE_75) return SAFE_75 * 2 end -- [SAFE: Local Variable]
-        local SAFE_76 = "standalone_self" -- [SAFE: Local Variable]
-        local SAFE_77 = "local_print"     -- [SAFE: Local Variable]
-
-        assert(SAFE_73 == 111)
-        assert(SAFE_74(4) == 8)
-        assert(SAFE_76 == "standalone_self")
-        assert(SAFE_77 == "local_print")
-    end
-
-    -- Obfuscation logic in SAFE_<N> style (byte xor & string decoder)
-    local function SAFE_78(SAFE_79, SAFE_80) -- [SAFE: Local Function Name] -- [SAFE: Function Argument]
-        local SAFE_81 = 0 -- [SAFE: Local Variable]
-        local SAFE_82 = 1 -- [SAFE: Local Variable]
-        for SAFE_83 = 1, #SAFE_79 do -- [SAFE: Loop Variable]
-            local SAFE_84 = SAFE_79:byte(SAFE_83) -- [SAFE: Local Variable]
-            SAFE_81 = (SAFE_81 + (SAFE_84 * (SAFE_80 or 1))) % 2^31 -- [SAFE: Upvalue Usage]
-            SAFE_82 = (SAFE_82 * ((SAFE_84 % 7) + 3)) % 2^31 -- [SAFE: Upvalue Usage]
+    ----------------------------------------------------------------------
+    -- 6. Closures, upvalues, recursion and shadowed captures.
+    ----------------------------------------------------------------------
+    local function SAFE_factorial(SAFE_x)
+        if SAFE_x <= 1 then
+            return 1
         end
-        return SAFE_3(SAFE_81, SAFE_82) % 100000 -- [SAFE: Upvalue Usage]
+        return SAFE_x * SAFE_factorial(SAFE_x - 1)
     end
+    SAFE_assert(SAFE_factorial(4) == 24)
 
-    local function SAFE_85(SAFE_86, SAFE_87) -- [SAFE: Local Function Name] -- [SAFE: Function Argument]
-        local SAFE_88 = {} -- [SAFE: Local Variable]
-        local SAFE_89 = SAFE_87 or 1 -- [SAFE: Local Variable]
-        for SAFE_90 = 1, #SAFE_86 do -- [SAFE: Loop Variable]
-            local SAFE_91 = SAFE_86[SAFE_90] -- [SAFE: Local Variable]
-            SAFE_88[#SAFE_88 + 1] = string.char(SAFE_3(SAFE_91, SAFE_89) % 256) -- [SAFE: Upvalue Usage]
-            SAFE_89 = SAFE_3(SAFE_89 * 3, 13) % 256 -- [SAFE: Upvalue Usage]
+    local SAFE_is_even, SAFE_is_odd
+    SAFE_is_even = function(SAFE_x)
+        if SAFE_x <= 0 then
+            return true
         end
-        return table.concat(SAFE_88) -- [SAFE: Upvalue Usage]
+        return SAFE_is_odd(SAFE_x - 1)
     end
-
-    local SAFE_92 = { 0x25, 0x64, 0x11, 0x7B, 0x15 } -- [SAFE: Local Variable]
-    local SAFE_93 = { 0x33, 0x03, 0x6D, 0x01, 0x10 } -- [SAFE: Local Variable]
-
-    local function SAFE_94() -- [SAFE: Local Function Name]
-        local SAFE_95 = SAFE_85(SAFE_92, 97) -- [SAFE: Local Variable]
-        local SAFE_96 = SAFE_85(SAFE_93, 42) -- [SAFE: Local Variable]
-        return SAFE_95, SAFE_96
+    SAFE_is_odd = function(SAFE_x)
+        if SAFE_x <= 0 then
+            return false
+        end
+        return SAFE_is_even(SAFE_x - 1)
     end
+    SAFE_assert(SAFE_is_even(4) and not SAFE_is_even(3))
 
-    local SAFE_97, SAFE_98 = SAFE_94()
-    assert(type(SAFE_97) == "string" and type(SAFE_98) == "string")
-    assert(SAFE_78("seed", 123) >= 0)
-
-    -- Dense closures, upvalues & alpha-renaming
-    local function SAFE_99(SAFE_100) -- [SAFE: Local Function Name] -- [SAFE: Function Argument]
-        local SAFE_101 = SAFE_100 or 10 -- [SAFE: Local Variable]
-
-        local function SAFE_102(SAFE_103) -- [SAFE: Local Function Name] -- [SAFE: Function Argument]
-            local SAFE_104 = SAFE_101 + SAFE_103 -- [SAFE: Local Variable]
-
-            return function(SAFE_105) -- [SAFE: Function Argument]
-                local SAFE_101 = SAFE_105 * 2 -- [SAFE: Local Shadowing]
-
-                return function(SAFE_106) -- [SAFE: Function Argument]
-                    return SAFE_101 + SAFE_104 + SAFE_106 -- [SAFE: Upvalue Usage]
+    local function SAFE_adder(SAFE_base)
+        local SAFE_start = SAFE_base or 10
+        local function SAFE_middle(SAFE_step)
+            local SAFE_shared = SAFE_start + SAFE_step
+            return function(SAFE_factor)
+                local SAFE_start = SAFE_factor * 2 -- shadows the captured SAFE_start
+                return function(SAFE_extra)
+                    return SAFE_start + SAFE_shared + SAFE_extra
                 end
             end
         end
-
-        return SAFE_102 -- [SAFE: Upvalue Usage]
+        return SAFE_middle
     end
+    SAFE_assert(SAFE_adder(10)(5)(3)(2) == 23)
 
-    local SAFE_107 = SAFE_99(10)(5)(3)(2) -- (3*2) + (10+5) + 2 = 23
-    assert(SAFE_107 == 23)
-
-    -- Vararg (...) forwarding & select
-    local function SAFE_108(...) -- [SAFE: Local Function Name]
-        local SAFE_109 = select("#", ...) -- [SAFE: Local Variable]
-        local SAFE_110 = 0 -- [SAFE: Local Variable]
-
-        for SAFE_111 = 1, SAFE_109 do -- [SAFE: Loop Variable]
-            local SAFE_112 = select(SAFE_111, ...) -- [SAFE: Local Variable]
-            if type(SAFE_112) == "number" then
-                SAFE_110 = SAFE_110 + SAFE_112 -- [SAFE: Upvalue Usage]
+    ----------------------------------------------------------------------
+    -- 7. Varargs, multiple assignment, swaps and short-circuit.
+    ----------------------------------------------------------------------
+    local function SAFE_sum_numbers(...)
+        local SAFE_count = SAFE_select("#", ...)
+        local SAFE_sum = 0
+        for SAFE_i = 1, SAFE_count do
+            local SAFE_item = SAFE_select(SAFE_i, ...)
+            if SAFE_type(SAFE_item) == "number" then
+                SAFE_sum = SAFE_sum + SAFE_item
             end
         end
+        return SAFE_sum
+    end
+    SAFE_assert(SAFE_sum_numbers(1, "x", 2) == 3)
 
-        local function SAFE_113(...) -- [SAFE: Local Function Name]
-            return select(1, ...)
+    local SAFE_left, SAFE_right = 1, 2
+    SAFE_left, SAFE_right = SAFE_right, SAFE_left
+    SAFE_assert(SAFE_left == 2 and SAFE_right == 1)
+
+    local SAFE_first, SAFE_second = 1
+    SAFE_assert(SAFE_first == 1 and SAFE_second == nil)
+
+    local SAFE_choice = SAFE_left and SAFE_right or 0
+    SAFE_assert(SAFE_choice == 1)
+
+    ----------------------------------------------------------------------
+    -- 8. Compound assignment on locals and on fields.
+    ----------------------------------------------------------------------
+    local SAFE_counter = 1
+    SAFE_counter += 2
+    SAFE_counter *= 3
+    SAFE_assert(SAFE_counter == 9)
+
+    local SAFE_holder = { UNSAFE_count = 0 }
+    SAFE_holder.UNSAFE_count += 4
+    SAFE_assert(SAFE_holder.UNSAFE_count == 4)
+
+    ----------------------------------------------------------------------
+    -- 9. Luau types, casts, generics, if-expressions, continue, attributes.
+    --    Type names and generic parameters are never runtime symbols.
+    ----------------------------------------------------------------------
+    local SAFE_record: UNSAFE_Alias = { value = 1 }
+    local SAFE_cast = SAFE_record :: UNSAFE_Alias
+    SAFE_assert(SAFE_cast.value == 1)
+
+    local SAFE_exported: UNSAFE_Exported = { n = 1 }
+    SAFE_assert(SAFE_exported.n == 1)
+
+    local function SAFE_identity<UNSAFE_T>(SAFE_x: UNSAFE_T): UNSAFE_T
+        return SAFE_x
+    end
+    SAFE_assert(SAFE_identity(5) == 5)
+    SAFE_assert(SAFE_identity<number>(6) == 6)
+
+    local SAFE_conditional = if SAFE_first then SAFE_second else 0
+    SAFE_assert(SAFE_conditional == 1)
+
+    local SAFE_evens = 0
+    for SAFE_scan = 1, 5 do
+        if SAFE_scan % 2 == 0 then
+            continue
         end
-
-        return SAFE_110, SAFE_113(...)
+        SAFE_evens = SAFE_evens + SAFE_scan
     end
+    SAFE_assert(SAFE_evens == 9)
 
-    local SAFE_114, SAFE_115 = SAFE_108(10, 20, "ignore", 30)
-    assert(SAFE_114 == 60 and SAFE_115 == 10)
+    local SAFE_attributed = @native function()
+        return 1
+    end
+    SAFE_assert(SAFE_attributed() == 1)
 
-    -- Global state & dynamic code resolution
-    UNSAFE_global_state = 12345 -- [UNSAFE: Global Variable]
-    local SAFE_116 = UNSAFE_global_state -- [SAFE: Local Variable] -- [UNSAFE: Global Variable]
-    assert(SAFE_116 == 12345)
+    ----------------------------------------------------------------------
+    -- 10. Interpolated strings, string literals and comments are not code.
+    ----------------------------------------------------------------------
+    local SAFE_message = `count={SAFE_counter} label=UNSAFE_literal_text`
+    SAFE_assert(SAFE_type(SAFE_message) == "string")
 
-    local function SAFE_117(SAFE_118) -- [SAFE: Local Function Name] -- [SAFE: Function Argument]
-        if loadstring then
-            local SAFE_119, SAFE_120 = loadstring(SAFE_118) -- [SAFE: Local Variable]
-            if SAFE_119 then return SAFE_119() end
+    local SAFE_literal = "UNSAFE_string_literal_marker"
+    SAFE_assert(SAFE_literal == "UNSAFE_string_literal_marker")
+
+    -- SAFE_counter UNSAFE_global_written self print are only words in a comment.
+
+    ----------------------------------------------------------------------
+    -- 11. Renaming must survive a name that is also a global field.
+    ----------------------------------------------------------------------
+    local SAFE_shadowed = SAFE_print -- reused alias
+    SAFE_assert(SAFE_shadowed == print)
+
+    ----------------------------------------------------------------------
+    -- 12. Remaining binding hazards: parameter shadowing a global, a receiver
+    --     captured by a nested closure, a vararg method, chained access and a
+    --     string key that is not an identifier.
+    ----------------------------------------------------------------------
+    local function SAFE_param_shadow(SAFE_print)
+        return SAFE_print
+    end
+    SAFE_assert(SAFE_param_shadow(1) == 1)
+
+    local SAFE_chain = { UNSAFE_inner = { UNSAFE_leaf = 5, ["UNSAFE not an identifier"] = 6 } }
+    SAFE_assert(SAFE_chain.UNSAFE_inner.UNSAFE_leaf == 5)
+    SAFE_assert(SAFE_chain.UNSAFE_inner["UNSAFE not an identifier"] == 6)
+
+    local SAFE_sized = { 1, 2, 3 }
+    SAFE_assert(#SAFE_sized == 3)
+
+    local SAFE_receiver = {}
+    function SAFE_receiver:UNSAFE_capture(...)
+        local SAFE_count = SAFE_select("#", ...)
+        local function SAFE_inner()
+            return self -- `self` captured by a nested closure must stay `self`
         end
-        return nil
+        return SAFE_count, SAFE_inner()
     end
+    local SAFE_captured_count, SAFE_captured_self = SAFE_receiver:UNSAFE_capture(1, 2)
+    SAFE_assert(SAFE_captured_count == 2)
+    SAFE_assert(SAFE_captured_self == SAFE_receiver)
 
-    local SAFE_121 = SAFE_117("return 40 + 2") -- [SAFE: Local Variable]
-    if SAFE_121 then
-        assert(SAFE_121 == 42)
-    end
+    UNSAFE_final_status = "PASS"
+    SAFE_assert(UNSAFE_final_status == "PASS")
 
-    -- Verification summary
-    local SAFE_122 = { -- [SAFE: Local Variable]
-        UNSAFE_status = "PASS", -- [UNSAFE: Table Field Key]
-        UNSAFE_total_tests = 9, -- [UNSAFE: Table Field Key]
-    }
-
-    local SAFE_123 = function() -- [SAFE: Local Variable]
-        return string.format("[PARSE.LUA %s]: All %d test categories passed successfully.",
-            SAFE_122.UNSAFE_status,
-            SAFE_122.UNSAFE_total_tests
-        )
-    end
-
-    print(SAFE_123())
+    return SAFE_message
 end
