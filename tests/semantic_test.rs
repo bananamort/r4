@@ -1,4 +1,4 @@
-use r4::nodes::{Arguments, Block, Expression, Identifier, Statement, Type};
+use r4::nodes::{Arguments, Block, Expression, Identifier, LastStatement, Statement, Type};
 use r4::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use r4::semantic::{
     AccessKind, SemanticAnalyzer, SemanticErrorKind, SemanticModel, Symbol, SymbolKind,
@@ -547,6 +547,103 @@ fn initializers_bind_before_declaring_the_local() {
         None,
         "an alias of a local is not a global alias"
     );
+}
+
+#[test]
+fn a_self_referential_local_initializer_binds_to_the_global() {
+    // `local x = x`: the initializer must not see the local it declares, so it
+    // resolves to the global `x`, while the later `return x` sees the local.
+    let (block, model) = analyze_with_tokens("local x = x\nreturn x");
+
+    let mut statements = block.iter_statements();
+    let Statement::LocalAssign(assignment) = statements.next().expect("a declaration") else {
+        panic!("expected a local assignment");
+    };
+    let declared = assignment
+        .iter_variables()
+        .next()
+        .expect("a variable")
+        .get_identifier();
+    let declared_symbol = model
+        .try_declared_symbol(declared)
+        .expect("the declaration is bound");
+    assert_eq!(model.symbol(declared_symbol).kind, SymbolKind::Local);
+
+    let Expression::Identifier(initializer) = assignment.iter_values().next().expect("a value")
+    else {
+        panic!("expected an identifier initializer");
+    };
+    let initializer_symbol = model
+        .try_declared_symbol(initializer)
+        .expect("the initializer is bound");
+    assert_eq!(model.symbol(initializer_symbol).kind, SymbolKind::Global);
+    assert_eq!(model.symbol(initializer_symbol).name, "x");
+    assert_ne!(
+        initializer_symbol, declared_symbol,
+        "the initializer must not bind to the local it declares"
+    );
+    assert_eq!(model.global_symbol("x"), Some(initializer_symbol));
+
+    let Some(LastStatement::Return(return_statement)) = block.get_last_statement() else {
+        panic!("expected a return");
+    };
+    let Expression::Identifier(returned) =
+        return_statement.iter_expressions().next().expect("a value")
+    else {
+        panic!("expected an identifier");
+    };
+    assert_eq!(
+        model
+            .try_declared_symbol(returned)
+            .expect("the return is bound"),
+        declared_symbol,
+        "the statement after the declaration sees the local"
+    );
+}
+
+#[test]
+fn a_shadowing_local_initializer_binds_to_the_previous_local() {
+    // `local x = 1` then `local x = x`: the second initializer binds to the
+    // first local, not to the one being declared.
+    let (block, model) = analyze_with_tokens("local x = 1\nlocal x = x\nreturn x");
+
+    let mut statements = block.iter_statements();
+    let Statement::LocalAssign(first) = statements.next().expect("a first declaration") else {
+        panic!("expected a local assignment");
+    };
+    let Statement::LocalAssign(second) = statements.next().expect("a second declaration") else {
+        panic!("expected a local assignment");
+    };
+    let first_symbol = model
+        .try_declared_symbol(
+            first
+                .iter_variables()
+                .next()
+                .expect("a variable")
+                .get_identifier(),
+        )
+        .expect("the first declaration is bound");
+    let second_symbol = model
+        .try_declared_symbol(
+            second
+                .iter_variables()
+                .next()
+                .expect("a variable")
+                .get_identifier(),
+        )
+        .expect("the second declaration is bound");
+
+    let Expression::Identifier(initializer) = second.iter_values().next().expect("a value") else {
+        panic!("expected an identifier initializer");
+    };
+    assert_eq!(
+        model
+            .try_declared_symbol(initializer)
+            .expect("the initializer is bound"),
+        first_symbol,
+        "the initializer binds to the previous local"
+    );
+    assert_ne!(first_symbol, second_symbol);
 }
 
 #[test]

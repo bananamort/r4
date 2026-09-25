@@ -1,24 +1,33 @@
 //! Bounded-exhaustive program enumeration (small-scope).
 //!
 //! Random fuzzing and a hand corpus sample the space of programs; they do not
-//! cover it. This test enumerates *every* program up to a small statement bound
-//! over a fixed statement pool (plus curated Lua 5.2 goto and typed programs)
-//! and asserts the full semantic/CFG invariant set on each:
+//! cover it. This test enumerates *every* program up to a small bound over a
+//! fixed statement pool (plus expression-level programs and curated Lua 5.2
+//! goto and typed programs) and asserts the full semantic/CFG invariant set on
+//! each:
 //!
 //! * resolution: every identifier reference binds to the nearest visible
-//!   declaration, recomputed here by a brute-force positional scan that uses
-//!   the opposite method to the analyzer — it collects every declaration on the
-//!   scope chain and orders it by `(scope distance, visibility offset)` instead
-//!   of resolving incrementally as it walks;
+//!   declaration and every `goto` to the nearest visible label, both recomputed
+//!   by brute-force scans that use the opposite method to the analyzer — they
+//!   collect every declaration/label on the scope chain and order it by
+//!   `(scope distance, visibility offset)` instead of resolving incrementally
+//!   as the analyzer walks;
 //! * scoping laws: a binding is always accessible from the scope that uses it,
 //!   a bounded lookup never returns a symbol that is not visible from the query
-//!   scope, and a `goto` always targets a label in its own function;
+//!   scope, a label is listed in its declaring scope, and a `goto` targets a
+//!   label in its own function;
 //! * model arenas: symbol/scope ids match their index, scopes nest symmetrically,
 //!   every symbol is declared in the scope that lists it, and the recorded
 //!   read/write counts agree with the def-use list;
 //! * provenance: every block carries a structural identity;
 //! * CFG: `verify_invariants` (edges, terminators, dominator/liveness structure);
 //! * liveness and constant propagation both succeed.
+//!
+//! The enumeration is exhaustive within explicit bounds: 16 freely composable
+//! statements enumerated 1-3 deep (4368 programs), 20 expressions embedded in
+//! five statement contexts plus every ordered pair of expressions (500
+//! programs), 13 curated Lua 5.2 goto programs, 6 typed programs and 10 curated
+//! resolution cases.
 
 use std::collections::HashMap;
 
@@ -28,11 +37,15 @@ use r4::nodes::{Block, Identifier, VariableAssignment};
 use r4::process::{
     DefaultVisitor, ImmutableProcessor, ImmutableVisitor, NodeProcessor, NodeVisitor, Walk,
 };
-use r4::semantic::{AccessKind, ScopeId, ScopeKind, SemanticAnalyzer, SemanticModel, SymbolId};
+use r4::semantic::{
+    AccessKind, GotoSite, LabelId, ScopeId, ScopeKind, SemanticAnalyzer, SemanticModel, SymbolId,
+};
 use r4::Parser;
 
-/// Statements that compose freely: no `break`/`continue`/`goto`, so any sequence
-/// is a well-formed program.
+/// Statements that compose freely: no top-level `break`/`continue`/`goto`, so
+/// any sequence is a well-formed program. Kept at 16 entries: the 3-deep
+/// enumeration is `16 + 16^2 + 16^3 = 4368` programs, which stays within the
+/// bounded budget.
 const STATEMENTS: &[&str] = &[
     "local a = 1",
     "a = a + 1",
@@ -46,10 +59,43 @@ const STATEMENTS: &[&str] = &[
     "repeat a = a - 1 until a <= 0",
     "print(a, b, c)",
     "local e = { 1, k = 2, [a] = 3 }",
+    "local h = h",
+    "do local i = 1\ndo local i = i end\nend",
+    "if a then local c = a elseif b then local c = b else local c = 0 end",
+    "local function m(t) return t.x end",
+];
+
+/// Expressions embedded into several statement contexts to stress order- and
+/// scope-sensitive resolution. `x` is included so that `local x = x` is
+/// generated, and several entries reference the surrounding `a`/`b` locals and
+/// the `t`/`f`/`g` globals.
+const EXPRESSIONS: &[&str] = &[
+    "a",
+    "b",
+    "x",
+    "a + b",
+    "a - b * a",
+    "(a)",
+    "-a",
+    "not a",
+    "#t",
+    "a .. b",
+    "a and b or a",
+    "f(a)",
+    "t.a",
+    "t[a]",
+    "{ a, [b] = a, key = a }",
+    "if a then b else a",
+    "a :: number",
+    "f<number>(a)",
+    "function(p) return p + a end",
+    "g(a)(b)",
 ];
 
 /// Valid Lua 5.2 programs with labels and gotos (curated so labels never
-/// collide when combined).
+/// collide within a function). They exercise the label resolution differential:
+/// same-block, nested-block, sibling-block, enclosing-label, function-local and
+/// loop-exit targets.
 const LUA52_PROGRAMS: &[&str] = &[
     "::top::\nlocal a = 1\ngoto top",
     "do goto done end\n::done::\nreturn 1",
@@ -57,6 +103,13 @@ const LUA52_PROGRAMS: &[&str] = &[
     "local x = 1\nif x then goto skip end\n::skip::\nreturn x",
     "::a::\n::b::\ngoto a",
     "do local y = 1 goto out end\n::out::\nreturn 0",
+    "do ::a:: goto a end",
+    "do do ::a:: goto a end end",
+    "do ::a:: end\ndo ::a:: end\nreturn 0",
+    "::a::\ndo goto a end",
+    "do goto inner\n::inner:: end",
+    "while true do goto out end\n::out::",
+    "local function f() goto done\n::done:: end\nreturn f",
 ];
 
 /// Typed programs exercising declarations, annotations, generics and strict
@@ -100,6 +153,39 @@ fn luau_programs() -> Vec<String> {
             for third in STATEMENTS {
                 programs.push(format!("{first}\n{second}\n{third}\nreturn 0"));
             }
+        }
+    }
+    programs
+}
+
+/// Programs that embed every expression into several statement contexts, and
+/// every ordered pair of expressions into a two-declaration sequence. Bounded:
+/// `20 * 5 + 20^2 = 500` programs.
+fn expression_programs() -> Vec<String> {
+    let mut programs = Vec::new();
+    for expression in EXPRESSIONS {
+        // Declaration, assignment, call argument, function body and a
+        // self-referential declaration (`local x = x` when the expression is
+        // `x`).
+        programs.push(format!(
+            "local a = 1\nlocal b = 2\nlocal c = {expression}\nreturn c"
+        ));
+        programs.push(format!(
+            "local a = 1\nlocal b = 2\na = {expression}\nreturn a"
+        ));
+        programs.push(format!(
+            "local a = 1\nlocal b = 2\nprint({expression})\nreturn 0"
+        ));
+        programs.push(format!(
+            "local a = 1\nlocal b = 2\nlocal fn = function(p) return {expression} end\nreturn fn"
+        ));
+        programs.push(format!("local x = {expression}\nreturn x"));
+    }
+    for first in EXPRESSIONS {
+        for second in EXPRESSIONS {
+            programs.push(format!(
+                "local a = 1\nlocal b = 2\nlocal c = {first}\nlocal d = {second}\nreturn a, b, c, d"
+            ));
         }
     }
     programs
@@ -165,6 +251,30 @@ fn assert_model_invariants(model: &SemanticModel) {
                 model.symbol(symbol).declaring_scope,
                 scope.id,
                 "a symbol is declared in the scope listing it"
+            );
+        }
+    }
+
+    for (index, label) in model.labels.iter().enumerate() {
+        assert_eq!(label.id.index(), index, "label id matches its index");
+        assert!(
+            label.scope.index() < model.scopes.len(),
+            "the scope of label `{}` exists",
+            label.name
+        );
+        assert!(
+            model.scope(label.scope).labels.contains(&label.id),
+            "label `{}` is listed in its declaring scope",
+            label.name
+        );
+    }
+
+    for scope in &model.scopes {
+        for &label in &scope.labels {
+            assert_eq!(
+                model.label(label).scope,
+                scope.id,
+                "a label is declared in the scope listing it"
             );
         }
     }
@@ -299,10 +409,40 @@ fn brute_force_symbol(
     None
 }
 
+/// Resolves the label a `goto` targets by scanning the model's scope tree: the
+/// nearest enclosing scope that declares a label with the goto's name, never
+/// crossing the goto's function boundary. Independent of the analyzer's own
+/// per-scope label map.
+fn brute_force_label(model: &SemanticModel, site: &GotoSite) -> LabelId {
+    let mut current = Some(site.scope);
+    while let Some(scope_id) = current {
+        let scope = model.scope(scope_id);
+        let mut matches = scope
+            .labels
+            .iter()
+            .copied()
+            .filter(|label| model.label(*label).name == site.name);
+        let first = matches.next();
+        assert!(
+            matches.next().is_none(),
+            "scope {scope_id:?} declares `{}` more than once",
+            site.name
+        );
+        if let Some(label) = first {
+            return label;
+        }
+        if scope_id == site.function_scope {
+            break;
+        }
+        current = scope.parent;
+    }
+    panic!("no label `{}` is visible from its goto", site.name);
+}
+
 /// Asserts the resolution differential and the scoping laws for one analyzed
-/// program, and returns how many reference resolutions were compared. The AST
-/// must have been parsed with tokens preserved.
-fn assert_resolution_is_sound(code: &str, block: &Block, model: &SemanticModel) -> usize {
+/// program, and returns `(references, gotos)` counted. The AST must have been
+/// parsed with tokens preserved.
+fn assert_resolution_is_sound(code: &str, block: &Block, model: &SemanticModel) -> (usize, usize) {
     let visibilities = collect_visibilities(code, block, model);
     let mut checked = 0;
 
@@ -390,6 +530,8 @@ fn assert_resolution_is_sound(code: &str, block: &Block, model: &SemanticModel) 
     }
 
     // Law: a `goto` targets a label in its own function, visible from the goto.
+    // Differential: the target must be the label the scope scan finds.
+    let mut gotos = 0;
     for binding in &model.goto_bindings {
         let label = model.label(binding.label);
         assert_eq!(
@@ -400,9 +542,16 @@ fn assert_resolution_is_sound(code: &str, block: &Block, model: &SemanticModel) 
             is_ancestor_or_self(model, label.scope, binding.site.scope),
             "a goto targets a label that is not visible from it in `{code}`"
         );
+        assert_eq!(
+            brute_force_label(model, &binding.site),
+            binding.label,
+            "the goto to `{}` in `{code}` binds the wrong label",
+            binding.site.name
+        );
+        gotos += 1;
     }
 
-    checked
+    (checked, gotos)
 }
 
 fn assert_program_invariants(code: &str, lua52: bool) {
@@ -464,6 +613,13 @@ fn resolution_cases_agree_with_the_brute_force_resolver() {
 }
 
 #[test]
+fn every_bounded_expression_program_holds_the_invariants() {
+    for code in expression_programs() {
+        assert_program_invariants(&code, false);
+    }
+}
+
+#[test]
 fn resolution_differential_checks_real_references() {
     // Guards against the differential silently comparing nothing.
     let mut checked = 0;
@@ -475,10 +631,31 @@ fn resolution_differential_checks_real_references() {
         let model = SemanticAnalyzer::new()
             .analyze(&block)
             .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"));
-        checked += assert_resolution_is_sound(code, &block, &model);
+        checked += assert_resolution_is_sound(code, &block, &model).0;
     }
     assert!(
         checked >= 20,
         "the differential must compare real references, compared {checked}"
+    );
+}
+
+#[test]
+fn label_differential_checks_real_gotos() {
+    // Guards against the label differential silently comparing nothing.
+    let mut gotos = 0;
+    for code in LUA52_PROGRAMS {
+        let block = Parser::default()
+            .lua52()
+            .preserve_tokens()
+            .parse(code)
+            .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+        let model = SemanticAnalyzer::new()
+            .analyze(&block)
+            .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"));
+        gotos += assert_resolution_is_sound(code, &block, &model).1;
+    }
+    assert!(
+        gotos >= 10,
+        "the label differential must compare real gotos, compared {gotos}"
     );
 }
