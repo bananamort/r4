@@ -21,9 +21,16 @@ impl Processor<'_> {
     fn normalize(&self, token: &mut Token, canonical: &str) {
         match self.code {
             Some(code) => {
-                let content = token.read(code).to_owned();
-                if content.contains('_') {
-                    token.replace_with_content(content.replace('_', ""));
+                // A caller that passes a source that does not contain the
+                // token range falls back to the AST-derived lexeme instead of
+                // panicking.
+                match token.try_read_with(code).map(str::to_owned) {
+                    Ok(content) => {
+                        if content.contains('_') {
+                            token.replace_with_content(content.replace('_', ""));
+                        }
+                    }
+                    Err(_) => token.replace_with_content(canonical.to_owned()),
                 }
             }
             None => {
