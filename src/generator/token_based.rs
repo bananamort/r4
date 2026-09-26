@@ -1,7 +1,7 @@
 use std::iter;
 
 use crate::{
-    generator::{utils, LuaGenerator},
+    generator::{dialect_generator, utils, LuaGenerator},
     nodes::*,
 };
 
@@ -17,6 +17,8 @@ pub struct TokenBasedLuaGenerator<'a> {
     indent: String,
     newline: String,
     depth: usize,
+    target_dialect: crate::Dialect,
+    dialect_error: Option<crate::DialectSupportError>,
 }
 
 impl<'a> TokenBasedLuaGenerator<'a> {
@@ -30,8 +32,12 @@ impl<'a> TokenBasedLuaGenerator<'a> {
             indent: "    ".to_owned(),
             newline: "\n".to_owned(),
             depth: 0,
+            target_dialect: crate::Dialect::default(),
+            dialect_error: None,
         }
     }
+
+    dialect_generator!();
 
     /// Creates a generator that normalizes whitespace and indentation while
     /// preserving every comment.

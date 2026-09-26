@@ -31,12 +31,48 @@ pub use session::{Session, SessionError};
 
 use crate::nodes::Block;
 use crate::semantic::{SemanticAnalyzer, SemanticError, SemanticModel};
+use crate::{validate_dialect, Dialect, DialectSupportError};
+
+/// An error produced by [`desugar_to_lua51`].
+#[derive(Clone, Debug)]
+pub enum DesugarError {
+    /// A pass could not analyze the block.
+    Semantic(SemanticError),
+    /// The lowered block still contains syntax Lua 5.1 cannot represent.
+    UnsupportedDialect(DialectSupportError),
+}
+
+impl std::fmt::Display for DesugarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DesugarError::Semantic(error) => write!(f, "{error}"),
+            DesugarError::UnsupportedDialect(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for DesugarError {}
+
+impl From<SemanticError> for DesugarError {
+    fn from(error: SemanticError) -> Self {
+        DesugarError::Semantic(error)
+    }
+}
+
+impl From<DialectSupportError> for DesugarError {
+    fn from(error: DialectSupportError) -> Self {
+        DesugarError::UnsupportedDialect(error)
+    }
+}
 
 /// Applies all desugaring passes to transpile modern Luau down to vanilla Lua 5.1.
 ///
 /// Every pass requires a `SemanticModel`; the pipeline re-analyzes the block
-/// before each pass so each one sees a model that matches the current AST.
-pub fn desugar_to_lua51(block: &mut Block) -> Result<(), SemanticError> {
+/// before each pass so each one sees a model that matches the current AST. The
+/// lowered block is finally validated against Lua 5.1: if a construct the
+/// pipeline does not lower survives (a Lua 5.2 `goto`, a Lua 5.3 bitwise
+/// operator), it fails fast instead of producing unparseable output.
+pub fn desugar_to_lua51(block: &mut Block) -> Result<(), DesugarError> {
     let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::remove_types(block, &model);
 
@@ -66,6 +102,8 @@ pub fn desugar_to_lua51(block: &mut Block) -> Result<(), SemanticError> {
 
     let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::remove_method_call(block, &model);
+
+    validate_dialect(block, Dialect::Lua51)?;
 
     Ok(())
 }

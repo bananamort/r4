@@ -1,4 +1,4 @@
-use crate::generator::{utils, LuaGenerator};
+use crate::generator::{dialect_generator, utils, LuaGenerator};
 use crate::nodes;
 
 /// This implementation of [LuaGenerator](trait.LuaGenerator.html) attempts to produce Lua code as
@@ -9,6 +9,8 @@ pub struct DenseLuaGenerator {
     current_line_length: usize,
     output: String,
     last_push_length: usize,
+    target_dialect: crate::Dialect,
+    dialect_error: Option<crate::DialectSupportError>,
 }
 
 impl DenseLuaGenerator {
@@ -20,8 +22,12 @@ impl DenseLuaGenerator {
             current_line_length: 0,
             output: String::new(),
             last_push_length: 0,
+            target_dialect: crate::Dialect::default(),
+            dialect_error: None,
         }
     }
+
+    dialect_generator!();
 
     /// Appends a string to the current content of the DenseLuaGenerator. A space may be added
     /// depending of the last character of the current content and the first character pushed.

@@ -12,6 +12,68 @@ pub use format::{normalize_whitespace, normalize_whitespace_with};
 pub use readable::ReadableLuaGenerator;
 pub use token_based::TokenBasedLuaGenerator;
 
+/// Adds target-dialect configuration and fallible finalization to a generator.
+///
+/// The generator must own `target_dialect: crate::Dialect` and
+/// `dialect_error: Option<crate::DialectSupportError>` fields.
+macro_rules! dialect_generator {
+    () => {
+        /// Returns the target dialect this generator validates against.
+        #[inline]
+        pub fn target_dialect(&self) -> $crate::Dialect {
+            self.target_dialect
+        }
+
+        /// Sets the target dialect the generator validates against.
+        pub fn with_dialect(mut self, dialect: $crate::Dialect) -> Self {
+            self.target_dialect = dialect;
+            self
+        }
+
+        /// Sets the target dialect the generator validates against.
+        pub fn set_dialect(&mut self, dialect: $crate::Dialect) {
+            self.target_dialect = dialect;
+        }
+
+        /// Validates `block` against the target dialect, then writes it.
+        ///
+        /// Returns a [`DialectSupportError`](crate::DialectSupportError) and
+        /// writes nothing when the target cannot represent `block`. With
+        /// [`Dialect::Default`](crate::Dialect::Default) no validation runs.
+        pub fn try_write_block(
+            &mut self,
+            block: &$crate::nodes::Block,
+        ) -> Result<(), $crate::DialectSupportError> {
+            match $crate::validate_dialect(block, self.target_dialect) {
+                Ok(()) => {
+                    self.dialect_error = None;
+                    <Self as $crate::generator::LuaGenerator>::write_block(self, block);
+                    Ok(())
+                }
+                Err(error) => {
+                    self.dialect_error = Some(error.clone());
+                    Err(error)
+                }
+            }
+        }
+
+        /// Consumes the generator, returning the emitted string.
+        ///
+        /// Surfaces the [`DialectSupportError`](crate::DialectSupportError) left
+        /// by a failed [`try_write_block`](Self::try_write_block). Use this
+        /// instead of [`into_string`](crate::generator::LuaGenerator::into_string)
+        /// when a target dialect is configured.
+        pub fn try_into_string(self) -> Result<String, $crate::DialectSupportError> {
+            match self.dialect_error {
+                Some(error) => Err(error),
+                None => Ok(<Self as $crate::generator::LuaGenerator>::into_string(self)),
+            }
+        }
+    };
+}
+
+pub(crate) use dialect_generator;
+
 use crate::nodes;
 
 /// A trait to let its implementation define how the Lua code is generated. See

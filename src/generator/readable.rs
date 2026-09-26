@@ -1,4 +1,4 @@
-use crate::generator::{utils, LuaGenerator};
+use crate::generator::{dialect_generator, utils, LuaGenerator};
 use crate::nodes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +56,8 @@ pub struct ReadableLuaGenerator {
     output: String,
     last_push_length: usize,
     can_add_new_line_stack: Vec<bool>,
+    target_dialect: crate::Dialect,
+    dialect_error: Option<crate::DialectSupportError>,
 }
 
 impl ReadableLuaGenerator {
@@ -68,8 +70,12 @@ impl ReadableLuaGenerator {
             output: String::new(),
             last_push_length: 0,
             can_add_new_line_stack: Vec::new(),
+            target_dialect: crate::Dialect::default(),
+            dialect_error: None,
         }
     }
+
+    dialect_generator!();
 
     #[inline]
     fn can_add_new_line(&self) -> bool {

@@ -14,7 +14,7 @@ use r4::semantic::{
     ScopeId, ScopeKind, SemanticAnalyzer, SemanticErrorKind, SemanticModel, SemanticQueryError,
     SymbolId, SymbolKind,
 };
-use r4::Parser;
+use r4::{validate_dialect, Dialect, DialectSupportError, Parser};
 
 macro_rules! variant_registry {
     ($tag:ident, $ast:ty, $( $variant:ident => $pattern:pat ),* $(,)?) => {
@@ -75,6 +75,21 @@ variant_registry!(RenameSymbolErrorTag, RenameSymbolError,
     UnresolvedIdentifier => RenameSymbolError::UnresolvedIdentifier { .. },
 );
 
+variant_registry!(DialectSupportErrorTag, DialectSupportError,
+    CompoundAssignmentNotSupported => DialectSupportError::CompoundAssignmentNotSupported { .. },
+    ContinueNotSupported => DialectSupportError::ContinueNotSupported { .. },
+    IfExpressionNotSupported => DialectSupportError::IfExpressionNotSupported { .. },
+    InterpolatedStringNotSupported => DialectSupportError::InterpolatedStringNotSupported { .. },
+    TypesNotSupported => DialectSupportError::TypesNotSupported { .. },
+    FunctionAttributesNotSupported => DialectSupportError::FunctionAttributesNotSupported { .. },
+    LocalAttributesNotSupported => DialectSupportError::LocalAttributesNotSupported { .. },
+    GotoNotSupported => DialectSupportError::GotoNotSupported { .. },
+    LabelsNotSupported => DialectSupportError::LabelsNotSupported { .. },
+    BitwiseOperatorsNotSupported => DialectSupportError::BitwiseOperatorsNotSupported { .. },
+    FloorDivisionNotSupported => DialectSupportError::FloorDivisionNotSupported { .. },
+    BinaryNumberLiteralNotSupported => DialectSupportError::BinaryNumberLiteralNotSupported { .. },
+);
+
 fn luau(code: &str) -> Block {
     Parser::default()
         .parse(code)
@@ -84,6 +99,20 @@ fn luau(code: &str) -> Block {
 fn lua52(code: &str) -> Block {
     Parser::default()
         .lua52()
+        .parse(code)
+        .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"))
+}
+
+fn lua53(code: &str) -> Block {
+    Parser::default()
+        .lua53()
+        .parse(code)
+        .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"))
+}
+
+fn lua54(code: &str) -> Block {
+    Parser::default()
+        .lua54()
         .parse(code)
         .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"))
 }
@@ -1482,4 +1511,53 @@ fn rename_symbol_errors_are_all_triggered() {
         !dynamic.to_string().is_empty(),
         "the error must be formatted"
     );
+}
+
+#[test]
+fn dialect_support_errors_are_all_triggered() {
+    let mut produced = BTreeSet::new();
+    let mut codes = BTreeSet::new();
+
+    let cases = [
+        luau("value += 1"),
+        luau("while true do continue end"),
+        luau("return if a then 1 else 2"),
+        luau("return `a {b}`"),
+        luau("local x: number = 1"),
+        luau("@native function f() end"),
+        lua54("local x <const> = 1"),
+        lua52("goto start"),
+        lua52("::start::"),
+        lua53("return a & b"),
+        lua53("return a // b"),
+        luau("return 0b101"),
+    ];
+
+    for block in cases {
+        let error = validate_dialect(&block, Dialect::Lua51)
+            .expect_err("each case must be unrepresentable in Lua 5.1");
+        produced.insert(DialectSupportErrorTag::of(&error).name());
+        codes.insert(error.code());
+        assert_eq!(error.dialect(), Dialect::Lua51);
+        assert!(!error.to_string().is_empty(), "{error:?} has no message");
+    }
+
+    let absent = missing(
+        DialectSupportErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "dialect errors never triggered: {absent:?}"
+    );
+    assert_eq!(
+        codes.len(),
+        DialectSupportErrorTag::ALL.len(),
+        "every variant must have a distinct code"
+    );
+
+    let dynamic: &dyn std::error::Error = &DialectSupportError::TypesNotSupported {
+        dialect: Dialect::Lua51,
+    };
+    assert!(!dynamic.to_string().is_empty());
 }
