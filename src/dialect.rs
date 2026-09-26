@@ -66,6 +66,10 @@ pub(crate) struct Scan {
     /// `f<<T>>`, `f<<T>>:m()` or `f<<T>>.x`. Lua 5.3/5.4 reject these, so they
     /// name Luau without ambiguity.
     pub luau_instantiation: bool,
+    /// Whether the permissive lexer merged a hex integer and its `..` into one
+    /// number token (`0xf3ad..x`). The dialects with a non-greedy number lexer
+    /// read it identically as a concatenation.
+    pub conflated_number: bool,
 }
 
 /// Scans `code` with a single lexer pass, returning the surviving dialects and
@@ -97,17 +101,28 @@ pub(crate) fn scan(code: &str) -> Scan {
     } else {
         (false, false)
     };
+    // The permissive lexer greedily reads `0x<hex>.` as the start of a hex float
+    // and absorbs a following `..`; that token text is the signal.
+    let conflated_number = !clean
+        && significant.iter().any(|token| {
+            matches!(
+                token.token_type(),
+                TokenType::Number { text } if text.contains("..")
+            )
+        });
 
     Scan {
         candidates: allowed,
         may_diverge,
         luau_instantiation,
+        conflated_number,
     }
 }
 
 /// Classifies the `<<`/`>>` in a source, returning whether it contains a call
 /// that reads two ways (`a << b >> (c)`) and whether it contains one only Luau
-/// can read (`f<<T>>`, `f<<T>>.x`, `f<<T>>:m()`).
+/// can read (`f<<T>>`, `f<<T>>.x`, `f<<T>>:m()`, or the statement call
+/// `f<<T>>()`).
 ///
 /// A `<<` with no `>>` after it, or with a shift operand after the `>>`, is an
 /// ordinary shift chain that every dialect with the operator reads the same way.
@@ -121,17 +136,232 @@ fn classify_instantiation(tokens: &[&Token]) -> (bool, bool) {
         let Some(close) = matching_greater(tokens, index) else {
             continue;
         };
-        let after = tokens.get(close + 1).copied();
-        if after.is_some_and(|token| is_symbol(token, Symbol::LeftParen)) {
-            // `>> (` continues a shift and also calls a Luau instantiation.
-            may_diverge = true;
-        } else if after.is_none_or(follows_instantiation) {
-            // Lua 5.3/5.4 cannot continue a shift chain here, so only Luau reads
-            // the `<<`/`>>` as type instantiation.
-            luau_instantiation = true;
+        match tokens.get(close + 1).copied() {
+            // `PREFIX << T >> (args)` calls a Luau instantiation and shifts in
+            // Lua 5.3/5.4. Both are programs only when the shift can be an
+            // expression: a statement call, or arguments a shift cannot take,
+            // leave Luau as the only reading.
+            Some(token) if is_symbol(token, Symbol::LeftParen) => {
+                if !shift_is_expression(tokens, index, close) {
+                    // Only Luau can read the call.
+                    luau_instantiation = true;
+                } else if is_type_like(&tokens[index + 1..close]) {
+                    // Both readings are valid programs.
+                    may_diverge = true;
+                }
+            }
+            // `f<<T>>`, `f<<T>>.x`, `f<<T>>:m()`: a shift cannot continue here.
+            Some(token) if cannot_continue_shift(token) => luau_instantiation = true,
+            _ => {}
         }
     }
     (may_diverge, luau_instantiation)
+}
+
+/// Returns whether `PREFIX << T >> (args)` is a valid Lua 5.3/5.4 expression, so
+/// the source reads both as a shift and as a Luau instantiation call.
+fn shift_is_expression(tokens: &[&Token], angle: usize, close: usize) -> bool {
+    // `obj:m<<T>>(...)` — a method reference without a call is not a Lua prefix,
+    // so the shift reading cannot exist.
+    if angle >= 2 && is_symbol(tokens[angle - 2], Symbol::Colon) {
+        return false;
+    }
+    if statement_position(tokens, angle) {
+        return false;
+    }
+    if !is_lua_expression(&tokens[angle + 1..close], false) {
+        return false;
+    }
+    let open = close + 1;
+    let Some(paren) = matching_close(tokens, open) else {
+        return false;
+    };
+    is_lua_expression(&tokens[open + 1..paren], true)
+}
+
+/// Returns whether `tokens` is a single Lua expression: non-empty, no top-level
+/// comma, and made only of tokens an expression can contain. Method calls are
+/// only allowed where Lua permits them (call arguments, not a type argument
+/// list, where `:` introduces a table field).
+fn is_lua_expression(tokens: &[&Token], method_calls: bool) -> bool {
+    !tokens.is_empty()
+        && !has_top_level_comma(tokens)
+        && tokens
+            .iter()
+            .all(|token| is_expression_token(token, method_calls))
+}
+
+/// Returns whether a token can appear inside a Lua expression.
+fn is_expression_token(token: &Token, method_calls: bool) -> bool {
+    if is_symbol(token, Symbol::Colon) {
+        return method_calls;
+    }
+    match token.token_type() {
+        TokenType::Identifier { .. }
+        | TokenType::Number { .. }
+        | TokenType::StringLiteral { .. }
+        | TokenType::InterpolatedString { .. } => true,
+        TokenType::Symbol { symbol } => matches!(
+            symbol,
+            Symbol::Dot
+                | Symbol::LeftParen
+                | Symbol::RightParen
+                | Symbol::LeftBrace
+                | Symbol::RightBrace
+                | Symbol::LeftBracket
+                | Symbol::RightBracket
+                | Symbol::True
+                | Symbol::False
+                | Symbol::Nil
+                | Symbol::Ellipsis
+                | Symbol::Not
+                | Symbol::Hash
+                | Symbol::Minus
+                | Symbol::Plus
+                | Symbol::Star
+                | Symbol::Slash
+                | Symbol::DoubleSlash
+                | Symbol::Percent
+                | Symbol::Caret
+                | Symbol::TwoDots
+                | Symbol::Ampersand
+                | Symbol::Pipe
+                | Symbol::Tilde
+                | Symbol::LessThan
+                | Symbol::GreaterThan
+                | Symbol::LessThanEqual
+                | Symbol::GreaterThanEqual
+                | Symbol::TwoEqual
+                | Symbol::TildeEqual
+                | Symbol::And
+                | Symbol::Or
+        ),
+        _ => false,
+    }
+}
+
+/// Returns whether a slice could be an instantiation's type argument list.
+fn is_type_like(tokens: &[&Token]) -> bool {
+    tokens.iter().all(|token| is_type_token(token))
+}
+
+/// Returns whether a token can appear inside a Luau type.
+fn is_type_token(token: &Token) -> bool {
+    match token.token_type() {
+        TokenType::Identifier { .. } | TokenType::StringLiteral { .. } => true,
+        TokenType::Symbol { symbol } => matches!(
+            symbol,
+            Symbol::Dot
+                | Symbol::Comma
+                | Symbol::Colon
+                | Symbol::LeftParen
+                | Symbol::RightParen
+                | Symbol::LeftBrace
+                | Symbol::RightBrace
+                | Symbol::LeftBracket
+                | Symbol::RightBracket
+                | Symbol::LessThan
+                | Symbol::GreaterThan
+                | Symbol::QuestionMark
+                | Symbol::ThinArrow
+                | Symbol::Ampersand
+                | Symbol::Pipe
+                | Symbol::Ellipsis
+                | Symbol::True
+                | Symbol::False
+                | Symbol::Nil
+        ),
+        _ => false,
+    }
+}
+
+/// Returns whether a slice contains a comma outside any brackets.
+fn has_top_level_comma(tokens: &[&Token]) -> bool {
+    let mut depth = 0usize;
+    for token in tokens {
+        if opens_bracket(token) {
+            depth += 1;
+        } else if closes_bracket(token) {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0 && is_symbol(token, Symbol::Comma) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns whether the expression ending at `angle` (the `<<`) starts a
+/// statement. A statement's expression must be a call, so a `<<` call there can
+/// only be Luau.
+fn statement_position(tokens: &[&Token], angle: usize) -> bool {
+    let start = prefix_start(tokens, angle);
+    start == 0 || is_statement_boundary(tokens[start - 1])
+}
+
+/// Walks back over the prefix (`a.b`, `f()`, `t[1]`, `(a).b`, `f"s"`) ending at
+/// `end`, returning the index of its first token.
+fn prefix_start(tokens: &[&Token], end: usize) -> usize {
+    let mut index = end;
+    while index > 0 {
+        let previous = tokens[index - 1];
+        if matches!(previous.token_type(), TokenType::Identifier { .. }) {
+            if index >= 2
+                && (is_symbol(tokens[index - 2], Symbol::Dot)
+                    || is_symbol(tokens[index - 2], Symbol::Colon))
+            {
+                index -= 2;
+                continue;
+            }
+            return index - 1;
+        }
+        if opens_bracket(previous) {
+            break;
+        }
+        if closes_bracket(previous) {
+            match matching_open(tokens, index - 1) {
+                Some(open) => index = open,
+                None => break,
+            }
+            continue;
+        }
+        if matches!(
+            previous.token_type(),
+            TokenType::StringLiteral { .. } | TokenType::InterpolatedString { .. }
+        ) {
+            index -= 1;
+            continue;
+        }
+        break;
+    }
+    index
+}
+
+/// Returns whether a token ends one statement and lets another begin.
+fn is_statement_boundary(token: &Token) -> bool {
+    match token.token_type() {
+        TokenType::Number { .. }
+        | TokenType::StringLiteral { .. }
+        | TokenType::InterpolatedString { .. }
+        | TokenType::Identifier { .. } => true,
+        TokenType::Symbol { symbol } => matches!(
+            symbol,
+            Symbol::Semicolon
+                | Symbol::Do
+                | Symbol::Then
+                | Symbol::Else
+                | Symbol::ElseIf
+                | Symbol::Repeat
+                | Symbol::End
+                | Symbol::True
+                | Symbol::False
+                | Symbol::Nil
+                | Symbol::Ellipsis
+                | Symbol::RightParen
+                | Symbol::RightBracket
+                | Symbol::RightBrace
+        ),
+        _ => false,
+    }
 }
 
 /// Finds the `>>` that closes a `<<` without leaving the brackets the `<<` sits
@@ -155,23 +385,57 @@ fn matching_greater(tokens: &[&Token], start: usize) -> Option<usize> {
     None
 }
 
-/// Returns whether a token opens a bracketed group.
-fn opens_bracket(token: &Token) -> bool {
-    is_symbol(token, Symbol::LeftParen)
-        || is_symbol(token, Symbol::LeftBracket)
-        || is_symbol(token, Symbol::LeftBrace)
+/// Finds the `)`/`]`/`}` that matches the bracket at `open`.
+fn matching_close(tokens: &[&Token], open: usize) -> Option<usize> {
+    let (open_symbol, close_symbol) = bracket_pair(tokens[open])?;
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        if is_symbol(token, close_symbol) {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        } else if is_symbol(token, open_symbol) {
+            depth += 1;
+        }
+    }
+    None
 }
 
-/// Returns whether a token closes a bracketed group.
-fn closes_bracket(token: &Token) -> bool {
-    is_symbol(token, Symbol::RightParen)
-        || is_symbol(token, Symbol::RightBracket)
-        || is_symbol(token, Symbol::RightBrace)
+/// Finds the opening bracket matching the `)`/`]`/`}` at `close`.
+fn matching_open(tokens: &[&Token], close: usize) -> Option<usize> {
+    let (open_symbol, close_symbol) = bracket_pair(tokens[close])?;
+    let mut depth = 0usize;
+    for index in (0..=close).rev() {
+        let token = tokens[index];
+        if is_symbol(token, close_symbol) {
+            depth += 1;
+        } else if is_symbol(token, open_symbol) {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+/// Returns the matching open/close symbols for a bracket token.
+fn bracket_pair(token: &Token) -> Option<(Symbol, Symbol)> {
+    if is_symbol(token, Symbol::LeftParen) || is_symbol(token, Symbol::RightParen) {
+        Some((Symbol::LeftParen, Symbol::RightParen))
+    } else if is_symbol(token, Symbol::LeftBracket) || is_symbol(token, Symbol::RightBracket) {
+        Some((Symbol::LeftBracket, Symbol::RightBracket))
+    } else if is_symbol(token, Symbol::LeftBrace) || is_symbol(token, Symbol::RightBrace) {
+        Some((Symbol::LeftBrace, Symbol::RightBrace))
+    } else {
+        None
+    }
 }
 
 /// Returns whether the token after a `>>` cannot continue a Lua 5.3/5.4 shift
 /// chain, so the preceding `<<`/`>>` must be a Luau type instantiation.
-fn follows_instantiation(token: &Token) -> bool {
+fn cannot_continue_shift(token: &Token) -> bool {
     match token.token_type() {
         TokenType::Eof => true,
         TokenType::Symbol { symbol } => matches!(
@@ -186,9 +450,24 @@ fn follows_instantiation(token: &Token) -> bool {
                 | Symbol::LeftBracket
                 | Symbol::Colon
                 | Symbol::TwoColons
+                | Symbol::GreaterThan
         ),
         _ => false,
     }
+}
+
+/// Returns whether a token opens a bracketed group.
+fn opens_bracket(token: &Token) -> bool {
+    is_symbol(token, Symbol::LeftParen)
+        || is_symbol(token, Symbol::LeftBracket)
+        || is_symbol(token, Symbol::LeftBrace)
+}
+
+/// Returns whether a token closes a bracketed group.
+fn closes_bracket(token: &Token) -> bool {
+    is_symbol(token, Symbol::RightParen)
+        || is_symbol(token, Symbol::RightBracket)
+        || is_symbol(token, Symbol::RightBrace)
 }
 
 /// Returns whether a token is the given symbol.

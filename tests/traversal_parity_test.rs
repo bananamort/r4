@@ -35,7 +35,7 @@ fn parse(code: &str, lua52: bool) -> Block {
     let parser = if lua52 {
         Parser::default().lua52()
     } else {
-        Parser::default().luau()
+        Parser::default()
     };
     parser
         .parse(code)

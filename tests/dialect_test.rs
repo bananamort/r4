@@ -237,11 +237,17 @@ fn default_dialect_reports_a_syntactic_overlap() {
 
 #[test]
 fn default_detects_luau_type_instantiations() {
-    // `<<`/`>>` that Lua 5.3/5.4 cannot continue as a shift names Luau.
+    // `<<`/`>>` that Lua 5.3/5.4 cannot read names Luau.
     for code in [
         "return f<<T>>",
         "return f<<T>>.x",
         "return f<<T>>:m()",
+        "f<<T>>(x)",
+        "foo.bar<<T>>()",
+        "f<<T, U>>(x)",
+        "f<<T>>(x, y)",
+        "local d = f<<T>>()",
+        "return obj:m<<T>>(1)",
         "local x = 1\nx += 2\nreturn f<<T>>(x)",
     ] {
         Parser::default()
@@ -260,11 +266,18 @@ fn default_detects_luau_type_instantiations() {
         .parse("return (a << b) >> (c)")
         .expect("a parenthesized Lua 5.3 shift chain");
 
-    // The call form is the one overlap that cannot be resolved without a choice.
-    let error = Parser::default()
-        .parse("local x = a << b >> (c)")
-        .expect_err("the call form is ambiguous");
-    assert_eq!(error.code(), "parse/ambiguous-dialect");
+    // `a << b >> (c)` is both a shift and an instantiation call in expression
+    // position, so it cannot be resolved without a choice.
+    for code in [
+        "local x = a << b >> (c)",
+        "local y = f<<T>>(x)",
+        "return f<<T>>(x)",
+    ] {
+        let error = Parser::default()
+            .parse(code)
+            .expect_err("the call form is ambiguous");
+        assert_eq!(error.code(), "parse/ambiguous-dialect", "{code}");
+    }
 }
 
 #[test]

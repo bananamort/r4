@@ -394,7 +394,6 @@ fn liveness_reads_every_prefix_and_variable_shape() {
 
     let code = "local t = {}\nlocal f = function() return 1 end\nlocal a = t.field\nlocal b = t[1]\nlocal c = f()\nlocal d = f<<T>>()\nt.field = a\nt[1] = b\nreturn a, b, c, d";
     let block = Parser::default()
-        .luau()
         .parse(code)
         .unwrap_or_else(|error| panic!("failed to parse: {error}"));
     let model = SemanticAnalyzer::new()
@@ -1910,12 +1909,10 @@ fn tokenful_and_tokenless_trees_are_equivalent_for_type_arguments() {
         "return f<<SomeType>>()",
     ] {
         let tokenful = Parser::default()
-            .luau()
             .preserve_tokens()
             .parse(code)
             .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
         let tokenless = Parser::default()
-            .luau()
             .parse(code)
             .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
         assert!(

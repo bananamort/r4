@@ -9,7 +9,6 @@ use r4::Parser;
 
 fn parse(code: &str) -> Block {
     Parser::default()
-        .luau()
         .preserve_tokens()
         .parse(code)
         .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"))

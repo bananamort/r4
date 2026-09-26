@@ -114,6 +114,29 @@ impl Parser {
         }
 
         let scan = crate::dialect::scan(code);
+        // The permissive lexer merged a hex integer with a following `..`
+        // (`0xf3ad..x`). The dialects without the greedy hex-float lexer read it
+        // as a concatenation, so parse once with the union of the candidates
+        // among them.
+        if scan.conflated_number {
+            let non_greedy: Vec<Dialect> = scan
+                .candidates
+                .iter()
+                .copied()
+                .filter(|dialect| {
+                    matches!(dialect, Dialect::Lua51 | Dialect::LuaJit | Dialect::Luau)
+                })
+                .collect();
+            if !non_greedy.is_empty() {
+                let version = non_greedy
+                    .iter()
+                    .fold(LuaVersion::lua51(), |version, dialect| {
+                        version | dialect.lua_version()
+                    });
+                return self.parse_fallible(code, version);
+            }
+        }
+
         // `<<`/`>>` before a call is Luau type instantiation or a Lua 5.3/5.4
         // shift chain — different programs. If a Luau marker already ruled every
         // other dialect out it is unambiguously Luau; otherwise it is refused

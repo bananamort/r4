@@ -127,7 +127,6 @@ impl ImmutableProcessor for ImmutableExpressions {
 fn every_visitor_reaches_the_same_expressions() {
     for &code in program_corpus() {
         let mut block = Parser::default()
-            .luau()
             .parse(code)
             .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
 
@@ -137,7 +136,7 @@ fn every_visitor_reaches_the_same_expressions() {
         let mut post = PostExpressions(Vec::new());
         DefaultPostVisitor::visit_block(&mut block, &mut post);
 
-        let immutable_block = Parser::default().luau().parse(code).expect("parse");
+        let immutable_block = Parser::default().parse(code).expect("parse");
         let mut immutable = ImmutableExpressions(Vec::new());
         Walk::visit_block(&immutable_block, &mut immutable);
 
@@ -158,7 +157,6 @@ fn every_visitor_reaches_the_same_expressions() {
 fn every_visitor_reaches_the_same_types() {
     for &code in type_corpus() {
         let mut block = Parser::default()
-            .luau()
             .parse(code)
             .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
 
@@ -168,7 +166,7 @@ fn every_visitor_reaches_the_same_types() {
         let mut post = PostTypes(Vec::new());
         DefaultPostVisitor::visit_block(&mut block, &mut post);
 
-        let immutable_block = Parser::default().luau().parse(code).expect("parse");
+        let immutable_block = Parser::default().parse(code).expect("parse");
         let mut immutable = ImmutableTypes(Vec::new());
         Walk::visit_block(&immutable_block, &mut immutable);
 
@@ -192,7 +190,7 @@ fn every_visitor_reaches_the_same_types() {
 #[test]
 fn method_call_type_arguments_are_visited() {
     let code = "return obj:m<<SomeType, OtherType>>()";
-    let mut block = Parser::default().luau().parse(code).expect("parse");
+    let mut block = Parser::default().parse(code).expect("parse");
 
     let mut mutable = MutableTypes(Vec::new());
     DefaultVisitor::visit_block(&mut block, &mut mutable);
@@ -207,7 +205,7 @@ fn method_call_type_arguments_are_visited() {
         mutable.0
     );
 
-    let immutable_block = Parser::default().luau().parse(code).expect("parse");
+    let immutable_block = Parser::default().parse(code).expect("parse");
     let mut immutable = ImmutableTypes(Vec::new());
     Walk::visit_block(&immutable_block, &mut immutable);
     assert!(
@@ -225,7 +223,6 @@ fn token_walk_reaches_method_type_argument_trivia() {
     use r4::nodes::TriviaKind;
 
     let block = Parser::default()
-        .luau()
         .preserve_tokens()
         .parse("return obj:m<< --[[inner]] T >>()")
         .expect("parse");
