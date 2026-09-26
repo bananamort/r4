@@ -126,6 +126,18 @@ impl FunctionName {
         &self.field_names
     }
 
+    /// Returns a mutable reference to the field names.
+    #[inline]
+    pub fn mutate_field_names(&mut self) -> &mut Vec<Identifier> {
+        &mut self.field_names
+    }
+
+    /// Returns a mutable reference to the method, if any.
+    #[inline]
+    pub fn mutate_method(&mut self) -> Option<&mut Identifier> {
+        self.method.as_mut()
+    }
+
     /// Returns a mutable reference to the base identifier.
     #[inline]
     pub fn mutate_identifier(&mut self) -> &mut Identifier {
@@ -319,6 +331,12 @@ impl FunctionStatement {
     #[inline]
     pub fn get_generic_parameters(&self) -> Option<&GenericParameters> {
         self.generic_parameters.as_ref()
+    }
+
+    /// Returns a mutable reference to the generic parameters, if any.
+    #[inline]
+    pub fn mutate_generic_parameters(&mut self) -> Option<&mut GenericParameters> {
+        self.generic_parameters.as_mut()
     }
 
     /// Returns a reference to the function's block.

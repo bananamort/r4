@@ -141,6 +141,12 @@ impl FunctionCall {
         self.method.as_ref().map(|method| &method.name)
     }
 
+    /// Returns a mutable reference to the method name, if this is a method call.
+    #[inline]
+    pub fn mutate_method(&mut self) -> Option<&mut Identifier> {
+        self.method.as_mut().map(|method| &mut method.name)
+    }
+
     /// Returns an iterator over the type instantiations of the method.
     pub fn get_method_type_instantiation(&self) -> impl Iterator<Item = &Type> {
         self.method

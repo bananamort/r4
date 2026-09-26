@@ -198,6 +198,12 @@ impl FunctionType {
         self.generic_parameters.as_ref()
     }
 
+    /// Returns a mutable reference to the generic parameters, if any.
+    #[inline]
+    pub fn mutate_generic_parameters(&mut self) -> Option<&mut GenericParameters> {
+        self.generic_parameters.as_mut()
+    }
+
     /// Adds an argument to this function type and returns the modified type.
     pub fn with_argument(mut self, argument: impl Into<FunctionArgumentType>) -> Self {
         self.arguments.push(argument.into());

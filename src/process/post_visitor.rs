@@ -419,8 +419,15 @@ pub trait NodePostVisitor<T: NodeProcessor + NodePostProcessor> {
     }
 
     fn visit_identifier(identifier: &mut Identifier, processor: &mut T) {
+        processor.process_identifier(identifier);
         processor.process_variable_expression(identifier);
         processor.process_after_variable_expression(identifier);
+        processor.process_after_identifier(identifier);
+    }
+
+    fn visit_plain_identifier(identifier: &mut Identifier, processor: &mut T) {
+        processor.process_identifier(identifier);
+        processor.process_after_identifier(identifier);
     }
 
     fn visit_if_expression(if_expression: &mut IfExpression, processor: &mut T) {

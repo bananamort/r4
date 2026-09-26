@@ -77,6 +77,7 @@ impl NodeProcessor for DetokenizeProcessor {
         process_field_expression: FieldExpression,
         process_function_expression: FunctionExpression,
         process_variable_expression: Identifier,
+        process_identifier: Identifier,
         process_index_expression: IndexExpression,
         process_if_expression: IfExpression,
         process_parenthese_expression: ParentheseExpression,

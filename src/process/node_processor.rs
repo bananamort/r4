@@ -38,6 +38,11 @@ pub trait NodeProcessor {
     fn process_field_expression(&mut self, _: &mut FieldExpression) {}
     fn process_function_expression(&mut self, _: &mut FunctionExpression) {}
     fn process_variable_expression(&mut self, _: &mut Identifier) {}
+    /// An identifier that is delivered as a plain identifier rather than a
+    /// variable expression: a field name, method name, label, type name,
+    /// generic parameter or declaration name. The read-only visitors surface
+    /// the same identifiers through the same hook.
+    fn process_identifier(&mut self, _: &mut Identifier) {}
     fn process_index_expression(&mut self, _: &mut IndexExpression) {}
     fn process_if_expression(&mut self, _: &mut IfExpression) {}
     fn process_number_expression(&mut self, _: &mut NumberExpression) {}
@@ -105,6 +110,8 @@ pub trait NodePostProcessor {
     fn process_after_field_expression(&mut self, _: &mut FieldExpression) {}
     fn process_after_function_expression(&mut self, _: &mut FunctionExpression) {}
     fn process_after_variable_expression(&mut self, _: &mut Identifier) {}
+    /// The post-order counterpart of [`NodeProcessor::process_identifier`].
+    fn process_after_identifier(&mut self, _: &mut Identifier) {}
     fn process_after_index_expression(&mut self, _: &mut IndexExpression) {}
     fn process_after_if_expression(&mut self, _: &mut IfExpression) {}
     fn process_after_number_expression(&mut self, _: &mut NumberExpression) {}

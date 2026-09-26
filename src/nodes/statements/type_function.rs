@@ -144,6 +144,12 @@ impl TypeFunctionStatement {
         self.generic_parameters.as_ref()
     }
 
+    /// Returns a mutable reference to the generic parameters, if any.
+    #[inline]
+    pub fn mutate_generic_parameters(&mut self) -> Option<&mut GenericParameters> {
+        self.generic_parameters.as_mut()
+    }
+
     /// Returns a mutable reference to the parameters.
     pub fn mutate_parameters(&mut self) -> &mut Vec<TypedIdentifier> {
         &mut self.parameters

@@ -269,6 +269,12 @@ impl ReadOnlyChildren for FunctionName {
 impl MutableChildren for FunctionName {
     fn for_each_child_mut(&mut self, visitor: &mut impl ChildVisitorMut) {
         visitor.variable_expression(self.mutate_identifier());
+        for field in self.mutate_field_names() {
+            visitor.identifier(field);
+        }
+        if let Some(method) = self.mutate_method() {
+            visitor.identifier(method);
+        }
     }
 }
 
@@ -296,6 +302,9 @@ impl MutableChildren for FunctionStatement {
     fn for_each_child_mut(&mut self, visitor: &mut impl ChildVisitorMut) {
         visitor.attributes(self.mutate_attributes());
         self.mutate_function_name().for_each_child_mut(visitor);
+        if let Some(generic_parameters) = self.mutate_generic_parameters() {
+            visitor.generic_parameters(generic_parameters);
+        }
         visitor.block(self.mutate_block());
         for parameter in self.iter_mut_parameters() {
             visitor.typed_identifier(parameter);
@@ -439,6 +448,9 @@ impl MutableChildren for FunctionAssignment {
     fn for_each_child_mut(&mut self, visitor: &mut impl ChildVisitorMut) {
         visitor.attributes(self.mutate_attributes());
         visitor.identifier(self.mutate_identifier());
+        if let Some(generic_parameters) = self.mutate_generic_parameters() {
+            visitor.generic_parameters(generic_parameters);
+        }
         visitor.block(self.mutate_block());
         for parameter in self.iter_mut_parameters() {
             visitor.typed_identifier(parameter);
@@ -544,6 +556,9 @@ impl ReadOnlyChildren for TypeFunctionStatement {
 
 impl MutableChildren for TypeFunctionStatement {
     fn for_each_child_mut(&mut self, visitor: &mut impl ChildVisitorMut) {
+        if let Some(generic_parameters) = self.mutate_generic_parameters() {
+            visitor.generic_parameters(generic_parameters);
+        }
         visitor.block(self.mutate_block());
         for parameter in self.iter_mut_parameters() {
             visitor.typed_identifier(parameter);
@@ -635,6 +650,7 @@ impl ReadOnlyChildren for FieldExpression {
 impl MutableChildren for FieldExpression {
     fn for_each_child_mut(&mut self, visitor: &mut impl ChildVisitorMut) {
         visitor.prefix(self.mutate_prefix());
+        visitor.identifier(self.mutate_field());
     }
 }
 
@@ -660,6 +676,9 @@ impl ReadOnlyChildren for FunctionExpression {
 impl MutableChildren for FunctionExpression {
     fn for_each_child_mut(&mut self, visitor: &mut impl ChildVisitorMut) {
         visitor.attributes(self.mutate_attributes());
+        if let Some(generic_parameters) = self.mutate_generic_parameters() {
+            visitor.generic_parameters(generic_parameters);
+        }
         visitor.block(self.mutate_block());
         for parameter in self.iter_mut_parameters() {
             visitor.typed_identifier(parameter);
@@ -903,6 +922,9 @@ impl ReadOnlyChildren for FunctionCall {
 impl MutableChildren for FunctionCall {
     fn for_each_child_mut(&mut self, visitor: &mut impl ChildVisitorMut) {
         visitor.prefix(self.mutate_prefix());
+        if let Some(method) = self.mutate_method() {
+            visitor.identifier(method);
+        }
         for r#type in self.iter_mut_method_type_instantiation() {
             visitor.r#type(r#type);
         }
@@ -1439,6 +1461,9 @@ impl ReadOnlyChildren for FunctionType {
 
 impl MutableChildren for FunctionType {
     fn for_each_child_mut(&mut self, visitor: &mut impl ChildVisitorMut) {
+        if let Some(generic_parameters) = self.mutate_generic_parameters() {
+            visitor.generic_parameters(generic_parameters);
+        }
         for argument in self.iter_mut_arguments() {
             argument.for_each_child_mut(visitor);
         }

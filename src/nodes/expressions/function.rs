@@ -187,6 +187,12 @@ impl FunctionExpression {
         self.generic_parameters.as_ref()
     }
 
+    /// Returns a mutable reference to the generic parameters, if any.
+    #[inline]
+    pub fn mutate_generic_parameters(&mut self) -> Option<&mut GenericParameters> {
+        self.generic_parameters.as_mut()
+    }
+
     /// Returns whether this function expression has generic parameters.
     #[inline]
     pub fn is_generic(&self) -> bool {

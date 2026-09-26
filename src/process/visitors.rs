@@ -47,6 +47,10 @@ where
         V::visit_identifier(identifier, self.processor);
     }
 
+    fn identifier(&mut self, identifier: &mut Identifier) {
+        V::visit_plain_identifier(identifier, self.processor);
+    }
+
     fn attributes(&mut self, attributes: &mut Attributes) {
         V::visit_attributes(attributes, self.processor);
     }
@@ -85,6 +89,10 @@ where
 
     fn function_return_type(&mut self, r#type: &mut FunctionReturnType) {
         V::visit_function_return_type(r#type, self.processor);
+    }
+
+    fn generic_parameters(&mut self, parameters: &mut GenericParameters) {
+        MutableChildren::for_each_child_mut(parameters, self);
     }
 
     fn generic_parameters_with_defaults(&mut self, parameters: &mut GenericParametersWithDefaults) {
@@ -387,7 +395,15 @@ pub trait NodeVisitor<T: NodeProcessor> {
     }
 
     fn visit_identifier(identifier: &mut Identifier, processor: &mut T) {
+        // The read-only walker surfaces every identifier through
+        // `process_identifier`; mirror that here so a mutable processor cannot
+        // silently miss field, method, label, type or declaration identifiers.
+        processor.process_identifier(identifier);
         processor.process_variable_expression(identifier);
+    }
+
+    fn visit_plain_identifier(identifier: &mut Identifier, processor: &mut T) {
+        processor.process_identifier(identifier);
     }
 
     fn visit_if_expression(if_expression: &mut IfExpression, processor: &mut T) {
