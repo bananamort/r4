@@ -54,6 +54,8 @@ pub enum CfgErrorKind {
         /// The name of the unresolved identifier.
         name: String,
     },
+    /// An `if` statement has no branches, so it has no control flow to lower.
+    IfWithoutBranches,
 }
 
 impl fmt::Display for CfgError {
@@ -90,6 +92,9 @@ impl fmt::Display for CfgError {
                 "identifier `{}` is not bound in the semantic model",
                 name
             ),
+            CfgErrorKind::IfWithoutBranches => {
+                write!(f, "if statement has no branches")
+            }
         }
     }
 }
@@ -413,7 +418,10 @@ impl<'a> CfgBuilder<'a> {
         let branches = if_statement.get_branches();
 
         if branches.is_empty() {
-            return Ok(());
+            return Err(CfgError {
+                kind: CfgErrorKind::IfWithoutBranches,
+                line: None,
+            });
         }
 
         let merge = self.create_block();

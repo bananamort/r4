@@ -84,6 +84,13 @@ impl NameGenerator {
             return prefix;
         }
 
+        // A prefix that cannot form a valid identifier (a leading digit, a
+        // space, ...) would make every `prefix{N}` invalid and loop forever.
+        // Fall back to a plain fresh name in that case.
+        if !is_valid_identifier(&format!("{prefix}0")) {
+            return self.generate();
+        }
+
         let mut counter = 1_u32;
         loop {
             let candidate = format!("{prefix}{counter}");
@@ -127,5 +134,20 @@ mod test {
             prefixed, "__R4_SELECT",
             "the prefix collides with a model symbol"
         );
+    }
+
+    #[test]
+    fn an_invalid_prefix_falls_back_instead_of_looping() {
+        let (_, model) = analyze_with_tokens("return 1");
+        let mut generator = NameGenerator::new(&model);
+
+        for prefix in ["1x", "", "not an identifier"] {
+            let name = generator.generate_with_prefix(prefix);
+            assert!(
+                is_valid_identifier(&name),
+                "`{name}` generated from `{prefix:?}` must be a valid identifier"
+            );
+            assert!(generator.is_reserved(&name), "`{name}` must be reserved");
+        }
     }
 }

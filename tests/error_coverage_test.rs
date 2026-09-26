@@ -70,6 +70,7 @@ variant_registry!(CfgErrorTag, CfgErrorKind,
     UnresolvedGoto => CfgErrorKind::UnresolvedGoto { .. },
     MissingBlockIdentity => CfgErrorKind::MissingBlockIdentity,
     UnresolvedIdentifier => CfgErrorKind::UnresolvedIdentifier { .. },
+    IfWithoutBranches => CfgErrorKind::IfWithoutBranches,
 );
 
 variant_registry!(RenameSymbolErrorTag, RenameSymbolError,
@@ -299,6 +300,15 @@ fn cfg_errors_are_all_triggered() {
         }
     }
 
+    // An `if` stripped of its branches after analysis has no control flow.
+    let mut empty_if = luau("if a then b() end");
+    let empty_if_model = analyze(&empty_if);
+    for statement in empty_if.iter_mut_statements() {
+        if let Statement::If(if_statement) = statement {
+            if_statement.mutate_branches().clear();
+        }
+    }
+
     let errors: Vec<CfgError> = vec![
         build_chunk(&break_block, &break_model).expect_err("break outside a loop is rejected"),
         build_chunk(&continue_block, &continue_model)
@@ -309,6 +319,7 @@ fn cfg_errors_are_all_triggered() {
         build_chunk(&extra_goto, &extra_goto_model)
             .expect_err("the added goto has no semantic record"),
         build_chunk(&loop_header, &loop_model).expect_err("the iteration variable is unresolved"),
+        build_chunk(&empty_if, &empty_if_model).expect_err("an if without branches is rejected"),
     ];
 
     let produced: BTreeSet<&'static str> = errors
