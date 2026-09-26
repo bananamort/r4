@@ -1,13 +1,15 @@
-//! In-process Luau execution oracle.
+//! In-process Luau execution oracle with the Roblox runtime.
 //!
 //! Each program is run twice in an embedded [Lune](https://lune-org.github.io/)
-//! Luau VM: once as written, and once after `r4` has renamed its symbols and
-//! lowered modern Luau syntax. The two runs must produce byte-for-byte identical
-//! observable behavior — `print` output, returned values, and the state the
-//! program returns.
+//! VM — which provides the Roblox runtime (`require("@lune/roblox")`: datatypes,
+//! instances, `Enum`) — once as written, and once after `r4` has renamed its
+//! symbols and lowered modern Luau syntax. The two runs must produce
+//! byte-for-byte identical observable behavior: `print` output, returned values,
+//! and the state the program returns.
 //!
 //! The oracle is deterministic and self-contained: it needs no external Luau
-//! binary and no textual comparison against another compiler.
+//! binary, no Roblox Studio install, and no textual comparison against another
+//! compiler.
 
 use r4::generator::{LuaGenerator, ReadableLuaGenerator};
 use r4::rules::desugar_to_lua51;
@@ -224,6 +226,66 @@ for _, value in ipairs(values) do
 end
 print(tostring(sum) .. "!")
 return sum
+"#,
+    ),
+    (
+        "roblox datatype arithmetic",
+        r#"
+local roblox = require("@lune/roblox")
+local Vector3 = roblox.Vector3
+local CFrame = roblox.CFrame
+
+local a = Vector3.new(1, 2, 3)
+local b = Vector3.new(4, 5, 6)
+local sum = a + b
+local cross = a:Cross(b)
+local dot = a:Dot(b)
+print(tostring(sum), cross.X, cross.Y, cross.Z, dot)
+
+local frame = CFrame.new(0, 5, 0) * CFrame.new(1, 0, 0)
+local position = frame.Position
+print(position.X, position.Y, position.Z)
+return sum.X, sum.Y, sum.Z, dot
+"#,
+    ),
+    (
+        "roblox instance tree",
+        r#"
+local roblox = require("@lune/roblox")
+local Instance = roblox.Instance
+
+local root = Instance.new("Folder")
+root.Name = "Root"
+local child = Instance.new("Folder")
+child.Name = "Child"
+child.Parent = root
+local grandchild = Instance.new("Folder")
+grandchild.Name = "Grandchild"
+grandchild.Parent = child
+
+local names = {}
+for _, descendant in ipairs(root:GetDescendants()) do
+    names[#names + 1] = descendant.Name
+end
+table.sort(names)
+print(table.concat(names, ","), child.Parent.Name, grandchild.Parent.Name)
+return table.concat(names, ",")
+"#,
+    ),
+    (
+        "roblox datatypes under luau syntax",
+        r#"
+local roblox = require("@lune/roblox")
+
+local velocity: Vector3 = roblox.Vector3.new(3, 4, 0)
+local speed: number = velocity.Magnitude
+local label = if speed > 4 then "fast" else "slow"
+print(`speed is {speed}: {label}`)
+
+local offset = velocity
+offset += roblox.Vector3.new(0, 0, 5)
+print(tostring(offset))
+return speed, label
 "#,
     ),
 ];
