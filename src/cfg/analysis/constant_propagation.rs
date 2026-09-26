@@ -466,6 +466,16 @@ fn propagate_values(
         .map(|definition| definition.constant.clone())
         .collect();
 
+    // Index the definitions by symbol once so the kill step below only visits
+    // the definitions that share the symbol, not every definition.
+    let mut definitions_by_symbol: HashMap<SymbolId, Vec<DefId>> = HashMap::new();
+    for (id, definition) in definitions.iter().enumerate() {
+        definitions_by_symbol
+            .entry(definition.symbol)
+            .or_default()
+            .push(id);
+    }
+
     // Reuse one scratch reaching-definition bitset across blocks and
     // iterations instead of cloning per block.
     let mut reaching = entry_reaching
@@ -494,9 +504,8 @@ fn propagate_values(
                     changed = true;
                 }
 
-                let symbol = definitions[id].symbol;
-                for (other, definition) in definitions.iter().enumerate() {
-                    if definition.symbol == symbol {
+                if let Some(same_symbol) = definitions_by_symbol.get(&definitions[id].symbol) {
+                    for &other in same_symbol {
                         reaching.set(other, false);
                     }
                 }

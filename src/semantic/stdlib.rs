@@ -73,16 +73,11 @@ fn callee_path(prefix: &Prefix) -> Option<(&Identifier, Vec<&str>)> {
 
 fn is_pure_path(root: &str, fields: &[&str]) -> bool {
     match fields {
+        // `tostring` is deliberately absent: it dispatches `__tostring`, so a
+        // call can run arbitrary user code and must not be treated as pure.
         [] => matches!(
             root,
-            "type"
-                | "tostring"
-                | "tonumber"
-                | "rawequal"
-                | "rawlen"
-                | "rawget"
-                | "getmetatable"
-                | "select"
+            "type" | "tonumber" | "rawequal" | "rawlen" | "rawget" | "getmetatable" | "select"
         ),
         [field] => match root {
             "math" => matches!(
@@ -120,10 +115,11 @@ fn is_pure_path(root: &str, fields: &[&str]) -> bool {
             ),
             "string" => matches!(
                 *field,
+                // `format` is deliberately absent: `%s` converts through
+                // `tostring`, which can dispatch `__tostring`.
                 "byte"
                     | "char"
                     | "find"
-                    | "format"
                     | "len"
                     | "lower"
                     | "match"
@@ -136,7 +132,9 @@ fn is_pure_path(root: &str, fields: &[&str]) -> bool {
                     | "unpack"
                     | "packsize"
             ),
-            "table" => matches!(*field, "concat" | "pack" | "unpack"),
+            // `concat` is deliberately absent: it converts elements through
+            // `tostring`, which can dispatch `__tostring`.
+            "table" => matches!(*field, "pack" | "unpack"),
             "utf8" => matches!(
                 *field,
                 "char"

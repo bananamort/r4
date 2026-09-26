@@ -833,10 +833,12 @@ impl Evaluator {
         match value.number_coercion() {
             LuaValue::Integer(value) => Some(value),
             LuaValue::Number(value) => {
+                // `i64::MAX as f64` rounds up to 2^63, so the bound must be
+                // exclusive: a value equal to 2^63 does not fit a Lua integer.
                 if !value.is_finite()
                     || value.fract() != 0.0
                     || value < i64::MIN as f64
-                    || value > i64::MAX as f64
+                    || value >= i64::MAX as f64
                 {
                     return None;
                 }

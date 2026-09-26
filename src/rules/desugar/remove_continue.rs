@@ -296,10 +296,15 @@ pub fn remove_continue(
     block: &mut Block,
     model: &SemanticModel,
 ) -> Result<(), RemoveContinueError> {
+    // On failure the caller gets a typed error, never a half-lowered tree.
+    let original = block.clone();
     let mut processor = Processor::new(model);
     DefaultPostVisitor::visit_block(block, &mut processor);
     match processor.error {
-        Some(error) => Err(error),
+        Some(error) => {
+            *block = original;
+            Err(error)
+        }
         None => Ok(()),
     }
 }
@@ -396,6 +401,31 @@ mod test {
 
         let error = remove_continue(&mut block, &model).expect_err("must fail fast");
         assert_eq!(error.code(), "desugar/repeat-continue-body-local");
+    }
+
+    #[test]
+    fn a_rejected_repeat_leaves_the_block_untouched() {
+        let (mut block, model) = analyze(
+            r#"
+            for i = 1, 2 do
+                if i > 1 then continue end
+                print(i)
+            end
+            local i = 0
+            repeat
+                local done = i >= 1
+                i = i + 1
+                if not done then continue end
+            until done
+            "#,
+        );
+        let before = generate(&block);
+        remove_continue(&mut block, &model).expect_err("the repeat is rejected");
+        assert_eq!(
+            before,
+            generate(&block),
+            "a failed lowering must not modify the block"
+        );
     }
 
     #[test]

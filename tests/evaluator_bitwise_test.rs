@@ -50,6 +50,23 @@ fn bitwise_folding_declines_on_non_integers() {
 }
 
 #[test]
+fn bitwise_folding_declines_on_out_of_range_floats() {
+    // 2^63 is representable as `f64` but not as an `i64`; the fold must decline
+    // rather than saturate to `i64::MAX`.
+    assert_eq!(
+        evaluate(BinaryOperator::BitwiseOr, 2_f64.powi(63), 0.0),
+        LuaValue::Unknown
+    );
+
+    // The largest `f64` below 2^63 still fits and folds.
+    let just_below = 9_223_372_036_854_774_784.0_f64;
+    assert!(matches!(
+        evaluate(BinaryOperator::BitwiseOr, just_below, 0.0),
+        LuaValue::Integer(_)
+    ));
+}
+
+#[test]
 fn folds_unary_bitwise_not() {
     let evaluated = Evaluator::default().evaluate(&Expression::from(UnaryExpression::new(
         UnaryOperator::BitwiseNot,

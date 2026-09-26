@@ -27,11 +27,9 @@ fn pure_stdlib_calls_are_recognized() {
     for code in [
         "return math.floor(x)",
         "return string.len(s)",
-        "return table.concat(t)",
         "return utf8.len(s)",
         "return bit32.band(a, b)",
         "return type(x)",
-        "return tostring(x)",
     ] {
         let (block, model) = analyze(code);
         assert!(
@@ -54,6 +52,10 @@ fn impure_or_unknown_calls_are_not_pure() {
         "return unknown.helper(x)",
         "return x:method()",
         "return setmetatable(t, m)",
+        // These dispatch `__tostring`, so a call can run user code.
+        "return tostring(x)",
+        "return string.format('%s', x)",
+        "return table.concat(t)",
     ] {
         let (block, model) = analyze(code);
         assert!(
@@ -134,8 +136,9 @@ fn classifies_pure_and_impure_calls() {
 
     for (code, pure) in [
         ("return math.sqrt(16)", true),
-        ("return string.format('%d', 1)", true),
-        ("return table.concat({})", true),
+        // These dispatch `__tostring`, so they are not pure.
+        ("return string.format('%d', 1)", false),
+        ("return table.concat({})", false),
         ("return bit32.band(1, 2)", true),
         ("return print(1)", false),
         ("return obj:method()", false),
@@ -164,7 +167,6 @@ fn classifies_pure_and_impure_calls() {
 fn classifies_every_pure_library_path() {
     for name in [
         "type",
-        "tostring",
         "tonumber",
         "rawequal",
         "rawlen",
@@ -189,11 +191,11 @@ fn classifies_every_pure_library_path() {
         (
             "string",
             &[
-                "byte", "char", "find", "format", "len", "lower", "match", "rep", "reverse",
-                "split", "sub", "upper", "pack", "unpack", "packsize",
+                "byte", "char", "find", "len", "lower", "match", "rep", "reverse", "split", "sub",
+                "upper", "pack", "unpack", "packsize",
             ],
         ),
-        ("table", &["concat", "pack", "unpack"]),
+        ("table", &["pack", "unpack"]),
         (
             "utf8",
             &[

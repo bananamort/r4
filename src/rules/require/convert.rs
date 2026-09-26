@@ -63,6 +63,9 @@ pub fn convert_require<C: RequirePathConverter>(
     model: &SemanticModel,
     converter: &C,
 ) -> Result<usize, ConvertRequireError> {
+    // Keep the original so a failure leaves the block exactly as it was: a
+    // half-converted module is worse than an unconverted one.
+    let original = block.clone();
     let mut processor = Processor {
         model,
         converter,
@@ -72,7 +75,10 @@ pub fn convert_require<C: RequirePathConverter>(
     DefaultVisitor::visit_block(block, &mut processor);
 
     match processor.error {
-        Some(error) => Err(error),
+        Some(error) => {
+            *block = original;
+            Err(error)
+        }
         None => Ok(processor.converted),
     }
 }
@@ -270,5 +276,18 @@ mod test {
             error,
             ConvertRequireError::NonLiteralRequireArgument { .. }
         ));
+    }
+
+    #[test]
+    fn a_failure_leaves_the_block_untouched() {
+        let (mut block, model) = analyze("local a = require('./ok')\nreturn require(path)");
+        let before = generate(&block);
+        convert_require(&mut block, &model, &IdentifierConverter)
+            .expect_err("a dynamic require argument must be reported");
+        assert_eq!(
+            before,
+            generate(&block),
+            "a failed conversion must not modify the block"
+        );
     }
 }
