@@ -177,12 +177,22 @@ impl<'a> CfgBuilder<'a> {
             self.terminate(Terminator::Return(None));
         }
 
-        if let Some((label, _)) = self.pending_gotos.iter().next() {
+        // Report the unresolved goto deterministically (smallest source line),
+        // not in hash-map iteration order.
+        let unresolved = self.pending_gotos.keys().copied().min_by_key(|label| {
+            let info = self.model.label(*label);
+            (
+                info.token.map(|token| token.line).unwrap_or(usize::MAX),
+                info.name.clone(),
+            )
+        });
+        if let Some(label) = unresolved {
+            let info = self.model.label(label);
             return Err(CfgError {
                 kind: CfgErrorKind::UnresolvedGoto {
-                    name: self.model.label(*label).name.clone(),
+                    name: info.name.clone(),
                 },
-                line: self.model.label(*label).token.map(|token| token.line),
+                line: info.token.map(|token| token.line),
             });
         }
 

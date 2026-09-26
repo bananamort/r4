@@ -1056,6 +1056,26 @@ fn unreachable_blocks_are_not_dominated_by_entry() {
 }
 
 #[test]
+fn dominance_is_reflexive_for_every_block() {
+    let (cfg, _) = build("do return 1 end\nafter()");
+    let tree = DominatorTree::analyze(&cfg);
+
+    for block in cfg.iter_block_ids() {
+        assert!(
+            tree.dominates(block, block),
+            "{block:?} must dominate itself"
+        );
+    }
+    let dead = block_with_call(&cfg, "after");
+    assert!(
+        tree.dominates(dead, dead),
+        "an unreachable block dominates itself"
+    );
+    assert!(tree.dominates(cfg.entry, cfg.entry));
+    assert!(!tree.strictly_dominates(cfg.entry, cfg.entry));
+}
+
+#[test]
 fn cfg_statements_reference_their_ast_blocks() {
     let block = Parser::default()
         .parse("local x = 1\nx = 2")

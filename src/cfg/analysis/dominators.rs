@@ -285,11 +285,17 @@ impl DominatorTree {
     }
 
     /// Returns whether `dominator` dominates `block`.
+    ///
+    /// Every block dominates itself, including the entry and unreachable
+    /// blocks.
     pub fn dominates(&self, dominator: BlockId, block: BlockId) -> bool {
+        if dominator == block {
+            return true;
+        }
         let mut current = Some(block);
         while let Some(current_block) = current {
             if current_block == dominator {
-                return self.idom[block.index()].is_some();
+                return true;
             }
             match self.idom[current_block.index()] {
                 Some(idom) if idom != current_block => current = Some(idom),
