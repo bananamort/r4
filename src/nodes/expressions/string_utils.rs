@@ -43,9 +43,21 @@ impl StringError {
     }
 }
 
+/// Which extra escape sequences a string delimiter allows.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StringEscapeContext {
+    /// Single- and double-quoted strings: only the standard Lua escapes are
+    /// valid.
+    Quoted,
+    /// Backtick (interpolated) strings: `` \` ``, `\{` and `\}` additionally
+    /// escape the delimiter and the braces.
+    Interpolated,
+}
+
 pub(crate) fn read_escaped_string(
     chars: CharIndices,
     reserve_size: Option<usize>,
+    context: StringEscapeContext,
 ) -> Result<Vec<u8>, StringError> {
     let mut chars = chars.peekable();
 
@@ -146,10 +158,20 @@ pub(crate) fn read_escaped_string(
                         }
                     }
                     _ => {
-                        // an invalid escape does not error: it simply skips the backslash
-                        let mut buf = [0u8; 4];
-
-                        value.extend(next_char.encode_utf8(&mut buf).as_bytes());
+                        // A backtick string additionally allows escaping its own
+                        // delimiter and the interpolation braces. Anything else
+                        // is rejected, as Lua does, instead of guessing a value
+                        // by dropping the backslash.
+                        if context == StringEscapeContext::Interpolated
+                            && matches!(next_char, '`' | '{' | '}')
+                        {
+                            value.push(next_char as u8);
+                        } else {
+                            return Err(StringError::malformed_escape_sequence(
+                                position,
+                                "invalid escape sequence",
+                            ));
+                        }
                     }
                 }
             } else {

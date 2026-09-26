@@ -133,7 +133,7 @@ impl std::error::Error for CompilationError {}
 pub struct Compilation {
     parser: Parser,
     options: SemanticOptions,
-    trees: Vec<SyntaxTree>,
+    trees: Vec<Option<SyntaxTree>>,
     diagnostics: Vec<Diagnostic>,
     cache: AnalysisCache,
 }
@@ -219,11 +219,11 @@ impl Compilation {
             Some(cached) => cached,
             None => self.analyze(source)?,
         };
-        self.trees[id.index()] = SyntaxTree {
+        self.trees[id.index()] = Some(SyntaxTree {
             id,
             inner: analyzed,
             stale: false,
-        };
+        });
         Ok(())
     }
 
@@ -287,11 +287,11 @@ impl Compilation {
             block,
             model,
         });
-        self.trees[id.index()] = SyntaxTree {
+        self.trees[id.index()] = Some(SyntaxTree {
             id,
             inner: analyzed,
             stale: false,
-        };
+        });
         Ok(())
     }
 
@@ -323,18 +323,18 @@ impl Compilation {
 
     fn push(&mut self, analyzed: Arc<AnalyzedModule>) -> TreeId {
         let id = TreeId(self.trees.len() as u32);
-        self.trees.push(SyntaxTree {
+        self.trees.push(Some(SyntaxTree {
             id,
             inner: analyzed,
             stale: false,
-        });
+        }));
         id
     }
 
     /// Returns the tree with the given identifier, if any.
     #[inline]
     pub fn tree(&self, id: TreeId) -> Option<&SyntaxTree> {
-        self.trees.get(id.index())
+        self.trees.get(id.index()).and_then(Option::as_ref)
     }
 
     /// Returns the tree's syntax tree, if the identifier is valid.
@@ -366,26 +366,43 @@ impl Compilation {
     /// [`CompilationError::StaleTree`] until [`Self::refresh_tree`] re-analyzes
     /// the mutated block.
     pub fn block_mut(&mut self, id: TreeId) -> Option<&mut Block> {
-        let tree = self.trees.get_mut(id.index())?;
+        let tree = self.trees.get_mut(id.index())?.as_mut()?;
         tree.stale = true;
         Some(&mut Arc::make_mut(&mut tree.inner).block)
+    }
+
+    /// Removes the tree with the given identifier, returning it.
+    ///
+    /// The identifier is never reused, so the identifiers of other trees stay
+    /// valid. Removing a tree lets a long-lived [`Compilation`] release its
+    /// parse and analysis.
+    pub fn remove_tree(&mut self, id: TreeId) -> Option<SyntaxTree> {
+        self.trees.get_mut(id.index())?.take()
+    }
+
+    /// Removes every tree.
+    pub fn clear_trees(&mut self) {
+        self.trees.clear();
     }
 
     /// Returns the number of trees.
     #[inline]
     pub fn len(&self) -> usize {
-        self.trees.len()
+        self.trees.iter().filter(|tree| tree.is_some()).count()
     }
 
     /// Returns whether there are no trees.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.trees.is_empty()
+        self.trees.iter().all(|tree| tree.is_none())
     }
 
     /// Iterates over the tree identifiers in insertion order.
-    pub fn iter_ids(&self) -> impl Iterator<Item = TreeId> {
-        (0..self.trees.len() as u32).map(TreeId)
+    pub fn iter_ids(&self) -> impl Iterator<Item = TreeId> + '_ {
+        self.trees
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tree)| tree.as_ref().map(|_| TreeId(index as u32)))
     }
 
     /// Returns the number of cached analyses.
@@ -529,7 +546,7 @@ fn compilation_error_diagnostic(error: &CompilationError) -> Diagnostic {
 impl std::fmt::Debug for Compilation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Compilation")
-            .field("trees", &self.trees.len())
+            .field("trees", &self.len())
             .field("diagnostics", &self.diagnostics.len())
             .field("cache", &self.cache.len())
             .finish()

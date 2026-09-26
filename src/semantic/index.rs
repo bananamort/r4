@@ -280,29 +280,83 @@ impl WholeProgramIndex {
     ///
     /// Panics when the qualified reference does not belong to `graph`; the
     /// index is built from one graph and must be queried with the same graph.
+    /// Use [`Self::try_symbol`] for a reference that may come from another
+    /// graph.
     #[inline]
     pub fn symbol<'g>(&self, graph: &'g MultiModuleModel, symbol: QualifiedSymbol) -> &'g Symbol {
-        graph.module(symbol.module).model.symbol(symbol.symbol)
+        self.try_symbol(graph, symbol)
+            .expect("the symbol does not belong to this graph")
+    }
+
+    /// Returns the symbol behind a qualified reference, if it belongs to
+    /// `graph`.
+    #[inline]
+    pub fn try_symbol<'g>(
+        &self,
+        graph: &'g MultiModuleModel,
+        symbol: QualifiedSymbol,
+    ) -> Option<&'g Symbol> {
+        graph
+            .try_module(symbol.module)?
+            .model
+            .try_symbol(symbol.symbol)
     }
 
     /// Returns the type symbol behind a qualified reference.
+    ///
+    /// # Panics
+    /// Panics when the qualified reference does not belong to `graph`. Use
+    /// [`Self::try_type_symbol`] for a reference that may come from another
+    /// graph.
     #[inline]
     pub fn type_symbol<'g>(
         &self,
         graph: &'g MultiModuleModel,
         r#type: QualifiedType,
     ) -> &'g TypeSymbol {
-        graph.module(r#type.module).model.type_symbol(r#type.id)
+        self.try_type_symbol(graph, r#type)
+            .expect("the type symbol does not belong to this graph")
+    }
+
+    /// Returns the type symbol behind a qualified reference, if it belongs to
+    /// `graph`.
+    #[inline]
+    pub fn try_type_symbol<'g>(
+        &self,
+        graph: &'g MultiModuleModel,
+        r#type: QualifiedType,
+    ) -> Option<&'g TypeSymbol> {
+        graph
+            .try_module(r#type.module)?
+            .model
+            .try_type_symbol(r#type.id)
     }
 
     /// Returns the label behind a qualified reference.
+    ///
+    /// # Panics
+    /// Panics when the qualified reference does not belong to `graph`. Use
+    /// [`Self::try_goto_label`] for a reference that may come from another
+    /// graph.
     #[inline]
     pub fn goto_label<'g>(
         &self,
         graph: &'g MultiModuleModel,
         label: QualifiedLabel,
     ) -> &'g GotoLabel {
-        graph.module(label.module).model.label(label.label)
+        self.try_goto_label(graph, label)
+            .expect("the label does not belong to this graph")
+    }
+
+    /// Returns the label behind a qualified reference, if it belongs to
+    /// `graph`.
+    #[inline]
+    pub fn try_goto_label<'g>(
+        &self,
+        graph: &'g MultiModuleModel,
+        label: QualifiedLabel,
+    ) -> Option<&'g GotoLabel> {
+        graph.try_module(label.module)?.model.try_label(label.label)
     }
 }
 

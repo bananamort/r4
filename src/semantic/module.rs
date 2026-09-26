@@ -357,15 +357,39 @@ impl MultiModuleModel {
     }
 
     /// Returns the module with the given identifier.
+    ///
+    /// # Panics
+    /// Panics when `id` does not belong to this graph. Use
+    /// [`Self::try_module`] for an identifier that may come from another graph.
     #[inline]
     pub fn module(&self, id: ModuleId) -> &ModuleModel {
-        &self.modules[id.index()]
+        self.try_module(id)
+            .expect("the module does not belong to this graph")
+    }
+
+    /// Returns the module with the given identifier, if it belongs to this graph.
+    #[inline]
+    pub fn try_module(&self, id: ModuleId) -> Option<&ModuleModel> {
+        self.modules.get(id.index())
     }
 
     /// Returns the mutable module with the given identifier.
+    ///
+    /// # Panics
+    /// Panics when `id` does not belong to this graph. Use
+    /// [`Self::try_module_mut`] for an identifier that may come from another
+    /// graph.
     #[inline]
     pub fn module_mut(&mut self, id: ModuleId) -> &mut ModuleModel {
-        &mut self.modules[id.index()]
+        self.try_module_mut(id)
+            .expect("the module does not belong to this graph")
+    }
+
+    /// Returns the mutable module with the given identifier, if it belongs to
+    /// this graph.
+    #[inline]
+    pub fn try_module_mut(&mut self, id: ModuleId) -> Option<&mut ModuleModel> {
+        self.modules.get_mut(id.index())
     }
 
     /// Returns the number of modules.
@@ -399,9 +423,21 @@ impl MultiModuleModel {
     }
 
     /// Returns the global with the given canonical identity.
+    ///
+    /// # Panics
+    /// Panics when `id` does not belong to this graph. Use
+    /// [`Self::try_global`] for an identifier that may come from another graph.
     #[inline]
     pub fn global(&self, id: GlobalId) -> &GlobalSymbol {
-        &self.globals[id.index()]
+        self.try_global(id)
+            .expect("the global does not belong to this graph")
+    }
+
+    /// Returns the global with the given canonical identity, if it belongs to
+    /// this graph.
+    #[inline]
+    pub fn try_global(&self, id: GlobalId) -> Option<&GlobalSymbol> {
+        self.globals.get(id.index())
     }
 
     /// Iterates over the shared global symbols in discovery order.

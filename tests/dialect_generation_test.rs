@@ -25,7 +25,10 @@ fn readable_generator_rejects_unsupported_constructs() {
 
     // Nothing was emitted, and the recorded error surfaces at finalization.
     assert_eq!(generator.clone().into_string(), "");
-    assert_eq!(generator.try_into_string().unwrap_err(), error);
+    assert_eq!(
+        generator.try_into_string().unwrap_err(),
+        r4::generator::GeneratorError::Dialect(error)
+    );
 }
 
 #[test]
@@ -49,6 +52,25 @@ fn token_based_generator_validates_too() {
 
     assert!(generator.try_write_block(&block).is_err());
     assert!(generator.try_into_string().is_err());
+}
+
+#[test]
+fn token_based_generator_reports_a_mismatched_source() {
+    use r4::generator::GeneratorError;
+
+    let block = Parser::default()
+        .preserve_tokens()
+        .parse("return 1")
+        .expect("valid code");
+    // Feed a source that does not contain the token's range.
+    let mut generator = TokenBasedLuaGenerator::new("");
+    generator.write_block(&block);
+
+    let error = generator
+        .try_into_string()
+        .expect_err("the range is out of bounds");
+    assert!(matches!(error, GeneratorError::Source(_)));
+    assert!(!error.to_string().is_empty());
 }
 
 #[test]

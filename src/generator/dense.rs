@@ -11,6 +11,7 @@ pub struct DenseLuaGenerator {
     last_push_length: usize,
     target_dialect: crate::Dialect,
     dialect_error: Option<crate::DialectSupportError>,
+    source_error: Option<crate::nodes::TriviaError>,
 }
 
 impl DenseLuaGenerator {
@@ -24,6 +25,7 @@ impl DenseLuaGenerator {
             last_push_length: 0,
             target_dialect: crate::Dialect::default(),
             dialect_error: None,
+            source_error: None,
         }
     }
 

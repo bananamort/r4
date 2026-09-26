@@ -139,15 +139,37 @@ impl SemanticModel {
     }
 
     /// Returns the symbol with the given identifier.
+    ///
+    /// # Panics
+    /// Panics when `id` does not belong to this model. Use [`Self::try_symbol`]
+    /// for an identifier that may come from another model.
     #[inline]
     pub fn symbol(&self, id: SymbolId) -> &Symbol {
-        &self.symbols[id.index()]
+        self.try_symbol(id)
+            .expect("the symbol does not belong to this model")
+    }
+
+    /// Returns the symbol with the given identifier, if it belongs to this model.
+    #[inline]
+    pub fn try_symbol(&self, id: SymbolId) -> Option<&Symbol> {
+        self.symbols.get(id.index())
     }
 
     /// Returns the scope with the given identifier.
+    ///
+    /// # Panics
+    /// Panics when `id` does not belong to this model. Use [`Self::try_scope`]
+    /// for an identifier that may come from another model.
     #[inline]
     pub fn scope(&self, id: ScopeId) -> &Scope {
-        &self.scopes[id.index()]
+        self.try_scope(id)
+            .expect("the scope does not belong to this model")
+    }
+
+    /// Returns the scope with the given identifier, if it belongs to this model.
+    #[inline]
+    pub fn try_scope(&self, id: ScopeId) -> Option<&Scope> {
+        self.scopes.get(id.index())
     }
 
     /// Returns a display for the symbol with the given identifier.
@@ -169,15 +191,39 @@ impl SemanticModel {
     }
 
     /// Returns the label with the given identifier.
+    ///
+    /// # Panics
+    /// Panics when `id` does not belong to this model. Use [`Self::try_label`]
+    /// for an identifier that may come from another model.
     #[inline]
     pub fn label(&self, id: LabelId) -> &GotoLabel {
-        &self.labels[id.index()]
+        self.try_label(id)
+            .expect("the label does not belong to this model")
+    }
+
+    /// Returns the label with the given identifier, if it belongs to this model.
+    #[inline]
+    pub fn try_label(&self, id: LabelId) -> Option<&GotoLabel> {
+        self.labels.get(id.index())
     }
 
     /// Returns the type symbol with the given identifier.
+    ///
+    /// # Panics
+    /// Panics when `id` does not belong to this model. Use
+    /// [`Self::try_type_symbol`] for an identifier that may come from another
+    /// model.
     #[inline]
     pub fn type_symbol(&self, id: TypeId) -> &TypeSymbol {
-        &self.types[id.index()]
+        self.try_type_symbol(id)
+            .expect("the type symbol does not belong to this model")
+    }
+
+    /// Returns the type symbol with the given identifier, if it belongs to this
+    /// model.
+    #[inline]
+    pub fn try_type_symbol(&self, id: TypeId) -> Option<&TypeSymbol> {
+        self.types.get(id.index())
     }
 
     /// Returns the implicit global symbol with the given name, if one was created.
@@ -578,25 +624,57 @@ impl SemanticModel {
     }
 
     /// Returns all recorded accesses to a symbol, in source order.
+    ///
+    /// # Panics
+    /// Panics when `symbol` does not belong to this model. Use
+    /// [`Self::try_uses_of`] for a symbol that may come from another model.
     #[inline]
     pub fn uses_of(&self, symbol: SymbolId) -> &[SymbolUse] {
-        &self.uses[symbol.index()]
+        self.try_uses_of(symbol)
+            .expect("the symbol does not belong to this model")
+    }
+
+    /// Returns all recorded accesses to a symbol, if it belongs to this model.
+    #[inline]
+    pub fn try_uses_of(&self, symbol: SymbolId) -> Option<&[SymbolUse]> {
+        self.uses.get(symbol.index()).map(Vec::as_slice)
     }
 
     /// Returns whether a symbol is never read.
     ///
     /// An unread local can be removed when its initializer has no side effects
     /// (see [`Evaluator::has_side_effects`](crate::process::Evaluator::has_side_effects)).
+    ///
+    /// # Panics
+    /// Panics when `symbol` does not belong to this model.
     #[inline]
     pub fn is_unused(&self, symbol: SymbolId) -> bool {
-        self.symbols[symbol.index()].read_count == 0
+        self.try_is_unused(symbol)
+            .expect("the symbol does not belong to this model")
+    }
+
+    /// Returns whether a symbol is never read, if it belongs to this model.
+    #[inline]
+    pub fn try_is_unused(&self, symbol: SymbolId) -> Option<bool> {
+        self.try_symbol(symbol).map(|symbol| symbol.read_count == 0)
     }
 
     /// Returns whether a symbol is only written at its declaration, so its
     /// value never changes after initialization.
+    ///
+    /// # Panics
+    /// Panics when `symbol` does not belong to this model.
     #[inline]
     pub fn is_immutable(&self, symbol: SymbolId) -> bool {
-        self.symbols[symbol.index()].write_count <= 1
+        self.try_is_immutable(symbol)
+            .expect("the symbol does not belong to this model")
+    }
+
+    /// Returns whether a symbol is immutable, if it belongs to this model.
+    #[inline]
+    pub fn try_is_immutable(&self, symbol: SymbolId) -> Option<bool> {
+        self.try_symbol(symbol)
+            .map(|symbol| symbol.write_count <= 1)
     }
 
     /// If `symbol` is a read-only local initialized from a global symbol
@@ -607,11 +685,27 @@ impl SemanticModel {
     /// shadowed. Returns `None` for globals themselves, mutable locals, and
     /// locals initialized from anything other than a symbol chain ending at a
     /// global.
+    ///
+    /// # Panics
+    /// Panics when `symbol` does not belong to this model. Use
+    /// [`Self::try_immutable_global_alias`] for a symbol that may come from
+    /// another model.
     pub fn immutable_global_alias(&self, symbol: SymbolId) -> Option<SymbolId> {
-        if self.symbols[symbol.index()].kind == SymbolKind::Global {
+        self.try_symbol(symbol)
+            .expect("the symbol does not belong to this model");
+        self.try_immutable_global_alias(symbol)
+    }
+
+    /// The fallible counterpart of [`Self::immutable_global_alias`].
+    ///
+    /// A symbol that does not belong to this model is treated as "not an
+    /// alias", never a panic.
+    pub fn try_immutable_global_alias(&self, symbol: SymbolId) -> Option<SymbolId> {
+        let info = self.try_symbol(symbol)?;
+        if info.kind == SymbolKind::Global {
             return None;
         }
-        self.immutable_alias_root(symbol)
+        self.try_immutable_alias_root(symbol)
     }
 
     /// Resolves an immutable alias chain to the symbol it ultimately refers to.
@@ -624,14 +718,28 @@ impl SemanticModel {
     /// This generalizes [`Self::immutable_global_alias`]: `local math = math`,
     /// `local m = math` and chains through several immutable locals all resolve
     /// to the original global.
+    ///
+    /// # Panics
+    /// Panics when `symbol` does not belong to this model. Use
+    /// [`Self::try_immutable_alias_root`] for a symbol that may come from
+    /// another model.
     pub fn immutable_alias_root(&self, symbol: SymbolId) -> Option<SymbolId> {
+        self.try_symbol(symbol)
+            .expect("the symbol does not belong to this model");
+        self.try_immutable_alias_root(symbol)
+    }
+
+    /// The fallible counterpart of [`Self::immutable_alias_root`].
+    ///
+    /// A symbol that does not belong to this model resolves to `None`.
+    pub fn try_immutable_alias_root(&self, symbol: SymbolId) -> Option<SymbolId> {
         let mut current = symbol;
         for _ in 0..self.symbols.len() {
-            let info = &self.symbols[current.index()];
+            let info = self.try_symbol(current)?;
             if info.kind == SymbolKind::Global {
                 return Some(current);
             }
-            if !self.is_immutable(current) {
+            if !self.try_is_immutable(current)? {
                 return None;
             }
             match info.initializer {

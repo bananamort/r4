@@ -19,6 +19,7 @@ pub struct TokenBasedLuaGenerator<'a> {
     depth: usize,
     target_dialect: crate::Dialect,
     dialect_error: Option<crate::DialectSupportError>,
+    source_error: Option<crate::nodes::TriviaError>,
 }
 
 impl<'a> TokenBasedLuaGenerator<'a> {
@@ -34,6 +35,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
             depth: 0,
             target_dialect: crate::Dialect::default(),
             dialect_error: None,
+            source_error: None,
         }
     }
 
@@ -66,7 +68,13 @@ impl<'a> TokenBasedLuaGenerator<'a> {
     }
 
     fn write_trivia(&mut self, trivia: &Trivia) {
-        let content = trivia.read(self.original_code);
+        let content = match trivia.try_read_with(self.original_code) {
+            Ok(content) => content,
+            Err(error) => {
+                self.source_error = Some(error);
+                return;
+            }
+        };
 
         // In normalizing mode the whitespace trivia is replaced by a single
         // line separator or a single space; indentation is emitted lazily when
@@ -117,7 +125,13 @@ impl<'a> TokenBasedLuaGenerator<'a> {
             self.write_trivia(trivia);
         }
 
-        let content = token.read(self.original_code);
+        let content = match token.try_read_with(self.original_code) {
+            Ok(content) => content,
+            Err(error) => {
+                self.source_error = Some(error);
+                return;
+            }
+        };
 
         if !content.is_empty() {
             if self.currently_commenting {
@@ -1478,17 +1492,17 @@ impl<'a> TokenBasedLuaGenerator<'a> {
         let expression = value.get_expression();
         if self.output.ends_with('{') {
             if let Some(table) = utils::starts_with_table(expression) {
-                if table
+                let has_leading_content = table
                     .get_tokens()
-                    .and_then(|tokens| {
-                        tokens
-                            .opening_brace
-                            .iter_leading_trivia()
-                            .next()
-                            .filter(|trivia| !trivia.read(self.original_code).is_empty())
-                    })
-                    .is_none()
-                {
+                    .and_then(|tokens| tokens.opening_brace.iter_leading_trivia().next())
+                    .and_then(|trivia| match trivia.try_read_with(self.original_code) {
+                        Ok(content) => Some(!content.is_empty()),
+                        Err(error) => {
+                            self.source_error = Some(error);
+                            None
+                        }
+                    });
+                if has_leading_content != Some(true) {
                     self.output.push(' ');
                 }
             }
@@ -2054,7 +2068,13 @@ impl<'a> TokenBasedLuaGenerator<'a> {
 
     fn write_typed_identifier(&mut self, typed_identifier: &TypedIdentifier) {
         if let Some(token) = typed_identifier.get_token() {
-            let name_in_token = token.read(self.original_code);
+            let name_in_token = match token.try_read_with(self.original_code) {
+                Ok(name) => name,
+                Err(error) => {
+                    self.source_error = Some(error);
+                    return;
+                }
+            };
 
             if name_in_token == typed_identifier.get_name() {
                 self.write_token(token);
@@ -2548,7 +2568,13 @@ impl LuaGenerator for TokenBasedLuaGenerator<'_> {
 
     fn write_identifier(&mut self, identifier: &Identifier) {
         if let Some(token) = identifier.get_token() {
-            let name_in_token = token.read(self.original_code);
+            let name_in_token = match token.try_read_with(self.original_code) {
+                Ok(name) => name,
+                Err(error) => {
+                    self.source_error = Some(error);
+                    return;
+                }
+            };
 
             if name_in_token == identifier.get_name() {
                 self.write_token(token);

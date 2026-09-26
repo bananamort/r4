@@ -8,7 +8,7 @@ fn normalize(code: &str) -> String {
         .preserve_tokens()
         .parse(code)
         .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
-    normalize_whitespace(&block, code)
+    normalize_whitespace(&block, code).expect("the source matches the tokens")
 }
 
 #[test]
@@ -32,7 +32,8 @@ fn honors_custom_indentation() {
         .preserve_tokens()
         .parse(code)
         .expect("valid code");
-    let output = normalize_whitespace_with(&block, code, "\t", "\n");
+    let output =
+        normalize_whitespace_with(&block, code, "\t", "\n").expect("the source matches the tokens");
     assert!(output.contains("\n\tb()"), "{output}");
 }
 
@@ -42,6 +43,21 @@ fn normalizing_is_idempotent() {
     let first = normalize(code);
     let second = normalize(&first);
     assert_eq!(first, second);
+}
+
+#[test]
+fn reports_a_source_that_does_not_match_the_tokens() {
+    use r4::generator::GeneratorError;
+
+    let block = Parser::default()
+        .preserve_tokens()
+        .parse("return 1")
+        .expect("valid code");
+
+    // The token range 7..8 is not a slice of the empty source.
+    let error = normalize_whitespace(&block, "").expect_err("the range is out of bounds");
+    assert!(matches!(error, GeneratorError::Source(_)));
+    assert!(!error.to_string().is_empty());
 }
 
 #[test]

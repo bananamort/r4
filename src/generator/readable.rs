@@ -58,6 +58,7 @@ pub struct ReadableLuaGenerator {
     can_add_new_line_stack: Vec<bool>,
     target_dialect: crate::Dialect,
     dialect_error: Option<crate::DialectSupportError>,
+    source_error: Option<crate::nodes::TriviaError>,
 }
 
 impl ReadableLuaGenerator {
@@ -72,6 +73,7 @@ impl ReadableLuaGenerator {
             can_add_new_line_stack: Vec::new(),
             target_dialect: crate::Dialect::default(),
             dialect_error: None,
+            source_error: None,
         }
     }
 

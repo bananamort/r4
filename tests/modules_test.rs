@@ -368,6 +368,44 @@ fn memory_provider_and_analysis_cache() {
 }
 
 #[test]
+fn analysis_cache_is_bounded() {
+    use r4::modules::{AnalysisCache, AnalyzedModule};
+
+    let mut cache = AnalysisCache::with_capacity(2);
+    assert_eq!(cache.capacity(), 2);
+    for index in 0..3 {
+        let source = format!("return {index}");
+        let (block, model) = analyze(&source);
+        cache.insert(AnalyzedModule {
+            source,
+            block,
+            model,
+        });
+    }
+    assert_eq!(cache.len(), 2, "the cache must evict to its capacity");
+    assert!(
+        cache.get("return 0").is_none(),
+        "the oldest entry is evicted"
+    );
+    assert!(cache.get("return 1").is_some());
+    assert!(cache.get("return 2").is_some());
+
+    cache.set_capacity(1);
+    assert_eq!(cache.len(), 1);
+    assert!(cache.get("return 2").is_some(), "the newest entry survives");
+
+    let mut disabled = AnalysisCache::with_capacity(0);
+    let (block, model) = analyze("return 9");
+    disabled.insert(AnalyzedModule {
+        source: "return 9".to_owned(),
+        block,
+        model,
+    });
+    assert_eq!(disabled.len(), 0, "a zero-capacity cache stores nothing");
+    assert!(disabled.get("return 9").is_none());
+}
+
+#[test]
 fn classifies_require_call_shapes() {
     use r4::modules::{classify_require_call, resolve_instance_path, InstanceSegment, RequireCall};
     use r4::nodes::{Expression, FunctionCall, Statement};
@@ -989,4 +1027,21 @@ fn instance_roots_resolve_through_the_semantic_model() {
         ),
         "an immutable alias of the global game must classify"
     );
+}
+
+#[test]
+fn module_graph_accessors_have_fallible_variants() {
+    use r4::semantic::{GlobalId, ModuleId};
+
+    let (a_block, a_model) = analyze("return 1");
+    let mut graph = MultiModuleModel::new();
+    let a = graph.add_module("a", a_block, a_model).expect("module a");
+
+    assert!(graph.try_module(ModuleId(9_999)).is_none());
+    assert!(graph.try_global(GlobalId(9_999)).is_none());
+    assert_eq!(
+        graph.try_module(a).map(|module| module.key.as_str()),
+        Some("a")
+    );
+    assert!(graph.try_module_mut(a).is_some());
 }

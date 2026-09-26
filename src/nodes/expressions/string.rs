@@ -84,7 +84,12 @@ impl StringExpression {
 
         match (chars.next(), chars.next_back()) {
             (Some((_, '"')), Some((_, '"'))) | (Some((_, '\'')), Some((_, '\''))) => {
-                string_utils::read_escaped_string(chars, Some(string.len())).map(Self::from_value)
+                string_utils::read_escaped_string(
+                    chars,
+                    Some(string.len()),
+                    string_utils::StringEscapeContext::Quoted,
+                )
+                .map(Self::from_value)
             }
             (Some((_, '"')), Some((_, '\''))) | (Some((_, '\'')), Some((_, '"'))) => {
                 Err(StringError::invalid("quotes do not match"))
@@ -473,17 +478,17 @@ mod test {
     }
 
     #[test]
-    fn new_skip_invalid_escape_in_double_quoted_string() {
-        let string = StringExpression::new("'\\oo'").unwrap();
+    fn new_rejects_invalid_escape_in_double_quoted_string() {
+        let error = StringExpression::new("'\\oo'").expect_err("an invalid escape is rejected");
 
-        assert_eq!(string.get_value(), b"oo");
+        assert!(error.to_string().contains("invalid escape sequence"));
     }
 
     #[test]
-    fn new_skip_invalid_escape_in_single_quoted_string() {
-        let string = StringExpression::new("\"\\oo\"").unwrap();
+    fn new_rejects_invalid_escape_in_single_quoted_string() {
+        let error = StringExpression::new("\"\\oo\"").expect_err("an invalid escape is rejected");
 
-        assert_eq!(string.get_value(), b"oo");
+        assert!(error.to_string().contains("invalid escape sequence"));
     }
 
     #[test]

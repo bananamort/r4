@@ -177,3 +177,46 @@ fn a_generic_parameter_shadows_a_same_named_alias_occurrence() {
     }
     assert!(saw_generic_t, "the signature declares and uses `T`");
 }
+
+#[test]
+fn a_namespace_qualified_type_does_not_bind_to_a_local_alias() {
+    use r4::nodes::Type;
+    use r4::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
+
+    #[derive(Default)]
+    struct FieldBindings {
+        fields: Vec<(bool, bool)>,
+    }
+
+    impl NodeProcessor for FieldBindings {
+        fn process_type(&mut self, r#type: &mut Type) {
+            if let Type::Field(field) = r#type {
+                self.fields.push((
+                    field.get_namespace().get_binding().is_some(),
+                    field
+                        .get_type_name()
+                        .get_type_name()
+                        .get_binding()
+                        .is_some(),
+                ));
+            }
+        }
+    }
+
+    let (mut block, _model) = analyze(
+        "type Point = string\nlocal Types = {}\nlocal value: Types.Point = nil\nreturn value",
+    );
+    let mut collector = FieldBindings::default();
+    DefaultVisitor::visit_block(&mut block, &mut collector);
+
+    assert_eq!(collector.fields.len(), 1, "one namespace-qualified type");
+    let (namespace_bound, member_bound) = collector.fields[0];
+    assert!(
+        namespace_bound,
+        "the namespace `Types` must resolve as a value binding"
+    );
+    assert!(
+        !member_bound,
+        "`Point` must not bind to the local alias of the same name"
+    );
+}

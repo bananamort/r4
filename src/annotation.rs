@@ -245,99 +245,16 @@ impl SyntaxAnnotations {
     /// annotations still point at the nodes it tagged. Addresses are structural,
     /// so re-analyzing an unchanged tree preserves them; a structural change is
     /// reported as a typed error instead of a silent miss.
+    ///
+    /// The tree is traversed once to build an address index, so validation is
+    /// linear in the tree plus the number of annotations, instead of one full
+    /// traversal per annotation.
     pub fn validate(&self, root: &Block) -> Result<(), AnnotationError> {
+        let index = AddressIndex::build(root);
         for address in self.entries.keys() {
-            self.validate_address(root, address)?;
+            index.check(address)?;
         }
         Ok(())
-    }
-
-    fn validate_address(&self, root: &Block, address: &NodeAddress) -> Result<(), AnnotationError> {
-        match address {
-            NodeAddress::Block(identity) => {
-                let mut checker = BlockChecker {
-                    target: *identity,
-                    found: false,
-                };
-                Walk::visit_block(root, &mut checker);
-                if checker.found {
-                    Ok(())
-                } else {
-                    Err(AnnotationError::UnknownBlock {
-                        identity: *identity,
-                    })
-                }
-            }
-            NodeAddress::Statement { block, index } => {
-                let mut checker = StatementChecker {
-                    block: *block,
-                    index: *index,
-                    block_seen: false,
-                    found: false,
-                };
-                Walk::visit_block(root, &mut checker);
-                match (checker.block_seen, checker.found) {
-                    (false, _) => Err(AnnotationError::UnknownBlock { identity: *block }),
-                    (true, false) => Err(AnnotationError::UnknownStatement {
-                        block: *block,
-                        index: *index,
-                    }),
-                    (true, true) => Ok(()),
-                }
-            }
-            NodeAddress::Expression {
-                block,
-                statement,
-                index,
-            } => {
-                let mut checker = ExpressionChecker {
-                    block: *block,
-                    statement: *statement,
-                    index: *index,
-                    block_seen: false,
-                    found: false,
-                };
-                Walk::visit_block(root, &mut checker);
-                match (checker.block_seen, checker.found) {
-                    (false, _) => Err(AnnotationError::UnknownBlock { identity: *block }),
-                    (true, false) => Err(AnnotationError::UnknownExpression {
-                        block: *block,
-                        statement: *statement,
-                        index: *index,
-                    }),
-                    (true, true) => Ok(()),
-                }
-            }
-            NodeAddress::Condition { block, statement } => {
-                let mut checker = ConditionChecker {
-                    block: *block,
-                    statement: *statement,
-                    block_seen: false,
-                    found: false,
-                };
-                Walk::visit_block(root, &mut checker);
-                match (checker.block_seen, checker.found) {
-                    (false, _) => Err(AnnotationError::UnknownBlock { identity: *block }),
-                    (true, false) => Err(AnnotationError::MissingCondition {
-                        block: *block,
-                        statement: *statement,
-                    }),
-                    (true, true) => Ok(()),
-                }
-            }
-            NodeAddress::Identifier(binding) => {
-                let mut finder = IdentifierFinder {
-                    binding: *binding,
-                    found: false,
-                };
-                Walk::visit_block(root, &mut finder);
-                if finder.found {
-                    Ok(())
-                } else {
-                    Err(AnnotationError::UnknownIdentifier { binding: *binding })
-                }
-            }
-        }
     }
 }
 
@@ -349,78 +266,128 @@ fn has_condition(statement: &Statement) -> bool {
     }
 }
 
-struct BlockChecker {
-    target: BlockIdentity,
-    found: bool,
+/// The pre-order expression count and condition shape of one statement.
+struct StatementShape {
+    expressions: u32,
+    has_condition: bool,
 }
 
-impl ImmutableProcessor for BlockChecker {
-    fn process_block(&mut self, block: &Block) {
-        if block.get_identity() == Some(self.target) {
-            self.found = true;
+/// The addresses that exist in a tree, built in a single traversal.
+#[derive(Default)]
+struct AddressIndex {
+    /// Every block identity mapped to the shape of each of its statements.
+    statements: HashMap<BlockIdentity, Vec<StatementShape>>,
+    /// Every binding carried by an identifier in the tree.
+    identifiers: std::collections::HashSet<BindingId>,
+}
+
+impl AddressIndex {
+    fn build(root: &Block) -> Self {
+        #[derive(Default)]
+        struct Builder {
+            index: AddressIndex,
         }
+
+        impl ImmutableProcessor for Builder {
+            fn process_block(&mut self, block: &Block) {
+                let Some(identity) = block.get_identity() else {
+                    return;
+                };
+                let shapes = block
+                    .iter_statements()
+                    .map(|statement| {
+                        let mut counter = ExpressionCounter { count: 0 };
+                        Walk::visit_statement(statement, &mut counter);
+                        StatementShape {
+                            expressions: counter.count,
+                            has_condition: has_condition(statement),
+                        }
+                    })
+                    .collect();
+                self.index.statements.insert(identity, shapes);
+            }
+
+            fn process_identifier(&mut self, identifier: &Identifier) {
+                if let Some(binding) = identifier.get_binding() {
+                    self.index.identifiers.insert(binding);
+                }
+            }
+        }
+
+        let mut builder = Builder::default();
+        Walk::visit_block(root, &mut builder);
+        builder.index
     }
-}
 
-struct StatementChecker {
-    block: BlockIdentity,
-    index: u32,
-    block_seen: bool,
-    found: bool,
-}
-
-impl ImmutableProcessor for StatementChecker {
-    fn process_block(&mut self, block: &Block) {
-        if block.get_identity() != Some(self.block) {
-            return;
-        }
-        self.block_seen = true;
-        if (self.index as usize) < block.iter_statements().count() {
-            self.found = true;
-        }
-    }
-}
-
-struct ExpressionChecker {
-    block: BlockIdentity,
-    statement: u32,
-    index: u32,
-    block_seen: bool,
-    found: bool,
-}
-
-impl ImmutableProcessor for ExpressionChecker {
-    fn process_block(&mut self, block: &Block) {
-        if block.get_identity() != Some(self.block) {
-            return;
-        }
-        self.block_seen = true;
-        let Some(statement) = block.iter_statements().nth(self.statement as usize) else {
-            return;
-        };
-        let mut counter = ExpressionCounter { count: 0 };
-        Walk::visit_statement(statement, &mut counter);
-        if counter.count > self.index {
-            self.found = true;
-        }
-    }
-}
-
-struct ConditionChecker {
-    block: BlockIdentity,
-    statement: u32,
-    block_seen: bool,
-    found: bool,
-}
-
-impl ImmutableProcessor for ConditionChecker {
-    fn process_block(&mut self, block: &Block) {
-        if block.get_identity() != Some(self.block) {
-            return;
-        }
-        self.block_seen = true;
-        if let Some(statement) = block.iter_statements().nth(self.statement as usize) {
-            self.found = has_condition(statement);
+    fn check(&self, address: &NodeAddress) -> Result<(), AnnotationError> {
+        match address {
+            NodeAddress::Block(identity) => match self.statements.contains_key(identity) {
+                true => Ok(()),
+                false => Err(AnnotationError::UnknownBlock {
+                    identity: *identity,
+                }),
+            },
+            NodeAddress::Statement { block, index } => {
+                let Some(shapes) = self.statements.get(block) else {
+                    return Err(AnnotationError::UnknownBlock { identity: *block });
+                };
+                if (*index as usize) < shapes.len() {
+                    Ok(())
+                } else {
+                    Err(AnnotationError::UnknownStatement {
+                        block: *block,
+                        index: *index,
+                    })
+                }
+            }
+            NodeAddress::Expression {
+                block,
+                statement,
+                index,
+            } => {
+                let Some(shapes) = self.statements.get(block) else {
+                    return Err(AnnotationError::UnknownBlock { identity: *block });
+                };
+                let Some(shape) = shapes.get(*statement as usize) else {
+                    return Err(AnnotationError::UnknownExpression {
+                        block: *block,
+                        statement: *statement,
+                        index: *index,
+                    });
+                };
+                if *index < shape.expressions {
+                    Ok(())
+                } else {
+                    Err(AnnotationError::UnknownExpression {
+                        block: *block,
+                        statement: *statement,
+                        index: *index,
+                    })
+                }
+            }
+            NodeAddress::Condition { block, statement } => {
+                let Some(shapes) = self.statements.get(block) else {
+                    return Err(AnnotationError::UnknownBlock { identity: *block });
+                };
+                let Some(shape) = shapes.get(*statement as usize) else {
+                    return Err(AnnotationError::MissingCondition {
+                        block: *block,
+                        statement: *statement,
+                    });
+                };
+                if shape.has_condition {
+                    Ok(())
+                } else {
+                    Err(AnnotationError::MissingCondition {
+                        block: *block,
+                        statement: *statement,
+                    })
+                }
+            }
+            NodeAddress::Identifier(binding) => match self.identifiers.contains(binding) {
+                true => Ok(()),
+                false => Err(AnnotationError::UnknownIdentifier { binding: *binding }),
+            },
         }
     }
 }
@@ -432,18 +399,5 @@ struct ExpressionCounter {
 impl ImmutableProcessor for ExpressionCounter {
     fn process_expression(&mut self, _: &crate::nodes::Expression) {
         self.count += 1;
-    }
-}
-
-struct IdentifierFinder {
-    binding: BindingId,
-    found: bool,
-}
-
-impl ImmutableProcessor for IdentifierFinder {
-    fn process_identifier(&mut self, identifier: &Identifier) {
-        if identifier.get_binding() == Some(self.binding) {
-            self.found = true;
-        }
     }
 }

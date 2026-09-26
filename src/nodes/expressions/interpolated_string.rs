@@ -44,8 +44,12 @@ impl StringSegment {
     /// Creates a new string segment from a string value, processing escape sequences.
     pub fn new(value: impl AsRef<str>) -> Result<Self, StringError> {
         let value = value.as_ref();
-        string_utils::read_escaped_string(value.char_indices(), Some(value.len()))
-            .map(Self::from_value)
+        string_utils::read_escaped_string(
+            value.char_indices(),
+            Some(value.len()),
+            string_utils::StringEscapeContext::Interpolated,
+        )
+        .map(Self::from_value)
     }
 
     /// Creates a new string segment from a string value without processing escapes.

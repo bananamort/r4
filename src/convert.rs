@@ -227,11 +227,14 @@ impl ser::Serializer for &mut Serializer {
 
     fn serialize_u64(self, value: u64) -> Result<(), ConvertDataError> {
         match i64::try_from(value) {
-            // Values that fit a Lua integer are written exactly.
+            // Values that fit a Lua 5.3/5.4 integer are written exactly.
             Ok(integer) => self.process(DecimalNumber::new_integer(integer).into()),
-            // Values above `i64::MAX` have no exact Lua integer representation;
-            // the closest Lua number is the IEEE-754 float.
-            Err(_) => self.process(DecimalNumber::new(value as f64).into()),
+            // Lua integers are signed 64-bit. A larger `u64` has no exact
+            // representation, so fail instead of silently rounding through a
+            // float.
+            Err(_) => Err(ConvertDataError::new(format!(
+                "unsigned integer {value} does not fit in a Lua 64-bit signed integer"
+            ))),
         }
     }
 

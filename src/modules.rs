@@ -10,7 +10,7 @@
 //! modules by identity, plus the topological order the bundler inlines in.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
@@ -251,15 +251,55 @@ pub struct AnalyzedModule {
 /// dependencies hit this cache instead of being re-parsed and re-analyzed. The
 /// cache is keyed by a hash of the source and re-validated by comparing the
 /// stored source, so a hash collision can never reuse the wrong analysis.
-#[derive(Debug, Default)]
+/// The default maximum number of cached analyses.
+const DEFAULT_ANALYSIS_CACHE_CAPACITY: usize = 512;
+
+#[derive(Debug)]
 pub struct AnalysisCache {
     entries: HashMap<u64, Arc<AnalyzedModule>>,
+    /// The cached keys in insertion order, for bounded eviction.
+    order: VecDeque<u64>,
+    capacity: usize,
+}
+
+impl Default for AnalysisCache {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_ANALYSIS_CACHE_CAPACITY)
+    }
 }
 
 impl AnalysisCache {
-    /// Creates an empty cache.
+    /// The default capacity of a new cache.
+    pub const DEFAULT_CAPACITY: usize = DEFAULT_ANALYSIS_CACHE_CAPACITY;
+
+    /// Creates an empty cache with the default capacity.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates an empty cache that holds at most `capacity` analyses.
+    ///
+    /// A capacity of `0` disables caching: an inserted analysis is evicted
+    /// immediately, so resolution still succeeds but never reuses a result.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    /// Returns the maximum number of cached analyses.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Sets the maximum number of cached analyses, evicting the oldest entries
+    /// so the cache never grows past the new capacity.
+    pub fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity;
+        self.evict_to_capacity();
     }
 
     /// Returns the number of cached analyses.
@@ -277,6 +317,7 @@ impl AnalysisCache {
     /// Removes every cached analysis.
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.order.clear();
     }
 
     /// Returns the analysis of `source`, if it is cached.
@@ -288,11 +329,26 @@ impl AnalysisCache {
     }
 
     /// Stores an analysis, returning the shared handle.
+    ///
+    /// Inserting beyond the capacity evicts the oldest entries. Eviction only
+    /// ever causes a later recomputation, never a wrong reuse.
     pub fn insert(&mut self, module: AnalyzedModule) -> Arc<AnalyzedModule> {
         let module = Arc::new(module);
-        self.entries
-            .insert(source_key(&module.source), module.clone());
+        let key = source_key(&module.source);
+        if self.entries.insert(key, module.clone()).is_none() {
+            self.order.push_back(key);
+        }
+        self.evict_to_capacity();
         module
+    }
+
+    fn evict_to_capacity(&mut self) {
+        while self.entries.len() > self.capacity {
+            let Some(key) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&key);
+        }
     }
 }
 

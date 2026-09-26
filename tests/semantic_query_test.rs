@@ -422,3 +422,33 @@ fn scoping_queries_fail_fast_on_unknown_ids() {
         .expect_err("an unknown scope is rejected");
     assert_eq!(error.code(), "query/unknown-scope");
 }
+
+#[test]
+fn arena_accessors_have_fallible_variants() {
+    use r4::semantic::{LabelId, TypeId};
+
+    let (_, model) = analyze("local x = 1\nreturn x");
+
+    // Identifiers from another model must be answerable without a panic.
+    let missing = SymbolId(9_999);
+    assert!(model.try_symbol(missing).is_none());
+    assert!(model.try_scope(ScopeId(9_999)).is_none());
+    assert!(model.try_label(LabelId(9_999)).is_none());
+    assert!(model.try_type_symbol(TypeId(9_999)).is_none());
+    assert!(model.try_uses_of(missing).is_none());
+    assert!(model.try_is_unused(missing).is_none());
+    assert!(model.try_is_immutable(missing).is_none());
+    assert!(model.try_immutable_alias_root(missing).is_none());
+    assert!(model.try_immutable_global_alias(missing).is_none());
+
+    // Real identifiers still resolve, and the predicates agree with the symbol.
+    let x = model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "x")
+        .expect("x")
+        .id;
+    assert_eq!(model.try_symbol(x).map(|symbol| symbol.id), Some(x));
+    assert_eq!(model.try_is_unused(x), Some(model.is_unused(x)));
+    assert_eq!(model.try_is_immutable(x), Some(model.is_immutable(x)));
+}

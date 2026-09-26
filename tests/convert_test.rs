@@ -125,6 +125,14 @@ fn converts_every_scalar_serialize_method() {
         convert_data(i64::MAX).expect("i64::MAX"),
         format!("return {}", i64::MAX)
     );
+    // `u64` values that fit a Lua integer are exact; larger ones have no exact
+    // representation and must be a typed error rather than a lossy float.
+    assert_eq!(
+        convert_data(i64::MAX as u64).expect("i64::MAX as u64"),
+        format!("return {}", i64::MAX)
+    );
+    let error = convert_data(u64::MAX).expect_err("u64::MAX does not fit a Lua integer");
+    assert!(error.message().contains("does not fit"));
     assert!(!convert_data(1.5f32).expect("f32").is_empty());
     assert!(!convert_data(1.5f64).expect("f64").is_empty());
     assert!(!convert_data('c').expect("char").is_empty());

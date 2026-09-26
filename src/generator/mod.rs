@@ -12,10 +12,44 @@ pub use format::{normalize_whitespace, normalize_whitespace_with};
 pub use readable::ReadableLuaGenerator;
 pub use token_based::TokenBasedLuaGenerator;
 
+/// An error produced when finalizing a generator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GeneratorError {
+    /// The block contains a construct the target dialect cannot represent.
+    Dialect(crate::DialectSupportError),
+    /// A token (or its trivia) references a source range that is not valid in
+    /// the source passed to the generator, so its text cannot be read.
+    Source(crate::nodes::TriviaError),
+}
+
+impl std::fmt::Display for GeneratorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GeneratorError::Dialect(error) => write!(f, "{error}"),
+            GeneratorError::Source(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for GeneratorError {}
+
+impl From<crate::DialectSupportError> for GeneratorError {
+    fn from(error: crate::DialectSupportError) -> Self {
+        GeneratorError::Dialect(error)
+    }
+}
+
+impl From<crate::nodes::TriviaError> for GeneratorError {
+    fn from(error: crate::nodes::TriviaError) -> Self {
+        GeneratorError::Source(error)
+    }
+}
+
 /// Adds target-dialect configuration and fallible finalization to a generator.
 ///
-/// The generator must own `target_dialect: crate::Dialect` and
-/// `dialect_error: Option<crate::DialectSupportError>` fields.
+/// The generator must own `target_dialect: crate::Dialect`,
+/// `dialect_error: Option<crate::DialectSupportError>` and
+/// `source_error: Option<crate::nodes::TriviaError>` fields.
 macro_rules! dialect_generator {
     () => {
         /// Returns the target dialect this generator validates against.
@@ -47,6 +81,7 @@ macro_rules! dialect_generator {
             match $crate::validate_dialect(block, self.target_dialect) {
                 Ok(()) => {
                     self.dialect_error = None;
+                    self.source_error = None;
                     <Self as $crate::generator::LuaGenerator>::write_block(self, block);
                     Ok(())
                 }
@@ -59,13 +94,17 @@ macro_rules! dialect_generator {
 
         /// Consumes the generator, returning the emitted string.
         ///
-        /// Surfaces the [`DialectSupportError`](crate::DialectSupportError) left
-        /// by a failed [`try_write_block`](Self::try_write_block). Use this
-        /// instead of [`into_string`](crate::generator::LuaGenerator::into_string)
-        /// when a target dialect is configured.
-        pub fn try_into_string(self) -> Result<String, $crate::DialectSupportError> {
+        /// Surfaces the error left by a failed
+        /// [`try_write_block`](Self::try_write_block) or by a token whose source
+        /// range is not valid in the configured source. Use this instead of
+        /// [`into_string`](crate::generator::LuaGenerator::into_string) when a
+        /// target dialect is configured.
+        pub fn try_into_string(self) -> Result<String, $crate::generator::GeneratorError> {
+            if let Some(error) = self.source_error {
+                return Err($crate::generator::GeneratorError::Source(error));
+            }
             match self.dialect_error {
-                Some(error) => Err(error),
+                Some(error) => Err($crate::generator::GeneratorError::Dialect(error)),
                 None => Ok(<Self as $crate::generator::LuaGenerator>::into_string(self)),
             }
         }

@@ -243,3 +243,22 @@ fn compilation_cache_diagnostics_and_resolution_surface() {
     let _ = compilation.model(tree);
     let _ = compilation.source(tree);
 }
+
+#[test]
+fn trees_can_be_removed_without_invalidating_others() {
+    let mut compilation = Compilation::new();
+    let first = compilation.add_tree("return 1").expect("valid code");
+    let second = compilation.add_tree("return 2").expect("valid code");
+    assert_eq!(compilation.len(), 2);
+
+    let removed = compilation.remove_tree(first).expect("the tree exists");
+    assert_eq!(removed.source(), "return 1");
+    assert_eq!(compilation.len(), 1);
+    assert!(compilation.tree(first).is_none(), "the removed id is empty");
+    assert!(compilation.tree(second).is_some(), "other ids stay valid");
+    assert_eq!(compilation.iter_ids().collect::<Vec<_>>(), vec![second]);
+
+    compilation.clear_trees();
+    assert!(compilation.is_empty());
+    assert!(compilation.tree(second).is_none());
+}

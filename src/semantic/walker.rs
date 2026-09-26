@@ -504,7 +504,15 @@ impl AnalyzerState {
         match r#type {
             Type::TypeOf(expression_type) => self.walk_expression(expression_type.get_expression()),
             Type::Name(type_name) => self.walk_type_name(type_name),
-            Type::Field(field) => self.walk_type_name(field.get_type_name()),
+            Type::Field(field) => {
+                // `Namespace.Member`: Luau resolves the namespace as a value
+                // binding and the member through that namespace's interface.
+                // Resolve the namespace so a missing module binding is
+                // reported, but never bind the member to a same-named lexical
+                // type alias. The member's type arguments are still walked.
+                self.read_identifier(field.get_namespace())?;
+                self.walk_type_name_parameters(field.get_type_name())
+            }
             Type::Array(array) => self.walk_type(array.get_element_type()),
             Type::Table(table) => {
                 for entry in table.iter_entries() {
@@ -550,7 +558,15 @@ impl AnalyzerState {
 
     fn walk_type_name(&mut self, type_name: &TypeName) -> SemanticResult<()> {
         self.resolve_type_occurrence(type_name.get_type_name())?;
+        self.walk_type_name_parameters(type_name)
+    }
 
+    /// Walks the type arguments of a type name without resolving its base name.
+    ///
+    /// A namespace-qualified type (`Namespace.Member<T>`) resolves its member
+    /// through the namespace, not the lexical type table, but its arguments are
+    /// ordinary types.
+    fn walk_type_name_parameters(&mut self, type_name: &TypeName) -> SemanticResult<()> {
         if let Some(parameters) = type_name.get_type_parameters() {
             for parameter in parameters.iter() {
                 match parameter {
