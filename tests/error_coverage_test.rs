@@ -9,9 +9,10 @@ use std::collections::BTreeSet;
 
 use r4::cfg::{build_chunk, CfgError, CfgErrorKind};
 use r4::nodes::{Block, BlockIdentity, GotoStatement, Identifier, Statement, TypedIdentifier};
+use r4::rules::rename_variables::{rename_symbol, RenameSymbolError};
 use r4::semantic::{
     ScopeId, ScopeKind, SemanticAnalyzer, SemanticErrorKind, SemanticModel, SemanticQueryError,
-    SymbolId,
+    SymbolId, SymbolKind,
 };
 use r4::Parser;
 
@@ -64,6 +65,14 @@ variant_registry!(CfgErrorTag, CfgErrorKind,
     UnresolvedGoto => CfgErrorKind::UnresolvedGoto { .. },
     MissingBlockIdentity => CfgErrorKind::MissingBlockIdentity,
     UnresolvedIdentifier => CfgErrorKind::UnresolvedIdentifier { .. },
+);
+
+variant_registry!(RenameSymbolErrorTag, RenameSymbolError,
+    UnsupportedIdentifier => RenameSymbolError::UnsupportedIdentifier { .. },
+    UnknownSymbol => RenameSymbolError::UnknownSymbol,
+    ImplicitSymbol => RenameSymbolError::ImplicitSymbol,
+    Conflict => RenameSymbolError::Conflict { .. },
+    UnresolvedIdentifier => RenameSymbolError::UnresolvedIdentifier { .. },
 );
 
 fn luau(code: &str) -> Block {
@@ -1359,4 +1368,118 @@ fn cfg_analysis_errors_are_all_triggered() {
     let absent = missing(LicmErrorTag::ALL.iter().map(|tag| tag.name()), &produced);
     assert!(absent.is_empty(), "LICM errors never triggered: {absent:?}");
     assert!(!licm.to_string().is_empty());
+}
+
+/// The runtime symbol declared as a local named `name`.
+fn local_symbol(model: &SemanticModel, name: &str) -> SymbolId {
+    model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind != SymbolKind::Global && symbol.name == name)
+        .unwrap_or_else(|| panic!("a local named `{name}`"))
+        .id
+}
+
+#[test]
+fn rename_symbol_errors_are_all_triggered() {
+    let mut produced = BTreeSet::new();
+    let mut codes = BTreeSet::new();
+
+    // UnsupportedIdentifier: the requested name is not a Lua identifier.
+    let mut block = luau("local a = 1");
+    let model = analyze(&block);
+    let original = block.clone();
+    let a = local_symbol(&model, "a");
+    let error = rename_symbol(&mut block, &model, a, "\u{FEFF}").expect_err("an invalid name");
+    assert_eq!(block, original, "the rename must fail before mutating");
+    assert!(matches!(
+        &error,
+        RenameSymbolError::UnsupportedIdentifier { name } if name == "\u{FEFF}"
+    ));
+    produced.insert(RenameSymbolErrorTag::of(&error).name());
+    codes.insert(error.code());
+    assert!(!error.to_string().is_empty());
+
+    // UnknownSymbol: the id is not part of the model.
+    let mut block = luau("local a = 1");
+    let model = analyze(&block);
+    let original = block.clone();
+    let error = rename_symbol(&mut block, &model, SymbolId(9_999), "b")
+        .expect_err("a symbol that is not in the model");
+    assert_eq!(block, original, "the rename must fail before mutating");
+    produced.insert(RenameSymbolErrorTag::of(&error).name());
+    codes.insert(error.code());
+    assert!(!error.to_string().is_empty());
+
+    // ImplicitSymbol: a synthesized global has no declaration to rename.
+    let mut block = luau("return print");
+    let model = analyze(&block);
+    let original = block.clone();
+    let print = model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Global && symbol.name == "print")
+        .expect("the implicit global `print`")
+        .id;
+    assert!(model.symbol(print).is_implicit());
+    let error =
+        rename_symbol(&mut block, &model, print, "renamed").expect_err("an implicit symbol");
+    assert_eq!(block, original, "the rename must fail before mutating");
+    produced.insert(RenameSymbolErrorTag::of(&error).name());
+    codes.insert(error.code());
+    assert!(!error.to_string().is_empty());
+
+    // UnresolvedIdentifier: the tree does not match the model.
+    let analyzed = luau("local a = 1\nreturn a");
+    let model = analyze(&analyzed);
+    let a = local_symbol(&model, "a");
+    let mut foreign = luau("return ghost");
+    let original = foreign.clone();
+    let error = rename_symbol(&mut foreign, &model, a, "renamed")
+        .expect_err("an identifier the model does not bind");
+    assert_eq!(foreign, original, "the rename must fail before mutating");
+    assert!(matches!(
+        &error,
+        RenameSymbolError::UnresolvedIdentifier { name } if name == "ghost"
+    ));
+    produced.insert(RenameSymbolErrorTag::of(&error).name());
+    codes.insert(error.code());
+    assert!(!error.to_string().is_empty());
+
+    // Conflict: the requested name is visible where the renamed symbol is.
+    let mut block = luau("local a, b = 1, 2");
+    let model = analyze(&block);
+    let original = block.clone();
+    let a = local_symbol(&model, "a");
+    let error = rename_symbol(&mut block, &model, a, "b").expect_err("a visible conflict");
+    assert_eq!(block, original, "the rename must fail before mutating");
+    assert!(matches!(&error, RenameSymbolError::Conflict { name } if name == "b"));
+    produced.insert(RenameSymbolErrorTag::of(&error).name());
+    codes.insert(error.code());
+    assert!(!error.to_string().is_empty());
+
+    let absent = missing(
+        RenameSymbolErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "rename errors never triggered: {absent:?}"
+    );
+
+    let expected: BTreeSet<&'static str> = BTreeSet::from([
+        "rename/unsupported-identifier",
+        "rename/unknown-symbol",
+        "rename/implicit-symbol",
+        "rename/unresolved-identifier",
+        "rename/conflict",
+    ]);
+    assert_eq!(codes, expected, "unexpected rename error codes");
+
+    let sample = RenameSymbolError::UnknownSymbol;
+    let dynamic: &dyn std::error::Error = &sample;
+    assert!(
+        !dynamic.to_string().is_empty(),
+        "the error must be formatted"
+    );
 }

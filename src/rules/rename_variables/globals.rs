@@ -44,17 +44,20 @@ pub const DEFAULT: [&str; 40] = [
     "_VERSION",
 ];
 
-/// Roblox DataModel, services, and engine global identifiers.
-pub const ROBLOX: [&str; 58] = [
+/// Roblox DataModel, services and engine globals, plus the Luau standard library
+/// types that the engine exposes (`buffer`, `vector`).
+pub const ROBLOX: [&str; 70] = [
     "Axes",
     "bit32",
     "BrickColor",
+    "buffer",
     "CatalogSearchParams",
     "CellId",
+    "CFrame",
+    "Color3",
     "ColorSequence",
     "ColorSequenceKeypoint",
-    "Color3",
-    "CFrame",
+    "Content",
     "DateTime",
     "DebuggerManager",
     "delay",
@@ -62,13 +65,17 @@ pub const ROBLOX: [&str; 58] = [
     "elapsedTime",
     "Enum",
     "Faces",
+    "FloatCurveKey",
+    "Font",
+    "game",
     "Instance",
     "LoadLibrary",
-    "game",
     "NumberRange",
     "NumberSequence",
     "NumberSequenceKeypoint",
     "OverlapParams",
+    "PathfindingLink",
+    "PathfindingModifier",
     "PathWaypoint",
     "PhysicalProperties",
     "plugin",
@@ -78,14 +85,19 @@ pub const ROBLOX: [&str; 58] = [
     "Random",
     "Ray",
     "RaycastParams",
+    "RaycastResult",
     "Rect",
     "Region3",
     "Region3int16",
+    "RotationCurveKey",
     "script",
+    "Secret",
+    "SecurityCapabilities",
     "settings",
     "shared",
-    "stats",
+    "SharedTable",
     "spawn",
+    "stats",
     "task",
     "tick",
     "time",
@@ -95,6 +107,7 @@ pub const ROBLOX: [&str; 58] = [
     "UDim2",
     "UserSettings",
     "utf8",
+    "vector",
     "Vector2",
     "Vector2int16",
     "Vector3",
@@ -113,11 +126,50 @@ mod test {
     #[test]
     fn exposes_the_host_global_sets() {
         assert_eq!(DEFAULT.len(), 40);
-        assert_eq!(ROBLOX.len(), 58);
+        assert_eq!(ROBLOX.len(), 70);
 
         assert!(DEFAULT.contains(&"print"));
         assert!(DEFAULT.contains(&"_VERSION"));
         assert!(ROBLOX.contains(&"game"));
         assert!(ROBLOX.contains(&"workspace"));
+
+        // The modern Luau/Roblox globals must be present so renaming never
+        // generates an identifier that collides with an engine global.
+        for name in [
+            "buffer",
+            "vector",
+            "Font",
+            "Content",
+            "Secret",
+            "SecurityCapabilities",
+            "SharedTable",
+            "RaycastResult",
+            "FloatCurveKey",
+            "RotationCurveKey",
+            "PathfindingLink",
+            "PathfindingModifier",
+        ] {
+            assert!(ROBLOX.contains(&name), "missing Roblox global `{name}`");
+        }
+    }
+
+    #[test]
+    fn roblox_globals_are_sorted_and_unique() {
+        let mut sorted: Vec<&str> = ROBLOX.to_vec();
+        sorted.sort_by_key(|name| name.to_ascii_lowercase());
+        assert_eq!(
+            sorted,
+            ROBLOX.to_vec(),
+            "the Roblox global set must stay sorted"
+        );
+
+        let mut unique: Vec<&str> = ROBLOX.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            ROBLOX.len(),
+            "the Roblox global set must be unique"
+        );
     }
 }

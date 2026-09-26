@@ -1,3 +1,21 @@
+//! Parsing Lua and Luau source into the r4 syntax tree.
+//!
+//! The grammar is provided by [`full_moon`]. Its Luau support has one known
+//! upstream boundary that matters here:
+//!
+//! **Generic call instantiation must be written with double angle brackets.**
+//! The Luau spelling `f<T>(x)` is parsed as the comparison chain
+//! `(f < T) > (x)`, and `obj:m<T>(1)` is a syntax error, in *every* dialect
+//! including an explicit [`Dialect::Luau`]. Only `f<<T>>(x)` (equivalently
+//! `f< <T> >(x)`) is recognised as type instantiation. This is a property of the
+//! upstream grammar, not of dialect detection: detection never selects a
+//! different reading, because no supported dialect accepts the single-angle
+//! form as an instantiation.
+//!
+//! Round-tripping a tree therefore emits the double-angle form; code that must
+//! interoperate with tools that only accept single-angle instantiation should be
+//! run through those tools before it reaches r4.
+
 use std::fmt;
 
 use full_moon::{ast::Ast, LuaVersion};
