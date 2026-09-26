@@ -644,7 +644,7 @@ fn corpus() -> &'static [(&'static str, bool)] {
         ("return {}, { 1, k = 2, [x] = 3 }", false),
         ("return -a, #b, not c", false),
         ("return a :: number", false),
-        ("return f<<T, U>>()", false),
+        ("return f<<T, U>>.x", false),
         ("local function v(...) return ... end", false),
         ("return f<<T>>", false),
         ("return a[1]()", false),

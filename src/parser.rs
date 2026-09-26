@@ -4,7 +4,6 @@ use full_moon::{ast::Ast, LuaVersion};
 
 use crate::{
     ast_converter::{AstConverter, ConvertError},
-    equivalence::Equivalent,
     nodes::*,
     semantic::{SemanticAnalyzer, SemanticError, SemanticModel},
     utils::Timer,
@@ -105,55 +104,44 @@ impl Parser {
     /// Returns the parse of `code` under the selected dialect, without
     /// re-parsing.
     ///
-    /// An explicit dialect parses directly. [`Dialect::Default`] detects the
-    /// dialect: the source is lexed once, the surviving candidates are parsed,
-    /// and the parse every survivor agrees with is returned. When no candidate
-    /// parses, the permissive union's parse is returned so a syntax error
-    /// surfaces once; divergent readings fail with `parse/ambiguous-dialect`.
+    /// An explicit dialect parses directly. [`Dialect::Default`] lexes the source
+    /// once; unless a `<<`/`>>` call makes the dialect genuinely ambiguous, the
+    /// permissive grammar reads it exactly as every dialect that accepts it
+    /// would, so one parse decides it.
     fn parse_selected(&self, code: &str) -> Result<full_moon::ast::AstResult, ParserError> {
         if self.dialect != Dialect::Default {
             return self.parse_fallible(code, self.dialect.lua_version());
         }
 
         let scan = crate::dialect::scan(code);
-        // When the source cannot be read divergently, the permissive grammar
-        // reads it exactly as every dialect that accepts it would, so a single
-        // parse decides it. Only a source the union rejects (for example
-        // `0xf3ad..x`, a malformed hex float to Lua 5.2+) falls through to the
-        // per-candidate path.
-        if !scan.may_diverge {
-            let ast_result = self.parse_fallible(code, LuaVersion::default())?;
-            if ast_result.errors().is_empty() {
-                return Ok(ast_result);
+        // `<<`/`>>` before a call is Luau type instantiation or a Lua 5.3/5.4
+        // shift chain — different programs. If a Luau marker already ruled every
+        // other dialect out it is unambiguously Luau; otherwise it is refused
+        // rather than guessed, without parsing either reading.
+        if scan.may_diverge && scan.candidates.contains(&Dialect::Luau) {
+            if let [Dialect::Luau] = scan.candidates.as_slice() {
+                return self.parse_fallible(code, Dialect::Luau.lua_version());
             }
+            return Err(ParserError::ambiguous_dialect(scan.candidates));
         }
 
-        let mut parsed: Vec<(Dialect, full_moon::ast::AstResult, Block)> = Vec::new();
-        for dialect in scan.candidates {
-            let ast_result = self.parse_fallible(code, dialect.lua_version())?;
-            if ast_result.errors().is_empty() {
-                if let Ok(block) = self.convert(ast_result.ast().clone()) {
-                    parsed.push((dialect, ast_result, block));
-                }
-            }
+        // A `<<`/`>>` only Luau can read, a `goto` used as an ordinary name, or a
+        // source whose only surviving dialect is known, parses directly as that
+        // dialect.
+        if scan.candidates.as_slice() == [Dialect::Luau]
+            || scan.candidates.as_slice() == [Dialect::Lua51, Dialect::Luau]
+            || (scan.luau_instantiation && scan.candidates.contains(&Dialect::Luau))
+        {
+            return self.parse_fallible(code, Dialect::Luau.lua_version());
         }
-        if parsed.is_empty() {
-            return self.parse_fallible(code, LuaVersion::default());
+        if let [dialect] = scan.candidates.as_slice() {
+            return self.parse_fallible(code, dialect.lua_version());
         }
-        // Equivalent trees mean the choice cannot matter; only a genuine
-        // structural divergence (the two readings are different programs) is a
-        // problem worth failing on.
-        let equivalent = parsed
-            .iter()
-            .all(|(_, _, block)| block.is_equivalent_to(&parsed[0].2));
-        if equivalent {
-            let (_, ast_result, _) = parsed.swap_remove(0);
-            Ok(ast_result)
-        } else {
-            Err(ParserError::ambiguous_dialect(
-                parsed.into_iter().map(|(dialect, _, _)| dialect).collect(),
-            ))
-        }
+
+        // Otherwise one permissive parse decides it. A source the permissive
+        // grammar rejects is reported as a syntax error so the caller can name a
+        // dialect; it is never guessed.
+        self.parse_fallible(code, LuaVersion::default())
     }
 
     /// Parses Lua code, returning the recovered tree and every syntax
@@ -489,6 +477,24 @@ mod test {
         };
     }
 
+    /// Cases that exercise syntax only Luau accepts, parsed with an explicit
+    /// dialect so detection is bypassed.
+    macro_rules! test_luau_parse {
+        ($($name:ident($input:literal) => $value:expr),* $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    let parser = Parser::default().luau();
+                    let block = parser.parse($input)
+                        .expect(&format!("failed to parse `{}`", $input));
+
+                    let expect_block = $value.into();
+                    pretty_assertions::assert_eq!(block, expect_block);
+                }
+            )*
+        };
+    }
+
     test_parse!(
         empty_string("") => Block::default(),
         single_line_comment("-- todo") => Block::default(),
@@ -635,22 +641,10 @@ mod test {
         call_indexed_table("foo.bar()") => FunctionCall::from_prefix(
             FieldExpression::new(Prefix::from_name("foo"), "bar")
         ),
-        call_indexed_with_empty_type_instantiation("foo.bar<<>>()") => FunctionCall::from_prefix(
-            TypeInstantiationExpression::new(
-                FieldExpression::new(Prefix::from_name("foo"), "bar"),
-                Vec::new()
-            )
-        ),
         call_indexed_with_empty_type_instantiation_with_spaces("foo.bar < <   >  >  ()") => FunctionCall::from_prefix(
             TypeInstantiationExpression::new(
                 FieldExpression::new(Prefix::from_name("foo"), "bar"),
                 Vec::new()
-            )
-        ),
-        call_indexed_with_type_instantiation_of_one_type("foo.bar<<string>>()") => FunctionCall::from_prefix(
-            TypeInstantiationExpression::new(
-                FieldExpression::new(Prefix::from_name("foo"), "bar"),
-                vec![TypeName::new("string").into()]
             )
         ),
         call_indexed_with_type_instantiation_of_two_types("foo.bar< <string, number> >()") => FunctionCall::from_prefix(
@@ -982,6 +976,21 @@ mod test {
             )
             .with_parameter("t")
             .export(),
+    );
+
+    test_luau_parse!(
+        call_indexed_with_empty_type_instantiation("foo.bar<<>>()") => FunctionCall::from_prefix(
+            TypeInstantiationExpression::new(
+                FieldExpression::new(Prefix::from_name("foo"), "bar"),
+                Vec::new()
+            )
+        ),
+        call_indexed_with_type_instantiation_of_one_type("foo.bar<<string>>()") => FunctionCall::from_prefix(
+            TypeInstantiationExpression::new(
+                FieldExpression::new(Prefix::from_name("foo"), "bar"),
+                vec![TypeName::new("string").into()]
+            )
+        ),
     );
 
     mod parse_with_tokens {

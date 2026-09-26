@@ -234,3 +234,55 @@ fn default_dialect_reports_a_syntactic_overlap() {
         .parse("::again::\nlocal s = 1\ngoto again")
         .expect("Lua 5.2 labels");
 }
+
+#[test]
+fn default_detects_luau_type_instantiations() {
+    // `<<`/`>>` that Lua 5.3/5.4 cannot continue as a shift names Luau.
+    for code in [
+        "return f<<T>>",
+        "return f<<T>>.x",
+        "return f<<T>>:m()",
+        "local x = 1\nx += 2\nreturn f<<T>>(x)",
+    ] {
+        Parser::default()
+            .parse(code)
+            .unwrap_or_else(|error| panic!("the default must parse `{code}`: {error}"));
+    }
+
+    // A `>>` with a shift operand on its right stays an ordinary Lua 5.3 shift.
+    Parser::default()
+        .parse("return a << b >> c")
+        .expect("a Lua 5.3 shift chain");
+
+    // A closing `)` before the `>>` means the `<<` was a shift inside brackets,
+    // not the start of a type instantiation.
+    Parser::default()
+        .parse("return (a << b) >> (c)")
+        .expect("a parenthesized Lua 5.3 shift chain");
+
+    // The call form is the one overlap that cannot be resolved without a choice.
+    let error = Parser::default()
+        .parse("local x = a << b >> (c)")
+        .expect_err("the call form is ambiguous");
+    assert_eq!(error.code(), "parse/ambiguous-dialect");
+}
+
+#[test]
+fn default_reads_goto_as_an_identifier_for_lua51() {
+    // Lua 5.1 and Luau treat `goto` as an ordinary name; the dialects between
+    // them reserve it, so a non-label use selects the pair and parses as Luau.
+    for code in [
+        "local goto = 1\nreturn goto",
+        "t.goto = 1\nreturn t.goto",
+        "goto()",
+    ] {
+        Parser::default()
+            .parse(code)
+            .unwrap_or_else(|error| panic!("the default must parse `{code}`: {error}"));
+    }
+
+    // A label after `goto` is still a Lua 5.2 statement.
+    Parser::default()
+        .parse("::again::\ngoto again")
+        .expect("a Lua 5.2 goto statement");
+}

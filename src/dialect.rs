@@ -1,9 +1,10 @@
 //! Dialect detection for the default parser.
 //!
 //! When no dialect is chosen explicitly, the parser lexes the source once and
-//! eliminates every dialect a construct rules out. The surviving dialects are
-//! then parsed; if they disagree the caller is asked to choose instead of the
-//! parser guessing.
+//! eliminates every dialect a construct rules out. Unless a `<<`/`>>` call could
+//! be read two ways, the permissive grammar reads the source exactly as every
+//! dialect that accepts it would, so that one parse decides it; a genuinely
+//! divergent `<<` call is reported instead of guessed.
 //!
 //! The marker sets below are conservative: a construct is only used as a marker
 //! when it is valid in a known set of dialects. Constructs shared between
@@ -33,6 +34,9 @@ const SHARED_LUAU_53: &[Dialect] = &[Dialect::Luau, Dialect::Lua53, Dialect::Lua
 const LUA53_PLUS: &[Dialect] = &[Dialect::Lua53, Dialect::Lua54];
 /// Symbols only Lua 5.4 accepts (`<const>`/`<close>`).
 const LUA54_ONLY: &[Dialect] = &[Dialect::Lua54];
+/// Lua 5.1 and Luau both treat `goto` as an ordinary identifier; every dialect
+/// between them reserves it as a statement keyword.
+const LUA51_OR_LUAU: &[Dialect] = &[Dialect::Lua51, Dialect::Luau];
 /// Symbols Lua 5.2 and its supersets accept (`goto`).
 const LUA52_PLUS: &[Dialect] = &[
     Dialect::Lua52,
@@ -53,55 +57,143 @@ const NOT_LUA51: &[Dialect] = &[
 pub(crate) struct Scan {
     /// The dialects that remain possible after the markers.
     pub candidates: Vec<Dialect>,
-    /// Whether the source uses `<<`/`>>`, the one marker whose readings can
-    /// differ between dialects: Luau type instantiation versus a Lua 5.3/5.4
-    /// shift chain. Every other marker is either unique to one dialect or
-    /// resolved by context, so the permissive parse already reads it correctly.
+    /// Whether the source contains a `<<` call (`<<` followed by `>>(`), the one
+    /// construct whose readings can differ between dialects: Luau type
+    /// instantiation versus a Lua 5.3/5.4 shift chain. Both readings are valid
+    /// programs, so the caller is asked to choose.
     pub may_diverge: bool,
+    /// Whether the source contains a `<<`/`>>` that only Luau can read, such as
+    /// `f<<T>>`, `f<<T>>:m()` or `f<<T>>.x`. Lua 5.3/5.4 reject these, so they
+    /// name Luau without ambiguity.
+    pub luau_instantiation: bool,
 }
 
 /// Scans `code` with a single lexer pass, returning the surviving dialects and
-/// whether the source can be read divergently.
+/// how the source reads any `<<`/`>>`.
 pub(crate) fn scan(code: &str) -> Scan {
-    let mut allowed = ALL.to_vec();
-    let mut lexer = Lexer::new(code, full_moon::LuaVersion::default());
-    let mut tokens: Vec<Token> = Vec::new();
-    loop {
-        match lexer.process_next() {
-            None => break,
-            Some(LexerResult::Ok(token)) => tokens.push(token),
-            // A source the lexer cannot tokenize is left to the parser; be
-            // conservative about divergence.
-            Some(LexerResult::Recovered(_, _)) | Some(LexerResult::Fatal(_)) => {
-                return Scan {
-                    candidates: ALL.to_vec(),
-                    may_diverge: true,
-                }
-            }
-        }
-    }
+    // `Lexer::new` handles a leading `#!` shebang, and `collect` drains every
+    // token; a lexer error still yields the tokens it recovered.
+    let (tokens, clean) = match Lexer::new(code, full_moon::LuaVersion::default()).collect() {
+        LexerResult::Ok(tokens) => (tokens, true),
+        LexerResult::Recovered(tokens, _) => (tokens, false),
+        LexerResult::Fatal(_) => (Vec::new(), false),
+    };
 
     let significant: Vec<&Token> = tokens
         .iter()
         .filter(|token| !is_trivia(token.token_type()))
         .collect();
 
-    let mut may_diverge = false;
+    let mut allowed = ALL.to_vec();
     for (index, token) in significant.iter().enumerate() {
-        if let TokenType::Symbol { symbol } = token.token_type() {
-            if matches!(symbol, Symbol::DoubleLessThan | Symbol::DoubleGreaterThan) {
-                may_diverge = true;
-            }
-        }
         if let Some(marker) = marker(token.token_type(), &significant, index) {
             allowed.retain(|dialect| marker.contains(dialect));
         }
     }
 
+    // A source the lexer could not fully tokenize is left to the parser.
+    let (may_diverge, luau_instantiation) = if clean {
+        classify_instantiation(&significant)
+    } else {
+        (false, false)
+    };
+
     Scan {
         candidates: allowed,
         may_diverge,
+        luau_instantiation,
     }
+}
+
+/// Classifies the `<<`/`>>` in a source, returning whether it contains a call
+/// that reads two ways (`a << b >> (c)`) and whether it contains one only Luau
+/// can read (`f<<T>>`, `f<<T>>.x`, `f<<T>>:m()`).
+///
+/// A `<<` with no `>>` after it, or with a shift operand after the `>>`, is an
+/// ordinary shift chain that every dialect with the operator reads the same way.
+fn classify_instantiation(tokens: &[&Token]) -> (bool, bool) {
+    let mut may_diverge = false;
+    let mut luau_instantiation = false;
+    for index in 0..tokens.len() {
+        if !is_symbol(tokens[index], Symbol::DoubleLessThan) {
+            continue;
+        }
+        let Some(close) = matching_greater(tokens, index) else {
+            continue;
+        };
+        let after = tokens.get(close + 1).copied();
+        if after.is_some_and(|token| is_symbol(token, Symbol::LeftParen)) {
+            // `>> (` continues a shift and also calls a Luau instantiation.
+            may_diverge = true;
+        } else if after.is_none_or(follows_instantiation) {
+            // Lua 5.3/5.4 cannot continue a shift chain here, so only Luau reads
+            // the `<<`/`>>` as type instantiation.
+            luau_instantiation = true;
+        }
+    }
+    (may_diverge, luau_instantiation)
+}
+
+/// Finds the `>>` that closes a `<<` without leaving the brackets the `<<` sits
+/// in. A `)` between them, as in `(a << b) >> (c)`, means the `<<` was an
+/// ordinary shift rather than the start of a type instantiation.
+fn matching_greater(tokens: &[&Token], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(start + 1) {
+        if is_symbol(token, Symbol::DoubleGreaterThan) && depth == 0 {
+            return Some(index);
+        }
+        if opens_bracket(token) {
+            depth += 1;
+        } else if closes_bracket(token) {
+            if depth == 0 {
+                return None;
+            }
+            depth -= 1;
+        }
+    }
+    None
+}
+
+/// Returns whether a token opens a bracketed group.
+fn opens_bracket(token: &Token) -> bool {
+    is_symbol(token, Symbol::LeftParen)
+        || is_symbol(token, Symbol::LeftBracket)
+        || is_symbol(token, Symbol::LeftBrace)
+}
+
+/// Returns whether a token closes a bracketed group.
+fn closes_bracket(token: &Token) -> bool {
+    is_symbol(token, Symbol::RightParen)
+        || is_symbol(token, Symbol::RightBracket)
+        || is_symbol(token, Symbol::RightBrace)
+}
+
+/// Returns whether the token after a `>>` cannot continue a Lua 5.3/5.4 shift
+/// chain, so the preceding `<<`/`>>` must be a Luau type instantiation.
+fn follows_instantiation(token: &Token) -> bool {
+    match token.token_type() {
+        TokenType::Eof => true,
+        TokenType::Symbol { symbol } => matches!(
+            symbol,
+            Symbol::RightParen
+                | Symbol::RightBracket
+                | Symbol::RightBrace
+                | Symbol::Comma
+                | Symbol::Semicolon
+                | Symbol::Equal
+                | Symbol::Dot
+                | Symbol::LeftBracket
+                | Symbol::Colon
+                | Symbol::TwoColons
+        ),
+        _ => false,
+    }
+}
+
+/// Returns whether a token is the given symbol.
+fn is_symbol(token: &Token, symbol: Symbol) -> bool {
+    matches!(token.token_type(), TokenType::Symbol { symbol: found } if *found == symbol)
 }
 
 /// Returns whether a token is trivia (whitespace or a comment).
@@ -144,8 +236,9 @@ fn marker(token_type: &TokenType, tokens: &[&Token], index: usize) -> Option<&'s
             Symbol::TwoColons => Some(NOT_LUA51),
             Symbol::LessThan if is_lua54_attribute(tokens, index) => Some(LUA54_ONLY),
             // `goto` is a statement only when a label name follows it; otherwise
-            // it is an ordinary identifier (legal before Lua 5.2).
+            // it is an ordinary identifier, which Lua 5.1 and Luau both accept.
             Symbol::Goto if next_is_identifier(tokens, index) => Some(LUA52_PLUS),
+            Symbol::Goto => Some(LUA51_OR_LUAU),
             _ => None,
         },
         _ => None,

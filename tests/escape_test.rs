@@ -9,6 +9,7 @@ use r4::Parser;
 
 fn analyze(code: &str) -> (Block, SemanticModel) {
     Parser::default()
+        .luau()
         .parse_analyzed(code)
         .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"))
 }
