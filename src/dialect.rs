@@ -49,11 +49,20 @@ const NOT_LUA51: &[Dialect] = &[
     Dialect::Luau,
 ];
 
-/// Returns the dialects that remain possible for `code` after one lexer pass.
-///
-/// An empty vector means the markers are mutually inconsistent; the caller then
-/// falls back to the permissive union.
-pub(crate) fn candidates(code: &str) -> Vec<Dialect> {
+/// The result of scanning a source with no explicit dialect.
+pub(crate) struct Scan {
+    /// The dialects that remain possible after the markers.
+    pub candidates: Vec<Dialect>,
+    /// Whether the source uses `<<`/`>>`, the one marker whose readings can
+    /// differ between dialects: Luau type instantiation versus a Lua 5.3/5.4
+    /// shift chain. Every other marker is either unique to one dialect or
+    /// resolved by context, so the permissive parse already reads it correctly.
+    pub may_diverge: bool,
+}
+
+/// Scans `code` with a single lexer pass, returning the surviving dialects and
+/// whether the source can be read divergently.
+pub(crate) fn scan(code: &str) -> Scan {
     let mut allowed = ALL.to_vec();
     let mut lexer = Lexer::new(code, full_moon::LuaVersion::default());
     let mut tokens: Vec<Token> = Vec::new();
@@ -61,9 +70,13 @@ pub(crate) fn candidates(code: &str) -> Vec<Dialect> {
         match lexer.process_next() {
             None => break,
             Some(LexerResult::Ok(token)) => tokens.push(token),
-            // A source the lexer cannot tokenize is left to the parser.
+            // A source the lexer cannot tokenize is left to the parser; be
+            // conservative about divergence.
             Some(LexerResult::Recovered(_, _)) | Some(LexerResult::Fatal(_)) => {
-                return ALL.to_vec()
+                return Scan {
+                    candidates: ALL.to_vec(),
+                    may_diverge: true,
+                }
             }
         }
     }
@@ -73,14 +86,22 @@ pub(crate) fn candidates(code: &str) -> Vec<Dialect> {
         .filter(|token| !is_trivia(token.token_type()))
         .collect();
 
+    let mut may_diverge = false;
     for (index, token) in significant.iter().enumerate() {
-        let Some(marker) = marker(token.token_type(), &significant, index) else {
-            continue;
-        };
-        allowed.retain(|dialect| marker.contains(dialect));
+        if let TokenType::Symbol { symbol } = token.token_type() {
+            if matches!(symbol, Symbol::DoubleLessThan | Symbol::DoubleGreaterThan) {
+                may_diverge = true;
+            }
+        }
+        if let Some(marker) = marker(token.token_type(), &significant, index) {
+            allowed.retain(|dialect| marker.contains(dialect));
+        }
     }
 
-    allowed
+    Scan {
+        candidates: allowed,
+        may_diverge,
+    }
 }
 
 /// Returns whether a token is trivia (whitespace or a comment).

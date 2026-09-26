@@ -95,71 +95,63 @@ impl Parser {
     /// When the dialect is [`Dialect::Default`] the dialect is detected from the
     /// source; an explicit dialect is used as-is.
     pub fn parse(&self, code: &str) -> Result<Block, ParserError> {
-        if self.dialect == Dialect::Default {
-            return match self.detect(code)? {
-                Detection::Dialect(_, block) => Ok(block),
-                Detection::Union => self.parse_union(code),
-            };
-        }
-        self.parse_with(code, self.dialect)
-    }
-
-    /// Parses `code` with a concrete dialect, converting it to a [`Block`].
-    fn parse_with(&self, code: &str, dialect: Dialect) -> Result<Block, ParserError> {
-        let ast_result = self.parse_fallible(code, dialect.lua_version())?;
+        let ast_result = self.parse_selected(code)?;
         if !ast_result.errors().is_empty() {
             return Err(ParserError::parsing(ast_result.errors().to_vec()));
         }
         self.convert(ast_result.into_ast())
     }
 
-    /// Parses `code` with every dialect at once.
-    fn parse_union(&self, code: &str) -> Result<Block, ParserError> {
-        let ast_result = self.parse_fallible(code, LuaVersion::default())?;
-        if !ast_result.errors().is_empty() {
-            return Err(ParserError::parsing(ast_result.errors().to_vec()));
-        }
-        self.convert(ast_result.into_ast())
-    }
-
-    /// Detects the dialect of `code` when none was chosen explicitly.
+    /// Returns the parse of `code` under the selected dialect, without
+    /// re-parsing.
     ///
-    /// The source is lexed once and every dialect a construct rules out is
-    /// eliminated; the survivors are parsed. Identical trees mean the choice
-    /// cannot matter, and differing trees fail with the `parse/ambiguous-dialect` error.
-    fn detect(&self, code: &str) -> Result<Detection, ParserError> {
-        let candidates = crate::dialect::candidates(code);
-        // No dialect-identifying construct was found, so the source is
-        // dialect-neutral: one permissive parse decides it. Only a source the
-        // union rejects (for example `0xf3ad..x`, which Lua 5.2+ lexes as a
-        // malformed hex float) falls through to the per-candidate path.
-        if candidates.len() == crate::dialect::ALL.len() {
-            if let Ok(block) = self.parse_union(code) {
-                return Ok(Detection::Dialect(Dialect::Default, block));
+    /// An explicit dialect parses directly. [`Dialect::Default`] detects the
+    /// dialect: the source is lexed once, the surviving candidates are parsed,
+    /// and the parse every survivor agrees with is returned. When no candidate
+    /// parses, the permissive union's parse is returned so a syntax error
+    /// surfaces once; divergent readings fail with `parse/ambiguous-dialect`.
+    fn parse_selected(&self, code: &str) -> Result<full_moon::ast::AstResult, ParserError> {
+        if self.dialect != Dialect::Default {
+            return self.parse_fallible(code, self.dialect.lua_version());
+        }
+
+        let scan = crate::dialect::scan(code);
+        // When the source cannot be read divergently, the permissive grammar
+        // reads it exactly as every dialect that accepts it would, so a single
+        // parse decides it. Only a source the union rejects (for example
+        // `0xf3ad..x`, a malformed hex float to Lua 5.2+) falls through to the
+        // per-candidate path.
+        if !scan.may_diverge {
+            let ast_result = self.parse_fallible(code, LuaVersion::default())?;
+            if ast_result.errors().is_empty() {
+                return Ok(ast_result);
             }
         }
 
-        let mut parsed: Vec<(Dialect, Block)> = Vec::new();
-        for dialect in candidates {
-            if let Ok(block) = self.parse_with(code, dialect) {
-                parsed.push((dialect, block));
+        let mut parsed: Vec<(Dialect, full_moon::ast::AstResult, Block)> = Vec::new();
+        for dialect in scan.candidates {
+            let ast_result = self.parse_fallible(code, dialect.lua_version())?;
+            if ast_result.errors().is_empty() {
+                if let Ok(block) = self.convert(ast_result.ast().clone()) {
+                    parsed.push((dialect, ast_result, block));
+                }
             }
         }
         if parsed.is_empty() {
-            return Ok(Detection::Union);
+            return self.parse_fallible(code, LuaVersion::default());
         }
         // Equivalent trees mean the choice cannot matter; only a genuine
         // structural divergence (the two readings are different programs) is a
         // problem worth failing on.
-        if parsed
+        let equivalent = parsed
             .iter()
-            .all(|(_, block)| block.is_equivalent_to(&parsed[0].1))
-        {
-            let (dialect, block) = parsed.swap_remove(0);
-            Ok(Detection::Dialect(dialect, block))
+            .all(|(_, _, block)| block.is_equivalent_to(&parsed[0].2));
+        if equivalent {
+            let (_, ast_result, _) = parsed.swap_remove(0);
+            Ok(ast_result)
         } else {
             Err(ParserError::ambiguous_dialect(
-                parsed.into_iter().map(|(dialect, _)| dialect).collect(),
+                parsed.into_iter().map(|(dialect, _, _)| dialect).collect(),
             ))
         }
     }
@@ -175,14 +167,7 @@ impl Parser {
         &self,
         code: &str,
     ) -> Result<(Block, Vec<crate::diagnostic::Diagnostic>), ParserError> {
-        let lua_version = match self.dialect {
-            Dialect::Default => match self.detect(code)? {
-                Detection::Dialect(dialect, _) => dialect.lua_version(),
-                Detection::Union => LuaVersion::default(),
-            },
-            dialect => dialect.lua_version(),
-        };
-        let ast_result = self.parse_fallible(code, lua_version)?;
+        let ast_result = self.parse_selected(code)?;
         let diagnostics = ParserError::parsing(ast_result.errors().to_vec()).to_diagnostics();
         let block = self.convert(ast_result.into_ast())?;
         Ok((block, diagnostics))
@@ -294,15 +279,6 @@ impl Parser {
     fn convert_ast(&self, ast: Ast) -> Result<Block, ConvertError> {
         AstConverter::new(self.hold_token_data).convert(&ast)
     }
-}
-
-/// The result of dialect detection for a source without an explicit dialect.
-#[derive(Debug)]
-enum Detection {
-    /// A dialect was identified (every surviving candidate agreed); its parse.
-    Dialect(Dialect, Block),
-    /// No single dialect accepts the source; the permissive union is used.
-    Union,
 }
 
 /// An error produced by [`Parser::parse_analyzed`].
