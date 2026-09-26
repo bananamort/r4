@@ -228,12 +228,24 @@ fn bundle_graph(resolved: ResolvedModules) -> Result<Block, BundleError> {
     let linked_values = link::link_exported_values(&mut graph, root, &order, &mut names);
     let hoisted_types = hoist_exported_types(&mut graph, root, &order, &mut names)?;
 
-    let modules_name = names.generate_with_prefix("__R4_MODULES");
-    let cache_name = names.generate_with_prefix("__R4_CACHE");
-    let loaded_name = names.generate_with_prefix("__R4_LOADED");
-    let load_name = names.generate_with_prefix("__R4_LOAD");
-    let key_name = names.generate_with_prefix("__R4_KEY");
-    let result_name = names.generate_with_prefix("__R4_RESULT");
+    let modules_name = names
+        .generate_with_prefix("__R4_MODULES")
+        .expect("the reserved prefix is a valid identifier");
+    let cache_name = names
+        .generate_with_prefix("__R4_CACHE")
+        .expect("the reserved prefix is a valid identifier");
+    let loaded_name = names
+        .generate_with_prefix("__R4_LOADED")
+        .expect("the reserved prefix is a valid identifier");
+    let load_name = names
+        .generate_with_prefix("__R4_LOAD")
+        .expect("the reserved prefix is a valid identifier");
+    let key_name = names
+        .generate_with_prefix("__R4_KEY")
+        .expect("the reserved prefix is a valid identifier");
+    let result_name = names
+        .generate_with_prefix("__R4_RESULT")
+        .expect("the reserved prefix is a valid identifier");
 
     let mut definitions = vec![build_loader(
         &modules_name,
@@ -505,7 +517,9 @@ fn hoist_exported_types(
         for &index in &hoisted {
             let declaration = &declarations[index];
             let name = declaration.name.clone();
-            let fresh = names.generate_with_prefix(format!("__R4_TYPE_{name}"));
+            let fresh = names
+                .generate_with_prefix(format!("__R4_TYPE_{name}"))
+                .expect("the reserved prefix is a valid identifier");
             global_mapping.insert((module_id, declaration.id), fresh.clone());
             mapping.insert(declaration.id, fresh);
             flags[index] = true;

@@ -133,7 +133,10 @@ impl<'a> Processor<'a> {
     }
 
     fn push_loop(&mut self) {
-        let identifier = self.names.generate_with_prefix("__R4_CONTINUE");
+        let identifier = self
+            .names
+            .generate_with_prefix("__R4_CONTINUE")
+            .expect("the reserved prefix is a valid identifier");
         self.loop_stack
             .push(Some(LoopData::new(Identifier::new(identifier))));
     }

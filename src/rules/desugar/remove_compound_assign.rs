@@ -25,7 +25,9 @@ impl Processor {
 
     #[inline]
     fn generate_variable(&mut self) -> String {
-        self.names.generate_with_prefix("__R4_VAR")
+        self.names
+            .generate_with_prefix("__R4_VAR")
+            .expect("the reserved prefix is a valid identifier")
     }
 
     fn simplify_prefix(&self, prefix: &Prefix) -> Option<Prefix> {

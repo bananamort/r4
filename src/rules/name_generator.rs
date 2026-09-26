@@ -1,11 +1,43 @@
 //! Strict, model-first fresh identifier allocation.
 
 use std::collections::HashSet;
+use std::fmt;
 
 use crate::process::utils::{identifier_permutator, is_valid_identifier, CharPermutator};
 use crate::semantic::SemanticModel;
 
 use super::rename_variables::{DEFAULT_GLOBALS, ROBLOX_GLOBALS};
+
+/// An error produced by [`NameGenerator::generate_with_prefix`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NameGeneratorError {
+    prefix: String,
+}
+
+impl NameGeneratorError {
+    /// Returns the prefix that cannot form an identifier.
+    #[inline]
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    /// Returns the stable code of this error.
+    pub fn code(&self) -> &'static str {
+        "name-generator/invalid-prefix"
+    }
+}
+
+impl fmt::Display for NameGeneratorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "prefix `{}` cannot begin a valid Lua identifier",
+            self.prefix
+        )
+    }
+}
+
+impl std::error::Error for NameGeneratorError {}
 
 /// Allocates identifiers that are guaranteed to be unused by the analyzed
 /// program.
@@ -76,19 +108,25 @@ impl NameGenerator {
     /// When the prefix itself is available it is returned unchanged; otherwise
     /// the first free `prefix{N}` is returned. The allocated name is always
     /// registered, so repeated calls never return the same identifier.
-    pub fn generate_with_prefix(&mut self, prefix: impl Into<String>) -> String {
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`NameGeneratorError`] when `prefix` cannot begin a valid
+    /// identifier (a leading digit, a space, ...): no `prefix{N}` could be valid
+    /// either. The generator never substitutes an unrelated name.
+    pub fn generate_with_prefix(
+        &mut self,
+        prefix: impl Into<String>,
+    ) -> Result<String, NameGeneratorError> {
         let prefix = prefix.into();
+
+        if !is_valid_identifier(&format!("{prefix}0")) {
+            return Err(NameGeneratorError { prefix });
+        }
 
         if is_valid_identifier(&prefix) && !self.reserved.contains(&prefix) {
             self.reserved.insert(prefix.clone());
-            return prefix;
-        }
-
-        // A prefix that cannot form a valid identifier (a leading digit, a
-        // space, ...) would make every `prefix{N}` invalid and loop forever.
-        // Fall back to a plain fresh name in that case.
-        if !is_valid_identifier(&format!("{prefix}0")) {
-            return self.generate();
+            return Ok(prefix);
         }
 
         let mut counter = 1_u32;
@@ -96,7 +134,7 @@ impl NameGenerator {
             let candidate = format!("{prefix}{counter}");
             if is_valid_identifier(&candidate) && !self.reserved.contains(&candidate) {
                 self.reserved.insert(candidate.clone());
-                return candidate;
+                return Ok(candidate);
             }
             counter += 1;
         }
@@ -129,7 +167,9 @@ mod test {
             assert!(!ROBLOX_GLOBALS.contains(&name.as_str()));
         }
 
-        let prefixed = generator.generate_with_prefix("__R4_SELECT");
+        let prefixed = generator
+            .generate_with_prefix("__R4_SELECT")
+            .expect("the reserved prefix is a valid identifier");
         assert_ne!(
             prefixed, "__R4_SELECT",
             "the prefix collides with a model symbol"
@@ -137,17 +177,16 @@ mod test {
     }
 
     #[test]
-    fn an_invalid_prefix_falls_back_instead_of_looping() {
+    fn an_invalid_prefix_is_a_typed_error() {
         let (_, model) = analyze_with_tokens("return 1");
         let mut generator = NameGenerator::new(&model);
 
         for prefix in ["1x", "", "not an identifier"] {
-            let name = generator.generate_with_prefix(prefix);
-            assert!(
-                is_valid_identifier(&name),
-                "`{name}` generated from `{prefix:?}` must be a valid identifier"
-            );
-            assert!(generator.is_reserved(&name), "`{name}` must be reserved");
+            let error = generator
+                .generate_with_prefix(prefix)
+                .expect_err("the prefix cannot begin an identifier");
+            assert_eq!(error.code(), "name-generator/invalid-prefix");
+            assert_eq!(error.prefix(), prefix);
         }
     }
 }

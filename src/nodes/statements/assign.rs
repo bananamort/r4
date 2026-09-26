@@ -25,7 +25,20 @@ pub struct AssignStatement {
 
 impl AssignStatement {
     /// Creates a new assignment statement with the given variables and values.
+    ///
+    /// # Panics
+    /// Panics when `variables` or `values` is empty: an assignment has no
+    /// meaning without both sides, and every emitter and token accessor relies
+    /// on that invariant.
     pub fn new(variables: Vec<Variable>, values: Vec<Expression>) -> Self {
+        assert!(
+            !variables.is_empty(),
+            "an assign statement must have at least one variable"
+        );
+        assert!(
+            !values.is_empty(),
+            "an assign statement must have at least one value"
+        );
         Self {
             variables,
             values,

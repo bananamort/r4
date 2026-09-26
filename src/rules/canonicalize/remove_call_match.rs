@@ -119,7 +119,8 @@ impl<M: CallMatcher> Processor<'_, M> {
         } else {
             let alias = self
                 .names
-                .generate_with_prefix(format!("__R4_{}", global.to_ascii_uppercase()));
+                .generate_with_prefix(format!("__R4_{}", global.to_ascii_uppercase()))
+                .expect("the reserved prefix is a valid identifier");
             self.aliases.push((global, alias.clone()));
             alias
         };

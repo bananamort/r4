@@ -26,7 +26,7 @@ pub use formatting::{
     remove_spaces, replace_referenced_tokens, shift_token_line, AppendLocation,
 };
 pub use inject::{inject_global_values, InjectGlobalValueError};
-pub use name_generator::NameGenerator;
+pub use name_generator::{NameGenerator, NameGeneratorError};
 pub use session::{Session, SessionError};
 
 use crate::nodes::Block;
@@ -44,6 +44,9 @@ pub enum DesugarError {
     /// A `continue` could not be lowered without changing the meaning of its
     /// loop.
     Continue(desugar::RemoveContinueError),
+    /// A Luau number literal could not be normalized because its source text
+    /// was not available.
+    Number(desugar::ConvertLuauNumberError),
     /// The lowered block still contains syntax Lua 5.1 cannot represent.
     UnsupportedDialect(DialectSupportError),
 }
@@ -54,6 +57,7 @@ impl std::fmt::Display for DesugarError {
             DesugarError::Semantic(error) => write!(f, "{error}"),
             DesugarError::Cfg(error) => write!(f, "{error}"),
             DesugarError::Continue(error) => write!(f, "{error}"),
+            DesugarError::Number(error) => write!(f, "{error}"),
             DesugarError::UnsupportedDialect(error) => write!(f, "{error}"),
         }
     }
@@ -79,6 +83,12 @@ impl From<desugar::RemoveContinueError> for DesugarError {
     }
 }
 
+impl From<desugar::ConvertLuauNumberError> for DesugarError {
+    fn from(error: desugar::ConvertLuauNumberError) -> Self {
+        DesugarError::Number(error)
+    }
+}
+
 impl From<DialectSupportError> for DesugarError {
     fn from(error: DialectSupportError) -> Self {
         DesugarError::UnsupportedDialect(error)
@@ -93,6 +103,21 @@ impl From<DialectSupportError> for DesugarError {
 /// pipeline does not lower survives (a Lua 5.2 `goto`, a Lua 5.3 bitwise
 /// operator), it fails fast instead of producing unparseable output.
 pub fn desugar_to_lua51(block: &mut Block) -> Result<(), DesugarError> {
+    run(block, None)
+}
+
+/// Like [`desugar_to_lua51`], but reads number tokens from `code`.
+///
+/// Use this when the tree was parsed with
+/// [`Parser::preserve_tokens`](crate::Parser::preserve_tokens): a number token
+/// that only carries a source position can be normalized only with its source,
+/// so [`desugar_to_lua51`] fails with
+/// [`DesugarError::Number`] rather than guessing a lexeme.
+pub fn desugar_to_lua51_with_code(block: &mut Block, code: &str) -> Result<(), DesugarError> {
+    run(block, Some(code))
+}
+
+fn run(block: &mut Block, code: Option<&str>) -> Result<(), DesugarError> {
     let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::remove_types(block, &model);
 
@@ -121,7 +146,10 @@ pub fn desugar_to_lua51(block: &mut Block) -> Result<(), DesugarError> {
     desugar::remove_continue(block, &model)?;
 
     let model = SemanticAnalyzer::new().analyze(block)?;
-    desugar::convert_luau_number(block, &model);
+    match code {
+        Some(code) => desugar::convert_luau_number_with_code(block, code, &model)?,
+        None => desugar::convert_luau_number(block, &model)?,
+    }
 
     let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::remove_method_call(block, &model);

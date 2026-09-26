@@ -40,7 +40,11 @@ impl RemoveInterpolatedStringProcessor<'_> {
         } else {
             let name = self
                 .tostring_identifier
-                .get_or_insert_with(|| self.names.generate_with_prefix("__R4_TO_STR"))
+                .get_or_insert_with(|| {
+                    self.names
+                        .generate_with_prefix("__R4_TO_STR")
+                        .expect("the reserved prefix is a valid identifier")
+                })
                 .clone();
             Prefix::from_name(name)
         }
@@ -59,7 +63,11 @@ impl RemoveInterpolatedStringProcessor<'_> {
         } else {
             let name = self
                 .string_format_identifier
-                .get_or_insert_with(|| self.names.generate_with_prefix("__R4_STR_FMT"))
+                .get_or_insert_with(|| {
+                    self.names
+                        .generate_with_prefix("__R4_STR_FMT")
+                        .expect("the reserved prefix is a valid identifier")
+                })
                 .clone();
             Prefix::from_name(name)
         }

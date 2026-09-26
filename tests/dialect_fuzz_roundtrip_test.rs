@@ -112,6 +112,11 @@ fn fuzzed_luau_blocks_lower_to_reparseable_lua51() {
             Err(DesugarError::UnsupportedDialect(error)) => {
                 panic!("iteration {iteration} lowering left unsupported syntax: {error}")
             }
+            // The fuzzer builds ASTs without tokens, so every number token is
+            // readable; an unreadable one would be a bug, not a valid outcome.
+            Err(DesugarError::Number(error)) => {
+                panic!("iteration {iteration} could not read a number token: {error}")
+            }
             Err(DesugarError::Semantic(_)) => {}
         }
     }

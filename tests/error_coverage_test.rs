@@ -618,6 +618,36 @@ fn remove_continue_errors_are_all_triggered() {
     assert!(!error.code().is_empty());
 }
 
+variant_registry!(ConvertLuauNumberErrorTag, r4::rules::desugar::ConvertLuauNumberError,
+    UnreadableNumberToken => r4::rules::desugar::ConvertLuauNumberError::UnreadableNumberToken { .. },
+);
+
+#[test]
+fn convert_luau_number_errors_are_all_triggered() {
+    use r4::rules::desugar::convert_luau_number;
+
+    let block = Parser::default()
+        .preserve_tokens()
+        .parse("return 1_000")
+        .expect("the number parses");
+    let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+    let mut block = block;
+
+    let error = convert_luau_number(&mut block, &model)
+        .expect_err("a position token cannot be read without the source");
+    let produced = BTreeSet::from([ConvertLuauNumberErrorTag::of(&error).name()]);
+    let absent = missing(
+        ConvertLuauNumberErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "convert-luau-number errors never triggered: {absent:?}"
+    );
+    assert!(!error.to_string().is_empty());
+    assert!(!error.code().is_empty());
+}
+
 #[test]
 fn rule_errors_are_all_triggered() {
     use r4::nodes::{Expression, FunctionAssignment, FunctionCall, VariableAssignment};

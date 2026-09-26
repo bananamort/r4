@@ -551,7 +551,7 @@ fn the_multi_pass_pipeline_preserves_invariants() {
         .apply_semantic_result(desugar::remove_continue)
         .expect("remove_continue");
     session
-        .apply_semantic(desugar::convert_luau_number)
+        .apply_semantic_result(desugar::convert_luau_number)
         .expect("convert_luau_number");
     session
         .apply_semantic(desugar::remove_method_call)

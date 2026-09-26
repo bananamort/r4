@@ -19,7 +19,9 @@ pub use convert_function_to_assignment::convert_function_to_assignment;
 pub use convert_local_function_to_assignment::{
     convert_local_function_to_assignment, ConvertLocalFunctionError,
 };
-pub use convert_luau_number::{convert_luau_number, convert_luau_number_with_code};
+pub use convert_luau_number::{
+    convert_luau_number, convert_luau_number_with_code, ConvertLuauNumberError,
+};
 pub use make_assignment_local::make_assignment_local;
 pub use remove_attribute::remove_attribute;
 pub use remove_compound_assign::remove_compound_assign;

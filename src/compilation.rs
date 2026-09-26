@@ -209,7 +209,10 @@ impl Compilation {
 
         let source = source.into();
         let unchanged = self.tree(id).map(SyntaxTree::source) == Some(source.as_str());
-        let stale = self.tree(id).map(SyntaxTree::is_stale).unwrap_or(false);
+        let stale = self
+            .tree(id)
+            .expect("the tree was checked above")
+            .is_stale();
         // A mutated tree must be refreshed even when the source text is the same,
         // otherwise its stale model would keep failing `model()`.
         if unchanged && !stale {

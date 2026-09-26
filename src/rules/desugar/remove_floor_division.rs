@@ -29,7 +29,11 @@ impl RemoveFloorDivisionProcessor<'_> {
         } else {
             let name = self
                 .math_floor_identifier
-                .get_or_insert_with(|| self.names.generate_with_prefix("__R4_MATH_FLOOR"))
+                .get_or_insert_with(|| {
+                    self.names
+                        .generate_with_prefix("__R4_MATH_FLOOR")
+                        .expect("the reserved prefix is a valid identifier")
+                })
                 .clone();
             Prefix::from_name(name)
         };

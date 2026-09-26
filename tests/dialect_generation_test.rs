@@ -1,7 +1,7 @@
 //! Dialect-safe generation: validated, fallible generator finalization.
 
 use r4::generator::{
-    DenseLuaGenerator, LuaGenerator, ReadableLuaGenerator, TokenBasedLuaGenerator,
+    DenseLuaGenerator, GeneratorError, LuaGenerator, ReadableLuaGenerator, TokenBasedLuaGenerator,
 };
 use r4::{Dialect, DialectSupportError, Parser};
 
@@ -25,10 +25,7 @@ fn readable_generator_rejects_unsupported_constructs() {
 
     // Nothing was emitted, and the recorded error surfaces at finalization.
     assert_eq!(generator.clone().into_string(), "");
-    assert_eq!(
-        generator.try_into_string().unwrap_err(),
-        r4::generator::GeneratorError::Dialect(error)
-    );
+    assert_eq!(generator.try_into_string().unwrap_err(), error);
 }
 
 #[test]
@@ -38,9 +35,11 @@ fn dense_generator_rejects_types_for_lua51() {
 
     assert_eq!(
         generator.try_write_block(&block),
-        Err(DialectSupportError::TypesNotSupported {
-            dialect: Dialect::Lua51
-        })
+        Err(GeneratorError::Dialect(
+            DialectSupportError::TypesNotSupported {
+                dialect: Dialect::Lua51
+            }
+        ))
     );
 }
 

@@ -381,7 +381,8 @@ impl ValueLinker<'_> {
         let safe_field = sanitize(field);
         let name = self
             .names
-            .generate_with_prefix(format!("__R4_VALUE_{safe_module}_{safe_field}"));
+            .generate_with_prefix(format!("__R4_VALUE_{safe_module}_{safe_field}"))
+            .expect("the reserved prefix is a valid identifier");
         self.mapping.insert(key.clone(), name.clone());
         name
     }

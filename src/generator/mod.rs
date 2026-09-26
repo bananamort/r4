@@ -33,6 +33,16 @@ impl std::fmt::Display for GeneratorError {
 
 impl std::error::Error for GeneratorError {}
 
+impl GeneratorError {
+    /// Returns the stable code of the underlying error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            GeneratorError::Dialect(error) => error.code(),
+            GeneratorError::Source(error) => error.code(),
+        }
+    }
+}
+
 impl From<crate::DialectSupportError> for GeneratorError {
     fn from(error: crate::DialectSupportError) -> Self {
         GeneratorError::Dialect(error)
@@ -77,17 +87,20 @@ macro_rules! dialect_generator {
         pub fn try_write_block(
             &mut self,
             block: &$crate::nodes::Block,
-        ) -> Result<(), $crate::DialectSupportError> {
+        ) -> Result<(), $crate::generator::GeneratorError> {
             match $crate::validate_dialect(block, self.target_dialect) {
                 Ok(()) => {
                     self.dialect_error = None;
                     self.source_error = None;
                     <Self as $crate::generator::LuaGenerator>::write_block(self, block);
-                    Ok(())
+                    match self.source_error.clone() {
+                        Some(error) => Err($crate::generator::GeneratorError::Source(error)),
+                        None => Ok(()),
+                    }
                 }
                 Err(error) => {
                     self.dialect_error = Some(error.clone());
-                    Err(error)
+                    Err($crate::generator::GeneratorError::Dialect(error))
                 }
             }
         }

@@ -344,9 +344,10 @@ impl AnalysisCache {
 
     fn evict_to_capacity(&mut self) {
         while self.entries.len() > self.capacity {
-            let Some(key) = self.order.pop_front() else {
-                break;
-            };
+            let key = self
+                .order
+                .pop_front()
+                .expect("the eviction order tracks the cached entries");
             self.entries.remove(&key);
         }
     }

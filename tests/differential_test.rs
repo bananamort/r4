@@ -321,11 +321,10 @@ fn parity_remove_unused_variables() {
 fn parity_convert_luau_number() {
     use darklua_core::rules::ConvertLuauNumber;
     for code in ["return 0b1010", "return 0x12EF"] {
-        assert_parity(
-            code,
-            &ConvertLuauNumber::default(),
-            r4::rules::desugar::convert_luau_number,
-        );
+        assert_parity(code, &ConvertLuauNumber::default(), |block, model| {
+            r4::rules::desugar::convert_luau_number(block, model)
+                .expect("the parsed code has no position-only tokens");
+        });
     }
 }
 
