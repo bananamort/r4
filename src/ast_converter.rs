@@ -2728,7 +2728,24 @@ impl<'a> AstConverter<'a> {
             builder.set_return_type(self.pop_function_return_type()?);
         };
 
-        for (param, type_specifier) in body.parameters().iter().zip(body.type_specifiers()) {
+        let parameters: Vec<_> = body.parameters().iter().collect();
+        let specifiers: Vec<_> = body.type_specifiers().collect();
+        // `full_moon` attaches one type specifier to each parameter, except that
+        // non-Luau dialects omit the entry for the trailing `...`. Align the
+        // lists so the ellipsis only takes a specifier when they cover every
+        // parameter; otherwise the specifiers pair with the named parameters.
+        let specifiers_cover_all = specifiers.len() == parameters.len();
+        let mut named_index = 0usize;
+        for (index, param) in parameters.iter().enumerate() {
+            let type_specifier = if specifiers_cover_all {
+                specifiers.get(index).copied().flatten()
+            } else if matches!(param, ast::Parameter::Name(_)) {
+                let specifier = specifiers.get(named_index).copied().flatten();
+                named_index += 1;
+                specifier
+            } else {
+                None
+            };
             match param {
                 ast::Parameter::Ellipsis(token) => {
                     if builder.is_variadic() {

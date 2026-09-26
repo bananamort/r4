@@ -12,7 +12,8 @@ pub fn parse_input(input: &str) -> Block {
 
 #[allow(dead_code)]
 pub fn try_parse_input(input: &str) -> Result<Block, ParserError> {
-    Parser::default().parse(input)
+    // The generators produce Luau syntax, so parse it as Luau.
+    Parser::default().luau().parse(input)
 }
 
 #[allow(dead_code)]

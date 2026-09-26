@@ -8,6 +8,7 @@ pub mod cfg;
 pub mod compilation;
 pub mod convert;
 pub mod diagnostic;
+mod dialect;
 pub mod equivalence;
 pub mod generator;
 pub mod modules;

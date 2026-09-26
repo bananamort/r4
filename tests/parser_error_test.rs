@@ -6,6 +6,7 @@ use r4::{AnalyzedParseError, Parser};
 fn parser_error_kinds_and_diagnostics() {
     // A conversion error (a type-pack type-instantiation argument).
     let error = Parser::default()
+        .luau()
         .parse("return f<<A...>>")
         .expect_err("the conversion is rejected");
     assert_eq!(error.code(), "parse/conversion");
@@ -15,6 +16,7 @@ fn parser_error_kinds_and_diagnostics() {
 
     // An upstream panic is wrapped into a typed error.
     let error = Parser::default()
+        .luau()
         .parse("return 3 & 1")
         .expect_err("the upstream panic becomes an error");
     assert_eq!(error.code(), "parse/panic");

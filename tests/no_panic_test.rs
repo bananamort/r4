@@ -297,6 +297,7 @@ fn upstream_parser_panic_becomes_a_typed_error() {
     // panic must surface as a typed `ParserError` instead of aborting.
     for code in ["return 3 & 1", "return 2 | 1", "return 5 ~ 3"] {
         let error = Parser::default()
+            .luau()
             .parse(code)
             .expect_err("the upstream parser cannot handle bitwise operators");
         assert!(!error.to_string().is_empty(), "`{code}`");

@@ -15,6 +15,8 @@ use crate::{
 /// Lua 5.1 through 5.4 (including bitwise operators, floor division, integer
 /// literals and local variable attributes), LuaJIT (goto, hex floats, number
 /// suffixes) and Luau (types, compound assignment, if-expressions, continue).
+/// Dialects are a parser bitfield, so [`Dialect::Default`] accepts all of them
+/// at once.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Dialect {
     /// Lua 5.1.
@@ -27,9 +29,17 @@ pub enum Dialect {
     Lua54,
     /// LuaJIT 2.0/2.1.
     LuaJit,
-    /// Luau (the default).
-    #[default]
+    /// Luau.
     Luau,
+    /// Detect the dialect from the source (the default when none is chosen).
+    ///
+    /// The parser lexes the source once, eliminates every dialect its constructs
+    /// rule out, and parses the survivors. When they agree the parse succeeds;
+    /// when they disagree it fails with
+    /// the `parse/ambiguous-dialect` error so the caller can choose. Choosing a
+    /// dialect explicitly bypasses detection.
+    #[default]
+    Default,
 }
 
 impl Dialect {
@@ -42,6 +52,7 @@ impl Dialect {
             Dialect::Lua54 => "lua54",
             Dialect::LuaJit => "luajit",
             Dialect::Luau => "luau",
+            Dialect::Default => "default",
         }
     }
 
@@ -53,6 +64,9 @@ impl Dialect {
             Dialect::Lua54 => LuaVersion::lua54(),
             Dialect::LuaJit => LuaVersion::luajit(),
             Dialect::Luau => LuaVersion::luau(),
+            // Every dialect the underlying parser supports: Lua 5.1 through 5.4,
+            // LuaJIT and Luau.
+            Dialect::Default => LuaVersion::default(),
         }
     }
 }
@@ -65,10 +79,9 @@ impl std::fmt::Display for Dialect {
 
 /// A parser for Lua code that converts it into an abstract syntax tree.
 ///
-/// The default dialect is Luau. Use [`Parser::dialect`] or the per-dialect
-/// helpers to parse another Lua flavor. The dialects cannot be combined: the
-/// different syntaxes (for example `::` as a type assertion in Luau and as a
-/// label in Lua 5.2+) conflict.
+/// The default dialect is [`Dialect::Default`], which detects the dialect from
+/// the source. Use [`Parser::dialect`] or the per-dialect helpers to choose one
+/// explicitly; an explicit dialect bypasses detection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parser {
     hold_token_data: bool,
@@ -77,12 +90,60 @@ pub struct Parser {
 
 impl Parser {
     /// Parses Lua code into a [`Block`].
+    ///
+    /// When the dialect is [`Dialect::Default`] the dialect is detected from the
+    /// source; an explicit dialect is used as-is.
     pub fn parse(&self, code: &str) -> Result<Block, ParserError> {
-        let ast_result = self.parse_fallible(code)?;
+        if self.dialect == Dialect::Default {
+            return match self.detect(code)? {
+                Detection::Dialect(_, block) => Ok(block),
+                Detection::Union => self.parse_union(code),
+            };
+        }
+        self.parse_with(code, self.dialect)
+    }
+
+    /// Parses `code` with a concrete dialect, converting it to a [`Block`].
+    fn parse_with(&self, code: &str, dialect: Dialect) -> Result<Block, ParserError> {
+        let ast_result = self.parse_fallible(code, dialect.lua_version())?;
         if !ast_result.errors().is_empty() {
             return Err(ParserError::parsing(ast_result.errors().to_vec()));
         }
         self.convert(ast_result.into_ast())
+    }
+
+    /// Parses `code` with every dialect at once.
+    fn parse_union(&self, code: &str) -> Result<Block, ParserError> {
+        let ast_result = self.parse_fallible(code, LuaVersion::default())?;
+        if !ast_result.errors().is_empty() {
+            return Err(ParserError::parsing(ast_result.errors().to_vec()));
+        }
+        self.convert(ast_result.into_ast())
+    }
+
+    /// Detects the dialect of `code` when none was chosen explicitly.
+    ///
+    /// The source is lexed once and every dialect a construct rules out is
+    /// eliminated; the survivors are parsed. Identical trees mean the choice
+    /// cannot matter, and differing trees fail with the `parse/ambiguous-dialect` error.
+    fn detect(&self, code: &str) -> Result<Detection, ParserError> {
+        let mut parsed: Vec<(Dialect, Block)> = Vec::new();
+        for dialect in crate::dialect::candidates(code) {
+            if let Ok(block) = self.parse_with(code, dialect) {
+                parsed.push((dialect, block));
+            }
+        }
+        if parsed.is_empty() {
+            return Ok(Detection::Union);
+        }
+        if parsed.iter().all(|(_, block)| block == &parsed[0].1) {
+            let (dialect, block) = parsed.swap_remove(0);
+            Ok(Detection::Dialect(dialect, block))
+        } else {
+            Err(ParserError::ambiguous_dialect(
+                parsed.into_iter().map(|(dialect, _)| dialect).collect(),
+            ))
+        }
     }
 
     /// Parses Lua code, returning the recovered tree and every syntax
@@ -96,15 +157,25 @@ impl Parser {
         &self,
         code: &str,
     ) -> Result<(Block, Vec<crate::diagnostic::Diagnostic>), ParserError> {
-        let ast_result = self.parse_fallible(code)?;
+        let lua_version = match self.dialect {
+            Dialect::Default => match self.detect(code)? {
+                Detection::Dialect(dialect, _) => dialect.lua_version(),
+                Detection::Union => LuaVersion::default(),
+            },
+            dialect => dialect.lua_version(),
+        };
+        let ast_result = self.parse_fallible(code, lua_version)?;
         let diagnostics = ParserError::parsing(ast_result.errors().to_vec()).to_diagnostics();
         let block = self.convert(ast_result.into_ast())?;
         Ok((block, diagnostics))
     }
 
-    fn parse_fallible(&self, code: &str) -> Result<full_moon::ast::AstResult, ParserError> {
+    fn parse_fallible(
+        &self,
+        code: &str,
+        lua_version: LuaVersion,
+    ) -> Result<full_moon::ast::AstResult, ParserError> {
         let full_moon_parse_timer = Timer::now();
-        let lua_version = self.dialect.lua_version();
         // `full_moon` can panic on a few malformed inputs (for example a
         // surrogate unicode escape inside an interpolated string). Since this
         // is a library that may be handed untrusted source, turn any panic
@@ -180,6 +251,11 @@ impl Parser {
         self.dialect(Dialect::LuaJit)
     }
 
+    /// Configures the parser to accept Luau syntax only.
+    pub fn luau(self) -> Self {
+        self.dialect(Dialect::Luau)
+    }
+
     /// Returns whether the parser accepts Lua 5.2 syntax.
     #[inline]
     pub fn is_lua52(&self) -> bool {
@@ -200,6 +276,15 @@ impl Parser {
     fn convert_ast(&self, ast: Ast) -> Result<Block, ConvertError> {
         AstConverter::new(self.hold_token_data).convert(&ast)
     }
+}
+
+/// The result of dialect detection for a source without an explicit dialect.
+#[derive(Debug)]
+enum Detection {
+    /// A dialect was identified (every surviving candidate agreed); its parse.
+    Dialect(Dialect, Block),
+    /// No single dialect accepts the source; the permissive union is used.
+    Union,
 }
 
 /// An error produced by [`Parser::parse_analyzed`].
@@ -238,7 +323,14 @@ impl From<SemanticError> for AnalyzedParseError {
 enum ParserErrorKind {
     Parsing(Vec<full_moon::Error>),
     Converting(ConvertError),
-    Panicked { message: String },
+    Panicked {
+        message: String,
+    },
+    /// No dialect was chosen and the source parses differently under more than
+    /// one candidate dialect.
+    AmbiguousDialect {
+        candidates: Vec<Dialect>,
+    },
 }
 
 /// The error type that can occur when parsing code.
@@ -266,12 +358,19 @@ impl ParserError {
         }
     }
 
+    fn ambiguous_dialect(candidates: Vec<Dialect>) -> Self {
+        Self {
+            kind: ParserErrorKind::AmbiguousDialect { candidates }.into(),
+        }
+    }
+
     /// Returns a stable machine readable code for this error.
     pub fn code(&self) -> &'static str {
         match &*self.kind {
             ParserErrorKind::Parsing(_) => "parse/syntax",
             ParserErrorKind::Converting(_) => "parse/conversion",
             ParserErrorKind::Panicked { .. } => "parse/panic",
+            ParserErrorKind::AmbiguousDialect { .. } => "parse/ambiguous-dialect",
         }
     }
 
@@ -317,6 +416,12 @@ impl ParserError {
                 format!("the parser panicked: {}", message),
             )
             .with_code("parse/panic")],
+            ParserErrorKind::AmbiguousDialect { candidates } => {
+                vec![
+                    crate::diagnostic::Diagnostic::error(ambiguous_dialect_message(candidates))
+                        .with_code("parse/ambiguous-dialect"),
+                ]
+            }
         }
     }
 }
@@ -325,6 +430,15 @@ impl From<ParserError> for crate::diagnostic::Diagnostic {
     fn from(error: ParserError) -> Self {
         error.to_diagnostic()
     }
+}
+
+/// Builds the message for an ambiguous dialect, listing the candidates.
+fn ambiguous_dialect_message(candidates: &[Dialect]) -> String {
+    let names: Vec<&str> = candidates.iter().map(|dialect| dialect.as_str()).collect();
+    format!(
+        "the source is ambiguous between {}; choose a dialect explicitly",
+        names.join(", ")
+    )
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -349,6 +463,9 @@ impl fmt::Display for ParserError {
             ParserErrorKind::Converting(err) => write!(f, "{}", err),
             ParserErrorKind::Panicked { message } => {
                 write!(f, "the parser panicked: {}", message)
+            }
+            ParserErrorKind::AmbiguousDialect { candidates } => {
+                f.write_str(&ambiguous_dialect_message(candidates))
             }
         }
     }
@@ -4119,6 +4236,13 @@ mod test {
     }
 
     #[test]
+    fn parser_error_is_send_sync_static() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+        assert_send_sync_static::<ParserError>();
+        assert_send_sync_static::<Dialect>();
+    }
+
+    #[test]
     fn every_parser_error_kind_is_reachable() {
         use std::collections::BTreeSet;
 
@@ -4128,16 +4252,20 @@ mod test {
                 ParserErrorKind::Parsing(_) => "parse/syntax",
                 ParserErrorKind::Converting(_) => "parse/conversion",
                 ParserErrorKind::Panicked { .. } => "parse/panic",
+                ParserErrorKind::AmbiguousDialect { .. } => "parse/ambiguous-dialect",
             }
         }
 
         let parser = Parser::default();
+        let luau = Parser::default().luau();
         let errors = vec![
             parser.parse("local x = ").expect_err("a syntax error"),
-            parser
-                .parse("return f<<A...>>")
+            luau.parse("return f<<A...>>")
                 .expect_err("a conversion error"),
-            parser.parse("return 3 & 1").expect_err("an upstream panic"),
+            luau.parse("return 3 & 1").expect_err("an upstream panic"),
+            parser
+                .parse("local x = a << b >> (c)")
+                .expect_err("an ambiguous dialect"),
         ];
 
         let produced: BTreeSet<&'static str> =
@@ -4150,7 +4278,12 @@ mod test {
         let syntax = &errors[0];
         assert_eq!(syntax.code(), "parse/syntax");
         assert!(syntax.to_diagnostic().span.is_some());
-        for expected in ["parse/syntax", "parse/conversion", "parse/panic"] {
+        for expected in [
+            "parse/syntax",
+            "parse/conversion",
+            "parse/panic",
+            "parse/ambiguous-dialect",
+        ] {
             assert!(
                 produced.contains(expected),
                 "parser error kind `{expected}` never triggered"

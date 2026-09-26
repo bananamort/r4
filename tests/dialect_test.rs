@@ -51,9 +51,13 @@ fn lua53_parses_and_generates_bitwise_operators() {
 fn luau_rejects_bitwise_operators() {
     for code in ["return 1 | 2", "return 1 & 2", "return 1 << 2"] {
         assert!(
-            Parser::default().parse(code).is_err(),
+            Parser::default().luau().parse(code).is_err(),
             "Luau must reject `{code}`"
         );
+        // The default detects Lua 5.3 from the operator instead.
+        Parser::default().parse(code).unwrap_or_else(|error| {
+            panic!("the default must detect Lua 5.3 for `{code}`: {error}")
+        });
     }
 }
 
@@ -159,10 +163,74 @@ fn parser_error_kinds_render() {
     assert!(!format!("{error:?}").is_empty());
 
     let panic_error = Parser::default()
+        .luau()
         .parse_analyzed("return 3 & 1")
         .expect_err("the upstream panic must become an error");
     assert!(
         panic_error.to_string().contains("panicked"),
         "{panic_error}"
     );
+}
+
+#[test]
+fn default_dialect_detects_the_source_dialect() {
+    assert_eq!(Parser::default().get_dialect(), Dialect::Default);
+
+    // Luau-only constructs select Luau.
+    for code in [
+        "local x = 1\nx += 2\nreturn x",
+        "return `a {1}`",
+        "local function f<T>(x: T): T\n\treturn x\nend\nreturn f(1)",
+    ] {
+        let block = Parser::default()
+            .parse(code)
+            .unwrap_or_else(|error| panic!("the default must parse `{code}`: {error}"));
+        r4::semantic::SemanticAnalyzer::new()
+            .analyze(&block)
+            .unwrap_or_else(|error| panic!("`{code}` must analyze: {error}"));
+        Parser::default()
+            .luau()
+            .parse(code)
+            .unwrap_or_else(|error| panic!("explicit Luau must parse `{code}`: {error}"));
+    }
+
+    // Lua 5.3 bitwise operators select Lua 5.3.
+    Parser::default()
+        .parse("return 6 & 3")
+        .expect("the default detects Lua 5.3");
+    assert!(Parser::default().luau().parse("return 6 & 3").is_err());
+
+    // Labels and goto select a Lua 5.2 or later dialect.
+    Parser::default()
+        .parse("::again::\nlocal s = 1\ngoto again")
+        .expect("the default detects Lua 5.2");
+    assert!(Parser::default().luau().parse("::again::").is_err());
+}
+
+#[test]
+fn default_dialect_reports_a_syntactic_overlap() {
+    // `a << b >> (c)` is a Luau type instantiation and a Lua 5.3 shift chain.
+    let error = Parser::default()
+        .parse("local x = a << b >> (c)")
+        .expect_err("the overlap is ambiguous");
+    assert_eq!(error.code(), "parse/ambiguous-dialect");
+    assert!(!error.to_string().is_empty());
+
+    // Choosing either dialect resolves it.
+    Parser::default()
+        .luau()
+        .parse("local x = a << b >> (c)")
+        .expect("Luau type instantiation");
+    Parser::default()
+        .lua53()
+        .parse("local x = a << b >> (c)")
+        .expect("the Lua 5.3 shift chain");
+
+    // Unambiguous `::` is read by position, not reported as ambiguous.
+    Parser::default()
+        .parse("local x = y :: number")
+        .expect("a Luau cast");
+    Parser::default()
+        .parse("::again::\nlocal s = 1\ngoto again")
+        .expect("Lua 5.2 labels");
 }
