@@ -62,7 +62,7 @@ fn trivia_read_fails_fast_on_an_invalid_range() {
         .expect("a comment");
     // A source that is too short for the recorded range is a typed error.
     assert!(matches!(
-        comment.try_read_with("--"),
+        comment.read("--"),
         Err(TriviaError::InvalidRange { .. })
     ));
     assert_eq!(
@@ -204,7 +204,7 @@ fn trivia_traversal_reaches_every_token_holder() {
     let comments: Vec<String> = trivia
         .iter()
         .filter(|piece| piece.kind().is_comment())
-        .map(|piece| piece.try_read_with(source).unwrap_or("").to_owned())
+        .map(|piece| piece.read(source).unwrap_or("").to_owned())
         .collect();
 
     for expected in ["--!strict", "-- decl", "-- fn", "-- table", "-- attribute"] {
@@ -258,12 +258,12 @@ fn shebang_survives_comment_removal_and_token_generation() {
 fn token_read_fails_fast_on_an_invalid_range() {
     let token = r4::nodes::Token::new_with_line(0, 100, 1);
     assert!(matches!(
-        token.try_read_with("short"),
+        token.read("short"),
         Err(TriviaError::InvalidRange { .. })
     ));
 
     let token = r4::nodes::Token::from_content("local");
-    assert_eq!(token.try_read_with("").expect("synthesized token"), "local");
+    assert_eq!(token.read("").expect("synthesized token"), "local");
 }
 
 #[test]
@@ -380,7 +380,7 @@ fn trivia_positions_and_errors() {
         let _ = piece.get_start();
         let _ = piece.get_end();
         let _ = piece.try_read();
-        let _ = piece.try_read_with(source);
+        let _ = piece.read(source);
         let _ = piece.read(source);
     }
 

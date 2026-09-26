@@ -564,9 +564,7 @@ fn api_errors_are_all_triggered() {
         .into_iter()
         .find(|piece| piece.kind().is_comment())
         .expect("a comment");
-    let trivia_error = comment
-        .try_read_with("--")
-        .expect_err("a short source is rejected");
+    let trivia_error = comment.read("--").expect_err("a short source is rejected");
     assert_eq!(TriviaErrorTag::ALL.len(), 1);
     assert_eq!(
         TriviaErrorTag::of(&trivia_error).name(),

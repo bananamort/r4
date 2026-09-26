@@ -157,7 +157,7 @@ impl Trivia {
         if !self.kind().is_comment() {
             return Ok(None);
         }
-        let text = self.try_read_with(source)?;
+        let text = self.read(source)?;
         Directive::parse(text)
     }
 }

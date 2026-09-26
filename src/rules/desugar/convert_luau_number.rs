@@ -61,7 +61,7 @@ impl Processor<'_> {
     /// that is impossible the pass fails instead of guessing.
     fn normalize(&mut self, token: &mut Token) {
         let content = match self.code {
-            Some(code) => match token.try_read_with(code) {
+            Some(code) => match token.read(code) {
                 Ok(content) => content.to_owned(),
                 Err(_) => {
                     self.fail(token);

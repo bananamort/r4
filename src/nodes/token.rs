@@ -167,16 +167,20 @@ pub struct Trivia {
 impl Trivia {
     /// Reads the content of the trivia from the source code.
     ///
-    /// # Panics
-    /// Panics if the position is a line number reference and the range is invalid.
-    pub fn read<'a: 'b, 'b>(&'a self, code: &'b str) -> &'b str {
+    /// # Errors
+    /// Returns [`TriviaError::InvalidRange`] when the trivia references the
+    /// source by position and its range does not lie on a character boundary
+    /// in, or exceeds, `code`.
+    pub fn read<'a: 'b, 'b>(&'a self, code: &'b str) -> Result<&'b str, TriviaError> {
         match &self.position {
             Position::LineNumberReference { start, end, .. } => {
-                code.get(*start..*end).unwrap_or_else(|| {
-                    panic!("unable to extract code from position: {} - {}", start, end);
+                code.get(*start..*end).ok_or(TriviaError::InvalidRange {
+                    start: *start,
+                    end: *end,
+                    length: code.len(),
                 })
             }
-            Position::LineNumber { content, .. } | Position::Any { content } => content,
+            Position::LineNumber { content, .. } | Position::Any { content } => Ok(content),
         }
     }
 
@@ -187,22 +191,6 @@ impl Trivia {
         match &self.position {
             Position::LineNumberReference { .. } => None,
             Position::LineNumber { content, .. } | Position::Any { content } => Some(content),
-        }
-    }
-
-    /// Reads the content of the trivia from `source`, failing instead of
-    /// panicking when the recorded range does not lie on a character boundary
-    /// or exceeds `source`.
-    pub fn try_read_with<'a>(&'a self, source: &'a str) -> Result<&'a str, TriviaError> {
-        match &self.position {
-            Position::LineNumberReference { start, end, .. } => {
-                source.get(*start..*end).ok_or(TriviaError::InvalidRange {
-                    start: *start,
-                    end: *end,
-                    length: source.len(),
-                })
-            }
-            Position::LineNumber { content, .. } | Position::Any { content } => Ok(content),
         }
     }
 
@@ -351,26 +339,17 @@ impl Token {
 
     /// Reads the content of the token from the source code.
     ///
-    /// # Panics
-    /// Panics if the position is a line number reference and the range is invalid.
-    pub fn read<'a: 'b, 'b>(&'a self, code: &'b str) -> &'b str {
-        match &self.position {
-            Position::LineNumberReference { start, end, .. } => code
-                .get(*start..*end)
-                .expect("unable to extract code from position"),
-            Position::LineNumber { content, .. } | Position::Any { content } => content,
-        }
-    }
-
-    /// Reads the token's content from `source`, failing instead of panicking
-    /// when the recorded range is not a valid slice of `source`.
-    pub fn try_read_with<'a>(&'a self, source: &'a str) -> Result<&'a str, TriviaError> {
+    /// # Errors
+    /// Returns [`TriviaError::InvalidRange`] when the token references the
+    /// source by position and its range does not lie on a character boundary
+    /// in, or exceeds, `code`.
+    pub fn read<'a: 'b, 'b>(&'a self, code: &'b str) -> Result<&'b str, TriviaError> {
         match &self.position {
             Position::LineNumberReference { start, end, .. } => {
-                source.get(*start..*end).ok_or(TriviaError::InvalidRange {
+                code.get(*start..*end).ok_or(TriviaError::InvalidRange {
                     start: *start,
                     end: *end,
-                    length: source.len(),
+                    length: code.len(),
                 })
             }
             Position::LineNumber { content, .. } | Position::Any { content } => Ok(content),
@@ -529,13 +508,22 @@ mod test {
         let code = "return true";
         let token = Token::new_with_line(7, 11, 1);
 
-        assert_eq!("true", token.read(code));
+        assert_eq!("true", token.read(code).expect("token range"));
     }
 
     #[test]
     fn read_any_position_token() {
         let token = Token::from_content("true");
 
-        assert_eq!("true", token.read(""));
+        assert_eq!("true", token.read("").expect("content token"));
+    }
+
+    #[test]
+    fn read_rejects_a_range_outside_the_source() {
+        let token = Token::new_with_line(7, 11, 1);
+
+        let error = token.read("short").expect_err("the range is out of bounds");
+
+        assert_eq!(error.code(), "trivia/invalid-range");
     }
 }

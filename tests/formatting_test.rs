@@ -53,7 +53,9 @@ fn remove_comments_where_keeps_matching_comments() {
     let code = "-- keep me\nlocal x = 1 -- drop me\n";
     let mut block = parse(code);
 
-    remove_comments_where(&mut block, |trivia| trivia.read(code).contains("keep"));
+    remove_comments_where(&mut block, |trivia| {
+        trivia.read(code).expect("trivia").contains("keep")
+    });
 
     let output = generate(code, &block);
     assert!(output.contains("keep me"), "{output}");
@@ -105,7 +107,7 @@ fn replace_referenced_tokens_materializes_content() {
         "the token must be materialized, got {:?}",
         token.get_position()
     );
-    assert_eq!(token.read(code), "x");
+    assert_eq!(token.read(code).expect("token"), "x");
 }
 
 #[test]
@@ -268,7 +270,9 @@ fn token_passes_cover_literal_and_type_literal_tokens() {
 
     // The comment attached to a literal token must be removable by the filter.
     let mut block = parse(code);
-    remove_comments_where(&mut block, |trivia| trivia.read(code).contains("type"));
+    remove_comments_where(&mut block, |trivia| {
+        trivia.read(code).expect("trivia").contains("type")
+    });
     let output = generate(code, &block);
     assert!(output.contains("type literal"), "{output}");
     assert!(!output.contains("value literals"), "{output}");

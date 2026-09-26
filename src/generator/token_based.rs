@@ -68,7 +68,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
     }
 
     fn write_trivia(&mut self, trivia: &Trivia) {
-        let content = match trivia.try_read_with(self.original_code) {
+        let content = match trivia.read(self.original_code) {
             Ok(content) => content,
             Err(error) => {
                 self.source_error = Some(error);
@@ -125,7 +125,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
             self.write_trivia(trivia);
         }
 
-        let content = match token.try_read_with(self.original_code) {
+        let content = match token.read(self.original_code) {
             Ok(content) => content,
             Err(error) => {
                 self.source_error = Some(error);
@@ -1495,7 +1495,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
                 let has_leading_content = table
                     .get_tokens()
                     .and_then(|tokens| tokens.opening_brace.iter_leading_trivia().next())
-                    .and_then(|trivia| match trivia.try_read_with(self.original_code) {
+                    .and_then(|trivia| match trivia.read(self.original_code) {
                         Ok(content) => Some(!content.is_empty()),
                         Err(error) => {
                             self.source_error = Some(error);
@@ -2068,7 +2068,7 @@ impl<'a> TokenBasedLuaGenerator<'a> {
 
     fn write_typed_identifier(&mut self, typed_identifier: &TypedIdentifier) {
         if let Some(token) = typed_identifier.get_token() {
-            let name_in_token = match token.try_read_with(self.original_code) {
+            let name_in_token = match token.read(self.original_code) {
                 Ok(name) => name,
                 Err(error) => {
                     self.source_error = Some(error);
@@ -2568,7 +2568,7 @@ impl LuaGenerator for TokenBasedLuaGenerator<'_> {
 
     fn write_identifier(&mut self, identifier: &Identifier) {
         if let Some(token) = identifier.get_token() {
-            let name_in_token = match token.try_read_with(self.original_code) {
+            let name_in_token = match token.read(self.original_code) {
                 Ok(name) => name,
                 Err(error) => {
                     self.source_error = Some(error);

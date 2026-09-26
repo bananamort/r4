@@ -153,7 +153,7 @@ fn token_methods() {
     use r4::nodes::{Position, Token};
 
     let token = Token::from_position(Position::line_number("x", 3));
-    assert_eq!(token.read("x"), "x");
+    assert_eq!(token.read("x").expect("content token"), "x");
     assert_eq!(token.get_line_number(), Some(3));
     let _ = token.get_end();
     let _ = token.get_start();
@@ -619,8 +619,14 @@ fn type_last_token_mutation_covers_every_variant() {
         (Type::False(None), "false"),
         (Type::Nil(None), "nil"),
     ] {
-        assert_eq!(r#type.mutate_last_token().read(""), expected);
-        assert_eq!(r#type.mutate_last_token().read(""), expected);
+        assert_eq!(
+            r#type.mutate_last_token().read("").expect("content token"),
+            expected
+        );
+        assert_eq!(
+            r#type.mutate_last_token().read("").expect("content token"),
+            expected
+        );
     }
 }
 
@@ -975,8 +981,20 @@ fn expression_conversions_and_last_token_synthesis() {
         (Expression::Nil(None), "nil"),
         (Expression::VariableArguments(None), "..."),
     ] {
-        assert_eq!(expression.mutate_last_token().read(""), expected);
-        assert_eq!(expression.mutate_last_token().read(""), expected);
+        assert_eq!(
+            expression
+                .mutate_last_token()
+                .read("")
+                .expect("content token"),
+            expected
+        );
+        assert_eq!(
+            expression
+                .mutate_last_token()
+                .read("")
+                .expect("content token"),
+            expected
+        );
     }
 }
 
