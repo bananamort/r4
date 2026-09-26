@@ -128,8 +128,19 @@ impl Parser {
     /// eliminated; the survivors are parsed. Identical trees mean the choice
     /// cannot matter, and differing trees fail with the `parse/ambiguous-dialect` error.
     fn detect(&self, code: &str) -> Result<Detection, ParserError> {
+        let candidates = crate::dialect::candidates(code);
+        // No dialect-identifying construct was found, so the source is
+        // dialect-neutral: one permissive parse decides it. Only a source the
+        // union rejects (for example `0xf3ad..x`, which Lua 5.2+ lexes as a
+        // malformed hex float) falls through to the per-candidate path.
+        if candidates.len() == crate::dialect::ALL.len() {
+            if let Ok(block) = self.parse_union(code) {
+                return Ok(Detection::Dialect(Dialect::Default, block));
+            }
+        }
+
         let mut parsed: Vec<(Dialect, Block)> = Vec::new();
-        for dialect in crate::dialect::candidates(code) {
+        for dialect in candidates {
             if let Ok(block) = self.parse_with(code, dialect) {
                 parsed.push((dialect, block));
             }
