@@ -21,6 +21,15 @@
 //! a Luau instantiation call versus a Lua 5.3/5.4 shift. [`Dialect::Default`]
 //! reports that overlap as `parse/ambiguous-dialect` unless another marker has
 //! already pinned the dialect; an explicit dialect is read as written.
+//!
+//! # Luau `const` declarations
+//!
+//! `full_moon`, and therefore r4, accepts Luau `const` declarations — `const x = 1`
+//! and `const function f() end`. The reference Luau implementation rejects that
+//! syntax, so r4's Luau is a strict superset here: r4 keeps the extension,
+//! treats the binding as read-only ([`crate::semantic`] reports
+//! `semantic/const-reassignment` on reassignment), and
+//! [`crate::rules::desugar_to_lua51`] lowers `const` to `local`.
 
 use std::fmt;
 

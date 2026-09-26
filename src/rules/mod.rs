@@ -38,6 +38,9 @@ use crate::{validate_dialect, Dialect, DialectSupportError};
 pub enum DesugarError {
     /// A pass could not analyze the block.
     Semantic(SemanticError),
+    /// A function body has invalid control flow (a `break`/`continue` with no
+    /// enclosing loop).
+    Cfg(crate::cfg::CfgError),
     /// The lowered block still contains syntax Lua 5.1 cannot represent.
     UnsupportedDialect(DialectSupportError),
 }
@@ -46,6 +49,7 @@ impl std::fmt::Display for DesugarError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DesugarError::Semantic(error) => write!(f, "{error}"),
+            DesugarError::Cfg(error) => write!(f, "{error}"),
             DesugarError::UnsupportedDialect(error) => write!(f, "{error}"),
         }
     }
@@ -56,6 +60,12 @@ impl std::error::Error for DesugarError {}
 impl From<SemanticError> for DesugarError {
     fn from(error: SemanticError) -> Self {
         DesugarError::Semantic(error)
+    }
+}
+
+impl From<crate::cfg::CfgError> for DesugarError {
+    fn from(error: crate::cfg::CfgError) -> Self {
+        DesugarError::Cfg(error)
     }
 }
 
@@ -105,6 +115,9 @@ pub fn desugar_to_lua51(block: &mut Block) -> Result<(), DesugarError> {
 
     let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::remove_method_call(block, &model);
+
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    crate::cfg::validate_function_loop_context(block, &model)?;
 
     validate_dialect(block, Dialect::Lua51)?;
 

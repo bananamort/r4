@@ -13,6 +13,7 @@
 mod ast_fuzzer;
 
 use ast_fuzzer::{AstFuzzer, FuzzBudget};
+use r4::cfg::CfgErrorKind;
 use r4::generator::{DenseLuaGenerator, LuaGenerator, ReadableLuaGenerator};
 use r4::nodes::Block;
 use r4::rules::{desugar_to_lua51, DesugarError};
@@ -91,13 +92,20 @@ fn fuzzed_luau_blocks_lower_to_reparseable_lua51() {
                     Parser::default().lua51().parse(output)
                 });
             }
-            // The fuzzer places `continue` inside functions that have no loop,
-            // which is invalid Luau; `remove_continue` correctly leaves it, and
-            // the validator correctly reports it. The curated corpus and the
-            // execution oracle cover `continue` inside real loops.
+            // The fuzzer places `break`/`continue` in functions that have no
+            // loop, which is invalid; r4 reports it. The curated corpus and the
+            // execution oracle cover loops that are real.
+            Err(DesugarError::Cfg(error))
+                if matches!(
+                    error.kind,
+                    CfgErrorKind::ContinueOutsideLoop | CfgErrorKind::BreakOutsideLoop
+                ) => {}
             Err(DesugarError::UnsupportedDialect(DialectSupportError::ContinueNotSupported {
                 ..
             })) => {}
+            Err(DesugarError::Cfg(error)) => {
+                panic!("iteration {iteration} lowering reported invalid control flow: {error}")
+            }
             Err(DesugarError::UnsupportedDialect(error)) => {
                 panic!("iteration {iteration} lowering left unsupported syntax: {error}")
             }

@@ -172,11 +172,16 @@ impl AnalyzerState {
                     }
                 }
                 for (index, variable) in assign.iter_variables().enumerate() {
+                    // A Luau `const` declaration is read-only like a Lua 5.4
+                    // `<const>` attribute; record it as such.
+                    let attribute = variable.get_attribute().or_else(|| {
+                        (assign.get_assignment_kind() == AssignmentKind::Const).then_some("const")
+                    });
                     let symbol = self.declare_symbol(
                         variable.get_name(),
                         SymbolKind::Local,
                         Some(variable.get_identifier()),
-                        variable.get_attribute(),
+                        attribute,
                     )?;
                     if let Some(Some(target)) = initializers.get(index) {
                         self.set_symbol_initializer(symbol, *target);
@@ -189,11 +194,13 @@ impl AnalyzerState {
                 }
             }
             Statement::LocalFunction(function) => {
+                let attribute =
+                    (function.get_assignment_kind() == AssignmentKind::Const).then_some("const");
                 self.declare_symbol(
                     function.get_name(),
                     SymbolKind::Local,
                     Some(function.get_identifier()),
-                    None,
+                    attribute,
                 )?;
                 self.enter_function();
                 for parameter in function.iter_parameters() {

@@ -39,6 +39,44 @@ fn const_and_close_variables_reject_reassignment() {
 }
 
 #[test]
+fn luau_const_declarations_are_read_only() {
+    assert_eq!(
+        error_code("const x = 1\nx = 2"),
+        "semantic/const-reassignment"
+    );
+    assert_eq!(
+        error_code("const x = 1\nx += 2"),
+        "semantic/const-reassignment"
+    );
+    assert_eq!(
+        error_code("const function f() end\nf = g"),
+        "semantic/const-reassignment"
+    );
+
+    // Reading a `const` binding, and shadowing it in a nested scope, are fine.
+    analyze("const x = 1\nreturn x");
+    analyze("const function f() end\nreturn f");
+    analyze("const x = 1\ndo local x = 2\nx = 3\nreturn x end\nreturn x");
+}
+
+#[test]
+fn the_model_marks_const_declarations_read_only() {
+    let model = analyze("const value = 1\nconst function f() end");
+    let find = |name: &str| {
+        model
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == name)
+            .unwrap_or_else(|| panic!("symbol `{name}`"))
+    };
+
+    assert!(find("value").is_const());
+    assert!(find("value").is_read_only());
+    assert_eq!(find("value").attribute(), Some("const"));
+    assert!(find("f").is_const());
+}
+
+#[test]
 fn reading_a_const_variable_is_fine() {
     analyze("local x <const> = 1\nreturn x");
     analyze("local x <close> = f()\nreturn x");

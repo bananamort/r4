@@ -16,7 +16,9 @@ mod provenance;
 pub mod analysis;
 
 pub use block::{BasicBlock, BlockId, Terminator};
-pub use builder::{build_chunk, build_function, CfgBuilder, CfgError, CfgErrorKind};
+pub use builder::{
+    build_chunk, build_function, validate_function_loop_context, CfgBuilder, CfgError, CfgErrorKind,
+};
 pub use graph::{ControlFlowGraph, InvariantViolation};
 pub use provenance::{
     validate_block_identities, ConditionKind, ConditionOrigin, StatementOrigin, UnidentifiedBlock,
