@@ -1246,6 +1246,7 @@ variant_registry!(LivenessErrorTag, r4::cfg::analysis::LivenessError,
 
 variant_registry!(LicmErrorTag, r4::cfg::analysis::LicmError,
     Liveness => r4::cfg::analysis::LicmError::Liveness(_),
+    MissingStatementOrigin => r4::cfg::analysis::LicmError::MissingStatementOrigin { .. },
 );
 
 variant_registry!(DeadStoreErrorTag, r4::rules::canonicalize::DeadStoreError,
@@ -1441,10 +1442,33 @@ fn cfg_analysis_errors_are_all_triggered() {
     let r4::rules::canonicalize::HoistLoopInvariantsError::Liveness(licm) = &hoist_errors[2] else {
         panic!("expected a LICM liveness error");
     };
-    let produced = BTreeSet::from([LicmErrorTag::of(licm).name()]);
+
+    // MissingStatementOrigin: a real loop whose block lost its recorded origins.
+    let provenance_block = luau("while a do local y = 1 end");
+    let provenance_model = analyze(&provenance_block);
+    let mut provenance_cfg =
+        build_chunk(&provenance_block, &provenance_model).expect("the loop lowers");
+    for block in &mut provenance_cfg.blocks {
+        if block
+            .statements
+            .iter()
+            .any(|statement| matches!(statement, Statement::LocalAssign(_)))
+        {
+            block.statement_origins.clear();
+        }
+    }
+    let licm_provenance =
+        r4::cfg::analysis::LoopInvariantAnalysis::analyze(&provenance_cfg, &provenance_model)
+            .expect_err("a statement without an origin is rejected");
+
+    let produced = BTreeSet::from([
+        LicmErrorTag::of(licm).name(),
+        LicmErrorTag::of(&licm_provenance).name(),
+    ]);
     let absent = missing(LicmErrorTag::ALL.iter().map(|tag| tag.name()), &produced);
     assert!(absent.is_empty(), "LICM errors never triggered: {absent:?}");
     assert!(!licm.to_string().is_empty());
+    assert!(!licm_provenance.to_string().is_empty());
 }
 
 /// The runtime symbol declared as a local named `name`.

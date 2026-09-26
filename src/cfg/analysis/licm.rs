@@ -34,6 +34,15 @@ use super::{DominatorTree, Liveness, LivenessError};
 pub enum LicmError {
     /// Liveness could not be computed.
     Liveness(LivenessError),
+    /// A basic block contains a statement but records no structural origin for
+    /// it, so the analysis cannot tell which AST statement to hoist. This means
+    /// the graph's provenance is incomplete.
+    MissingStatementOrigin {
+        /// The block that is missing an origin.
+        block: BlockId,
+        /// The statement index within the block.
+        index: usize,
+    },
 }
 
 impl From<LivenessError> for LicmError {
@@ -46,6 +55,11 @@ impl std::fmt::Display for LicmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LicmError::Liveness(error) => write!(f, "{}", error),
+            LicmError::MissingStatementOrigin { block, index } => write!(
+                f,
+                "block {:?} statement {} has no structural origin; the control flow graph provenance is incomplete",
+                block, index
+            ),
         }
     }
 }
@@ -155,7 +169,10 @@ impl LoopInvariantAnalysis {
                     }
 
                     let Some(origin) = block.statement_origin(index) else {
-                        continue;
+                        return Err(LicmError::MissingStatementOrigin {
+                            block: block_id,
+                            index,
+                        });
                     };
                     if assigned.contains(&origin) {
                         continue;
