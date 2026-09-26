@@ -12,10 +12,10 @@
 //! instantiation and a Lua 5.3 shift) name every dialect they are valid in, so
 //! they never eliminate one side of an overlap.
 //!
-//! Note the upstream grammar boundary documented on [`crate::parser`]: Luau
-//! generic call instantiation is only recognised in the double-angle form
-//! `f<<T>>(x)`. The single-angle Luau spelling `f<T>(x)` is read as a comparison
-//! in every dialect, so it is never treated as a divergent overlap here.
+//! Luau generic call instantiation is written `f<<T>>(x)` (Luau's
+//! `LuauExplicitTypeInstantiationSyntax` flag), which is why `<<` names Luau
+//! alongside the Lua 5.3/5.4 shift. A single `<` is a comparison in every
+//! dialect and is never a marker. See [`crate::parser`] for the full rule.
 
 use full_moon::tokenizer::{Lexer, LexerResult, Symbol, Token, TokenType};
 

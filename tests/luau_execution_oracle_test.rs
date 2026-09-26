@@ -72,6 +72,10 @@ return table.concat(__results, "\t") .. "\n---log---\n" .. table.concat(__log, "
 fn observe(program: &str) -> String {
     let chunk = harness(program);
     async_io::block_on(async move {
+        // Luau's explicit type instantiation (`f<<T>>(x)`) is behind this fast
+        // flag, which embedded VMs leave off by default. r4 implements the
+        // flag-on grammar, so the oracle enables it to exercise that path.
+        let _ = mlua::Lua::set_fflag("LuauExplicitTypeInstantiationSyntax", true);
         let mut runtime = lune::Runtime::new().expect("an embedded Luau VM");
         let returned = runtime
             .run_custom("r4-oracle", chunk)
@@ -286,6 +290,43 @@ local offset = velocity
 offset += roblox.Vector3.new(0, 0, 5)
 print(tostring(offset))
 return speed, label
+"#,
+    ),
+    (
+        "luau explicit instantiation",
+        r#"
+local function identity<T>(value: T): T
+    return value
+end
+
+local number_value = identity<<number>>(42)
+local bound = identity<<string>>
+local string_value = bound("hello")
+
+local function pair<A, B>(a: A, b: B): (A, B)
+    return a, b
+end
+local first, second = pair<<number, string>>(1, "two")
+
+print(number_value, string_value, first, second)
+return number_value, string_value, first, second
+"#,
+    ),
+    (
+        "luau instantiation on methods and indexes",
+        r#"
+local module = {}
+function module:convert<T>(value: T): T
+    return value
+end
+function module.map<T>(value: T): T
+    return value
+end
+
+local converted = module:convert<<number>>(3)
+local mapped = module.map<<string>>("x")
+print(converted, mapped)
+return converted, mapped
 "#,
     ),
 ];

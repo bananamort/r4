@@ -236,6 +236,57 @@ fn default_dialect_reports_a_syntactic_overlap() {
 }
 
 #[test]
+fn single_angle_is_a_comparison_in_every_dialect() {
+    // Luau has no single-angle instantiation: `f<T>(x)` is the comparison chain
+    // `(f < T) > (x)` in every dialect, so the default must not report an
+    // overlap and Luau must not read it as an instantiation.
+    for parser in [
+        Parser::default(),
+        Parser::default().luau(),
+        Parser::default().lua53(),
+        Parser::default().lua54(),
+    ] {
+        let block = parser
+            .parse("return f<T>(x)")
+            .expect("`f<T>(x)` is a comparison in every dialect");
+        let expression = match block.get_last_statement() {
+            Some(LastStatement::Return(statement)) => statement
+                .iter_expressions()
+                .next()
+                .cloned()
+                .expect("a returned expression"),
+            other => panic!("expected a return, got {other:?}"),
+        };
+        assert!(
+            matches!(expression, Expression::Binary(_)),
+            "`f<T>(x)` must parse as a comparison, got {expression:?}"
+        );
+    }
+}
+
+#[test]
+fn double_angle_instantiation_is_the_luau_overlap() {
+    // Luau's explicit instantiation is the double-angle form `f<<T>>(x)`, which
+    // the reference implementation gates behind a feature flag.
+    Parser::default()
+        .luau()
+        .parse("return f<<T>>(x)")
+        .expect("a Luau instantiation call");
+
+    // Under the default dialect it is a genuine overlap with a Lua 5.3 shift.
+    let error = Parser::default()
+        .parse("return f<<T>>(x)")
+        .expect_err("the instantiation/shift overlap is ambiguous");
+    assert_eq!(error.code(), "parse/ambiguous-dialect");
+
+    // An explicit dialect is read as written: Lua 5.3 sees a shift chain.
+    Parser::default()
+        .lua53()
+        .parse("return f<<T>>(x)")
+        .expect("the Lua 5.3 shift chain");
+}
+
+#[test]
 fn default_detects_luau_type_instantiations() {
     // `<<`/`>>` that Lua 5.3/5.4 cannot read names Luau.
     for code in [

@@ -1,20 +1,26 @@
 //! Parsing Lua and Luau source into the r4 syntax tree.
 //!
-//! The grammar is provided by [`full_moon`]. Its Luau support has one known
-//! upstream boundary that matters here:
+//! The grammar is provided by [`full_moon`].
 //!
-//! **Generic call instantiation must be written with double angle brackets.**
-//! The Luau spelling `f<T>(x)` is parsed as the comparison chain
-//! `(f < T) > (x)`, and `obj:m<T>(1)` is a syntax error, in *every* dialect
-//! including an explicit [`Dialect::Luau`]. Only `f<<T>>(x)` (equivalently
-//! `f< <T> >(x)`) is recognised as type instantiation. This is a property of the
-//! upstream grammar, not of dialect detection: detection never selects a
-//! different reading, because no supported dialect accepts the single-angle
-//! form as an instantiation.
+//! # Luau generic call instantiation
 //!
-//! Round-tripping a tree therefore emits the double-angle form; code that must
-//! interoperate with tools that only accept single-angle instantiation should be
-//! run through those tools before it reaches r4.
+//! Luau's explicit type instantiation syntax is the **double-angle** form
+//! `f<<T>>(x)` (Luau RFC "Explicit type parameter instantiation"), which the
+//! reference implementation gates behind the
+//! `LuauExplicitTypeInstantiationSyntax` feature flag. `full_moon` implements the
+//! flag-on grammar, so [`Dialect::Luau`] accepts `f<<T>>(x)`, the spaced
+//! `f< <T> >(x)`, indexed and method forms (`t.f<<T>>(x)`, `t:m<<T>>(x)`), and
+//! the bare bindable form `local g = f<<T>>`.
+//!
+//! A single angle bracket is **never** instantiation in Luau: `f<T>(x)` is the
+//! comparison chain `(f < T) > (x)` in every dialect, Luau included, and
+//! `obj:m<T>(x)` is a syntax error there. r4 therefore reads `f<T>(x)` as a
+//! comparison too — there is no single-angle instantiation to support.
+//!
+//! That makes `<<`/`>>` the one construct where two dialects genuinely disagree:
+//! a Luau instantiation call versus a Lua 5.3/5.4 shift. [`Dialect::Default`]
+//! reports that overlap as `parse/ambiguous-dialect` unless another marker has
+//! already pinned the dialect; an explicit dialect is read as written.
 
 use std::fmt;
 
