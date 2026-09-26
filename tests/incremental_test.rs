@@ -176,6 +176,29 @@ fn mutating_a_block_detaches_its_model_until_refreshed() {
     );
 }
 
+/// `update_tree` must refresh a mutated tree even when the new source text is
+/// identical, instead of silently keeping the stale model.
+#[test]
+fn update_tree_with_the_same_source_refreshes_a_stale_tree() {
+    let mut compilation = Compilation::new();
+    let tree = compilation
+        .add_tree("local x = 1\nreturn x")
+        .expect("valid code");
+
+    compilation
+        .block_mut(tree)
+        .expect("tree exists")
+        .take_last_statement();
+    assert!(compilation.tree(tree).unwrap().is_stale());
+
+    compilation
+        .update_tree(tree, "local x = 1\nreturn x")
+        .expect("the update succeeds");
+
+    assert!(!compilation.tree(tree).unwrap().is_stale());
+    assert!(compilation.model(tree).is_ok());
+}
+
 /// Resolving modules from a tree whose block was mutated but not refreshed must
 /// fail with a typed diagnostic, never panic or use the stale model.
 #[test]

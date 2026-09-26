@@ -35,6 +35,29 @@ fn catalog_codes_are_unique_and_described() {
 }
 
 #[test]
+fn emitted_diagnostic_codes_are_cataloged_and_renderable() {
+    // Codes the engine attaches to real diagnostics. A missing catalog entry
+    // makes `DiagnosticFormatter::render` reject them with `UnknownCode`.
+    for code in [
+        "semantic/const-reassignment",
+        "semantic/close-reassignment",
+        "semantic/duplicate-type-parameter",
+        "semantic/misplaced-export-type",
+        "semantic/unknown-local-attribute",
+        "query/unknown-symbol",
+        "query/unknown-scope",
+        "module/read",
+        "compile/stale-tree",
+        "parse/ambiguous-dialect",
+    ] {
+        assert!(descriptor_for(code).is_some(), "{code} must be cataloged");
+        DiagnosticFormatter::new("return 1")
+            .render(&Diagnostic::error("boom").with_code(code))
+            .unwrap_or_else(|error| panic!("{code} must render: {error}"));
+    }
+}
+
+#[test]
 fn formatter_renders_a_caret_annotation() {
     let mut compilation = strict_compilation();
     let error = compilation

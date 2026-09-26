@@ -116,6 +116,15 @@ fn converts_every_scalar_serialize_method() {
     assert_eq!(convert_data(1u16).expect("u16"), "return 1");
     assert_eq!(convert_data(1u32).expect("u32"), "return 1");
     assert_eq!(convert_data(1u64).expect("u64"), "return 1");
+    // Values beyond f64's exact range must keep every digit.
+    assert_eq!(
+        convert_data(9_007_199_254_740_993i64).expect("large i64"),
+        "return 9007199254740993"
+    );
+    assert_eq!(
+        convert_data(i64::MAX).expect("i64::MAX"),
+        format!("return {}", i64::MAX)
+    );
     assert!(!convert_data(1.5f32).expect("f32").is_empty());
     assert!(!convert_data(1.5f64).expect("f64").is_empty());
     assert!(!convert_data('c').expect("char").is_empty());

@@ -382,7 +382,10 @@ fn synthesized_identifiers_match_after_prefix_normalization() {
 
     let continue_code = "for i = 1, 10 do\n  if i > 5 then continue end\n  print(i)\nend";
     let darklua = darklua_apply(&RemoveContinue::default(), continue_code);
-    let r4 = r4_apply(r4::rules::desugar::remove_continue, continue_code);
+    let r4 = r4_apply(
+        |block, model| r4::rules::desugar::remove_continue(block, model).expect("remove_continue"),
+        continue_code,
+    );
     assert_ne!(darklua, r4, "the generated prefixes must actually differ");
     assert_eq!(normalize(&darklua), normalize(&r4));
 }

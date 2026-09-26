@@ -41,6 +41,9 @@ pub enum DesugarError {
     /// A function body has invalid control flow (a `break`/`continue` with no
     /// enclosing loop).
     Cfg(crate::cfg::CfgError),
+    /// A `continue` could not be lowered without changing the meaning of its
+    /// loop.
+    Continue(desugar::RemoveContinueError),
     /// The lowered block still contains syntax Lua 5.1 cannot represent.
     UnsupportedDialect(DialectSupportError),
 }
@@ -50,6 +53,7 @@ impl std::fmt::Display for DesugarError {
         match self {
             DesugarError::Semantic(error) => write!(f, "{error}"),
             DesugarError::Cfg(error) => write!(f, "{error}"),
+            DesugarError::Continue(error) => write!(f, "{error}"),
             DesugarError::UnsupportedDialect(error) => write!(f, "{error}"),
         }
     }
@@ -66,6 +70,12 @@ impl From<SemanticError> for DesugarError {
 impl From<crate::cfg::CfgError> for DesugarError {
     fn from(error: crate::cfg::CfgError) -> Self {
         DesugarError::Cfg(error)
+    }
+}
+
+impl From<desugar::RemoveContinueError> for DesugarError {
+    fn from(error: desugar::RemoveContinueError) -> Self {
+        DesugarError::Continue(error)
     }
 }
 
@@ -108,7 +118,7 @@ pub fn desugar_to_lua51(block: &mut Block) -> Result<(), DesugarError> {
     desugar::remove_floor_division(block, &model);
 
     let model = SemanticAnalyzer::new().analyze(block)?;
-    desugar::remove_continue(block, &model);
+    desugar::remove_continue(block, &model)?;
 
     let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::convert_luau_number(block, &model);

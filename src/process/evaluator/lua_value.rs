@@ -116,7 +116,7 @@ impl LuaValue {
     pub fn string_coercion(self) -> Self {
         match &self {
             Self::Integer(value) => Some(Self::from(value.to_string())),
-            Self::Number(value) => Some(Self::from(value.to_string())),
+            Self::Number(value) => Some(Self::from(format_lua_number(*value))),
             _ => None,
         }
         .unwrap_or(self)
@@ -181,6 +181,66 @@ impl From<i64> for LuaValue {
     fn from(value: i64) -> Self {
         Self::Integer(value)
     }
+}
+
+/// Formats an `f64` the way Lua string coercion does (`%.14g`).
+///
+/// Lua prints numbers with up to 14 significant digits, switches to scientific
+/// notation for very large or very small magnitudes, and drops trailing zeros.
+/// Constant folding of `..` and interpolated strings goes through this, so it
+/// must match the host runtime rather than Rust's shortest-round-trip `Display`.
+fn format_lua_number(value: f64) -> String {
+    if value.is_nan() {
+        return "nan".to_owned();
+    }
+    if value.is_infinite() {
+        return if value.is_sign_negative() {
+            "-inf".to_owned()
+        } else {
+            "inf".to_owned()
+        };
+    }
+    if value == 0.0 {
+        return if value.is_sign_negative() {
+            "-0".to_owned()
+        } else {
+            "0".to_owned()
+        };
+    }
+
+    const PRECISION: usize = 14;
+
+    // The exponent is read from Rust's `%e` form so rounding of values just
+    // below a power of ten is handled by the formatter, not by `log10`.
+    let scientific = format!("{value:e}");
+    let exponent: i32 = scientific[scientific.find('e').expect("scientific form") + 1..]
+        .parse()
+        .expect("an integer exponent");
+
+    if exponent < -4 || exponent >= PRECISION as i32 {
+        let representation = format!("{:.*e}", PRECISION - 1, value);
+        let position = representation.find('e').expect("scientific form");
+        let mantissa = trim_trailing_zeros(&representation[..position]);
+        let exponent: i32 = representation[position + 1..]
+            .parse()
+            .expect("an integer exponent");
+        format!(
+            "{mantissa}e{}{:02}",
+            if exponent < 0 { '-' } else { '+' },
+            exponent.unsigned_abs()
+        )
+    } else {
+        let decimals = (PRECISION as i32 - 1 - exponent).max(0) as usize;
+        trim_trailing_zeros(&format!("{value:.decimals$}"))
+    }
+}
+
+fn trim_trailing_zeros(text: &str) -> String {
+    if !text.contains('.') {
+        return text.to_owned();
+    }
+    let trimmed = text.trim_end_matches('0');
+    trimmed.strip_suffix('.').unwrap_or(trimmed).to_owned()
 }
 
 #[cfg(test)]
@@ -275,5 +335,27 @@ mod test {
             space_between_minus("- 1"),
             two_seperated_digits(" 1 2")
         );
+    }
+
+    #[test]
+    fn number_string_coercion_matches_lua_percent_g() {
+        for (value, expected) in [
+            (1.0, "1"),
+            (1.5, "1.5"),
+            (100.0, "100"),
+            (0.1, "0.1"),
+            (1.0 / 3.0, "0.33333333333333"),
+            (1e21, "1e+21"),
+            (1e-5, "1e-05"),
+            (0.0001, "0.0001"),
+            (1e13, "10000000000000"),
+            (-2.5, "-2.5"),
+        ] {
+            assert_eq!(
+                LuaValue::Number(value).string_coercion(),
+                LuaValue::from(expected),
+                "formatting {value}"
+            );
+        }
     }
 }

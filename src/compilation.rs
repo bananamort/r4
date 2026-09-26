@@ -208,7 +208,11 @@ impl Compilation {
         }
 
         let source = source.into();
-        if self.tree(id).map(SyntaxTree::source) == Some(source.as_str()) {
+        let unchanged = self.tree(id).map(SyntaxTree::source) == Some(source.as_str());
+        let stale = self.tree(id).map(SyntaxTree::is_stale).unwrap_or(false);
+        // A mutated tree must be refreshed even when the source text is the same,
+        // otherwise its stale model would keep failing `model()`.
+        if unchanged && !stale {
             return Ok(());
         }
         let analyzed = match self.cache.get(&source) {

@@ -78,6 +78,20 @@ fn shadowed_stdlib_globals_are_not_pure() {
     assert!(!call_is_pure(&model, returned_call(&block)));
 }
 
+#[test]
+fn reassigned_stdlib_globals_are_not_pure() {
+    // The program itself replaces the global, so the name no longer denotes the
+    // standard-library function.
+    let (block, model) = analyze("math = {}\nreturn math.floor(x)");
+    assert!(!call_is_pure(&model, returned_call(&block)));
+
+    let (block, model) = analyze("local m = math\nmath = {}\nreturn m.floor(x)");
+    assert!(
+        !call_is_pure(&model, returned_call(&block)),
+        "the alias must not survive reassignment of its global"
+    );
+}
+
 fn remove_unused(code: &str) -> String {
     let (mut block, model) = analyze(code);
     remove_unused_variables(&mut block, &model).expect("the pass succeeds");

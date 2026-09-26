@@ -664,18 +664,22 @@ impl SemanticModel {
     ///
     /// This is the strict, identity-based way to recognise a host global
     /// occurrence: a shadowing local, a written local, an unresolvable
-    /// identifier, or a local that aliases some other global all return
-    /// `false`. It never falls back to comparing the identifier's name.
+    /// identifier, a local that aliases some other global, or a global that the
+    /// program itself reassigns all return `false`. It never falls back to
+    /// comparing the identifier's name.
     pub fn identifier_resolves_to_global(&self, identifier: &Identifier, name: &str) -> bool {
         let Some(symbol) = self.resolve_identifier(identifier) else {
             return false;
         };
         let info = self.symbol(symbol);
         if info.kind == SymbolKind::Global {
-            return info.name == name;
+            return info.name == name && info.write_count == 0;
         }
         match self.immutable_global_alias(symbol) {
-            Some(global) => self.symbol(global).name == name,
+            Some(global) => {
+                let global = self.symbol(global);
+                global.name == name && global.write_count == 0
+            }
             None => false,
         }
     }

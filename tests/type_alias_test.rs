@@ -107,3 +107,73 @@ fn type_function_parameters_and_generics_are_analyzed() {
         "the type function name is not a lexical type"
     );
 }
+
+#[test]
+fn generic_alias_of_a_named_type_does_not_expand() {
+    // `G` is generic, so it has no single expansion even though its body names
+    // the bare alias `B`.
+    let (_block, model) = analyze("type B = number\ntype G<T> = B\nreturn 0");
+    let b = type_named(&model, "B");
+    let g = type_named(&model, "G");
+
+    assert_eq!(model.type_symbol(b).alias_of, None);
+    assert_eq!(
+        model.type_symbol(g).alias_of,
+        None,
+        "a generic alias must not collapse onto a bare alias"
+    );
+    assert_eq!(model.expand_type_alias(g), g);
+}
+
+#[test]
+fn a_generic_parameter_does_not_resolve_to_an_outer_alias() {
+    // The `T` on the right-hand side is `A`'s own generic parameter, not the
+    // outer alias `type T = number`.
+    let (_block, model) = analyze("type T = number\ntype A<T> = T\nreturn 0");
+    let a = type_named(&model, "A");
+
+    assert_eq!(
+        model.type_symbol(a).alias_of,
+        None,
+        "A's parameter must shadow the outer alias"
+    );
+    assert_eq!(model.expand_type_alias(a), a);
+}
+
+#[test]
+fn a_generic_parameter_shadows_a_same_named_alias_occurrence() {
+    use r4::nodes::TypeName;
+    use r4::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
+
+    #[derive(Default)]
+    struct TypeNameBindings {
+        names: Vec<String>,
+        bound: Vec<bool>,
+    }
+
+    impl NodeProcessor for TypeNameBindings {
+        fn process_type_name(&mut self, name: &mut TypeName) {
+            let identifier = name.get_type_name();
+            self.names.push(identifier.get_name().to_owned());
+            self.bound.push(identifier.get_binding().is_some());
+        }
+    }
+
+    let (mut block, _model) =
+        analyze("type T = number\nlocal function f<T>(x: T): T\n  return x\nend\nreturn f");
+
+    let mut collector = TypeNameBindings::default();
+    DefaultVisitor::visit_block(&mut block, &mut collector);
+
+    let mut saw_generic_t = false;
+    for (name, bound) in collector.names.iter().zip(&collector.bound) {
+        if name == "T" {
+            saw_generic_t = true;
+            assert!(
+                !bound,
+                "the generic `T` occurrence must not bind to the alias"
+            );
+        }
+    }
+    assert!(saw_generic_t, "the signature declares and uses `T`");
+}

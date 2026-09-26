@@ -85,9 +85,14 @@ impl GroupLocalProcessor<'_> {
             return false;
         }
 
+        // Merging appends `next`'s values after `first`'s, so the binding must
+        // stay aligned: `first` has to consume exactly its own values. A
+        // declaration with more values than variables (`local a = 1, 2`) would
+        // otherwise shift every following variable onto a discarded value. A
+        // declaration with no values is fine, because `merge` pads it with
+        // `nil` before appending the next values.
         let first_value_count = first.values_len();
-
-        if first.variables_len() > first_value_count && first_value_count != 0 {
+        if first_value_count != 0 && first.variables_len() != first_value_count {
             return false;
         }
 
@@ -152,7 +157,7 @@ pub fn group_local(block: &mut Block, model: &SemanticModel) {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::rules::test_support::{analyze, generate};
+    use crate::rules::test_support::{analyze, generate, parse};
 
     #[test]
     fn groups_adjacent_local_assignments() {
@@ -166,5 +171,36 @@ mod test {
         group_local(&mut block, &model);
 
         insta::assert_snapshot!(generate(&block).trim(), @"local a, b = 1, 2");
+    }
+
+    #[test]
+    fn does_not_merge_when_extra_values_would_shift_the_binding() {
+        let (mut block, model) = analyze(
+            r#"
+            local a = 1, 2
+            local b = 3
+            "#,
+        );
+
+        group_local(&mut block, &model);
+
+        let output = generate(&block);
+        assert!(output.contains("local a = 1, 2"), "unexpected: {output}");
+        assert!(output.contains("local b = 3"), "unexpected: {output}");
+        parse(&output);
+    }
+
+    #[test]
+    fn merges_extra_values_that_are_already_last() {
+        let (mut block, model) = analyze(
+            r#"
+            local a = 1
+            local b = 2, 3
+            "#,
+        );
+
+        group_local(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"local a, b = 1, 2, 3");
     }
 }

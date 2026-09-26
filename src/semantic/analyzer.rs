@@ -477,15 +477,22 @@ impl AnalyzerState {
     /// Resolves a type name occurrence and records its binding.
     ///
     /// Returns `Ok(())` after binding when the name resolves to a declared
-    /// type alias. Names that are not declared are accepted when they are
-    /// generic type parameters or built-in Luau types; under
-    /// [`SemanticOptions::strict_types`] anything else is an
-    /// [`SemanticErrorKind::UnresolvedType`] error. No other fallback exists.
+    /// type alias. An active generic type parameter shadows an outer alias of
+    /// the same name (lexical scoping) and carries no `TypeId` binding. Names
+    /// that are not declared are accepted when they are generic type parameters
+    /// or built-in Luau types; under [`SemanticOptions::strict_types`] anything
+    /// else is an [`SemanticErrorKind::UnresolvedType`] error. No other fallback
+    /// exists.
     pub(super) fn resolve_type_occurrence(
         &mut self,
         identifier: &Identifier,
     ) -> SemanticResult<()> {
         let name = identifier.get_name();
+
+        // An in-scope generic parameter shadows a same-named type alias.
+        if self.is_generic_type_parameter(name) {
+            return Ok(());
+        }
 
         if let Some(id) = self.lookup_type_name(name) {
             identifier.set_binding(id.as_binding());

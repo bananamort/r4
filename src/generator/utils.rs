@@ -444,9 +444,10 @@ fn write_quoted(value: &[u8]) -> String {
                 if character.is_ascii() {
                     quoted.push_str(&escape(character as u8, next_character.map(|c| c as u8)));
                 } else {
-                    quoted.push_str("\\u{");
-                    quoted.push_str(&format!("{:x}", character as u32));
-                    quoted.push('}');
+                    // `\u{...}` is Luau/5.3+ only. A non-ASCII character is
+                    // emitted as its raw UTF-8 bytes, which every Lua version
+                    // accepts inside a quoted string.
+                    quoted.push(character);
                 }
             } else {
                 quoted.push(character);
@@ -520,9 +521,9 @@ mod test {
             escape_as_digits("\u{1B}") => "'\\27'",
             escape_as_digits_followed_by_digit("\u{1B}0") => "'\\0270'",
             escape_as_single_digit_followed_by_digit("\u{1}0") => "'\\0010'",
-            extended_ascii("\u{C3}") => "'\\u{c3}'",
-            unicode("\u{25C1}") => "'\\u{25c1}'",
-            escape_degree_symbol("°") => "'\\u{b0}'",
+            extended_ascii("\u{C3}") => "'Ã'",
+            unicode("\u{25C1}") => "'◁'",
+            escape_degree_symbol("°") => "'°'",
             im_cool("I'm cool") => "\"I'm cool\"",
             ends_with_closing_bracket("oof]") => "'oof]'",
             multiline_ends_with_closing_bracket("oof\noof]") => "'oof\\noof]'",
@@ -534,7 +535,7 @@ mod test {
                 => "[[\n\nooof\nooof\nooof\nooof\nooof\nooof\nooof\nooof\noof]]",
 
             large_multiline_with_unicode("\nooof\nooof\nooof\nooof\nooof\nooof\nooof\nooof\noof\u{10FFFF}")
-                => "'\\nooof\\nooof\\nooof\\nooof\\nooof\\nooof\\nooof\\nooof\\noof\\u{10ffff}'",
+                => "'\\nooof\\nooof\\nooof\\nooof\\nooof\\nooof\\nooof\\nooof\\noof\u{10FFFF}'",
         );
     }
 }

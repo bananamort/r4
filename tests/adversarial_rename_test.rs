@@ -548,7 +548,7 @@ fn the_multi_pass_pipeline_preserves_invariants() {
         .apply_semantic(desugar::remove_floor_division)
         .expect("remove_floor_division");
     session
-        .apply_semantic(desugar::remove_continue)
+        .apply_semantic_result(desugar::remove_continue)
         .expect("remove_continue");
     session
         .apply_semantic(desugar::convert_luau_number)

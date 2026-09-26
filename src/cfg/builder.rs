@@ -714,18 +714,22 @@ pub fn build_function(
     CfgBuilder::new(model).build_function(block, function_scope)
 }
 
-/// Validates the loop context of every nested function body in `block`.
+/// Validates the loop context of the chunk and of every nested function body.
 ///
-/// [`build_chunk`] checks `break`/`continue` for the chunk itself, but a
-/// function body is a separate control-flow region: a `break`/`continue` inside
-/// a nested function is only valid if *that function* has an enclosing loop. This
-/// walks every function (statement, local function, type function and function
-/// expression) and rebuilds its control-flow graph so those cases are reported.
+/// A `break`/`continue` is only valid if the *enclosing loop-bearing region* —
+/// the chunk or the innermost function — has an enclosing loop. [`build_chunk`]
+/// validates the chunk; a nested function body is a separate control-flow
+/// region, so this also walks every function (statement, local function, type
+/// function and function expression) and rebuilds its control-flow graph.
+/// A function body that has no scope in `model` is a model/AST mismatch and is
+/// reported as [`CfgErrorKind::MissingBlockIdentity`] rather than skipped.
 pub fn validate_function_loop_context(
     block: &Block,
     model: &SemanticModel,
 ) -> Result<(), CfgError> {
     use crate::process::{ImmutableProcessor, ImmutableVisitor, Walk};
+
+    build_chunk(block, model)?;
 
     struct Validator<'a> {
         model: &'a SemanticModel,
@@ -737,8 +741,15 @@ pub fn validate_function_loop_context(
             if self.error.is_some() {
                 return;
             }
-            let Ok(function_scope) = self.model.try_scope_of(body) else {
-                return;
+            let function_scope = match self.model.try_scope_of(body) {
+                Ok(scope) => scope,
+                Err(_) => {
+                    self.error = Some(CfgError {
+                        kind: CfgErrorKind::MissingBlockIdentity,
+                        line: None,
+                    });
+                    return;
+                }
             };
             if let Err(error) = build_function(body, self.model, function_scope) {
                 self.error = Some(error);

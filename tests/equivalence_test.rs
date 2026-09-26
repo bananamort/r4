@@ -271,3 +271,15 @@ fn literal_spelling_is_semantic_not_lexical() {
     // `Token::read`); the token model intentionally stores ranges, not text.
     assert_eq!(with_tokens("return 'a'"), with_tokens("return \"a\""));
 }
+
+#[test]
+fn number_case_is_presentation_only() {
+    // Hex/binary digit case and the exponent marker case carry no meaning, so
+    // they must not defeat structural equivalence.
+    assert!(with_tokens("return 0xAB").is_equivalent_to(&with_tokens("return 0xab")));
+    assert!(with_tokens("return 0XAB").is_equivalent_to(&with_tokens("return 0xab")));
+    assert!(with_tokens("return 0b1").is_equivalent_to(&with_tokens("return 0B1")));
+    assert!(with_tokens("return 1e5").is_equivalent_to(&with_tokens("return 1E5")));
+    assert!(with_tokens("return 0x1P4").is_equivalent_to(&with_tokens("return 0x1p4")));
+    assert!(!with_tokens("return 0xAB").is_equivalent_to(&with_tokens("return 0xAC")));
+}

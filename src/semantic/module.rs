@@ -610,7 +610,11 @@ impl MultiModuleModel {
         let mut found: Vec<(ModuleId, TypeId)> = Vec::new();
         for binding in self.imports(module) {
             if let Some(&id) = self.module(binding.target).interface.types.get(name) {
-                found.push((binding.target, id));
+                // Several aliases can import the same module; that is not an
+                // ambiguity, only distinct modules exporting the name are.
+                if !found.iter().any(|(target, _)| *target == binding.target) {
+                    found.push((binding.target, id));
+                }
             }
         }
 

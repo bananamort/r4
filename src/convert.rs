@@ -210,7 +210,7 @@ impl ser::Serializer for &mut Serializer {
     }
 
     fn serialize_i64(self, value: i64) -> Result<(), ConvertDataError> {
-        self.process(DecimalNumber::new(value as f64).into())
+        self.process(DecimalNumber::new_integer(value).into())
     }
 
     fn serialize_u8(self, value: u8) -> Result<(), ConvertDataError> {
@@ -226,7 +226,13 @@ impl ser::Serializer for &mut Serializer {
     }
 
     fn serialize_u64(self, value: u64) -> Result<(), ConvertDataError> {
-        self.process(DecimalNumber::new(value as f64).into())
+        match i64::try_from(value) {
+            // Values that fit a Lua integer are written exactly.
+            Ok(integer) => self.process(DecimalNumber::new_integer(integer).into()),
+            // Values above `i64::MAX` have no exact Lua integer representation;
+            // the closest Lua number is the IEEE-754 float.
+            Err(_) => self.process(DecimalNumber::new(value as f64).into()),
+        }
     }
 
     fn serialize_f32(self, value: f32) -> Result<(), ConvertDataError> {

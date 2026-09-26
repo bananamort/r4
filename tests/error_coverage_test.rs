@@ -580,6 +580,33 @@ variant_registry!(ConvertLocalFunctionErrorTag, r4::rules::desugar::ConvertLocal
     UnresolvedFunction => r4::rules::desugar::ConvertLocalFunctionError::UnresolvedFunction { .. },
 );
 
+variant_registry!(RemoveContinueErrorTag, r4::rules::desugar::RemoveContinueError,
+    RepeatConditionReadsBodyLocal => r4::rules::desugar::RemoveContinueError::RepeatConditionReadsBodyLocal { .. },
+);
+
+#[test]
+fn remove_continue_errors_are_all_triggered() {
+    use r4::rules::desugar;
+
+    let source =
+        "local i = 0\nrepeat local done = i >= 3 i = i + 1 if not done then continue end until done";
+    let mut block = luau(source);
+    let model = analyze(&block);
+    let error = desugar::remove_continue(&mut block, &model)
+        .expect_err("a repeat condition that reads a body local is rejected");
+    let produced = BTreeSet::from([RemoveContinueErrorTag::of(&error).name()]);
+    let absent = missing(
+        RemoveContinueErrorTag::ALL.iter().map(|tag| tag.name()),
+        &produced,
+    );
+    assert!(
+        absent.is_empty(),
+        "remove-continue errors never triggered: {absent:?}"
+    );
+    assert!(!error.to_string().is_empty());
+    assert!(!error.code().is_empty());
+}
+
 #[test]
 fn rule_errors_are_all_triggered() {
     use r4::nodes::{Expression, FunctionAssignment, FunctionCall, VariableAssignment};

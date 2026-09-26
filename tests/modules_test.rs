@@ -124,6 +124,28 @@ fn unknown_and_ambiguous_imported_types_are_typed_errors() {
 }
 
 #[test]
+fn two_aliases_of_one_module_are_not_ambiguous() {
+    let (a_block, a_model) = analyze("export type Point = number\nreturn 1");
+    let (b_block, b_model) =
+        analyze("local a1 = require('./a')\nlocal a2 = require('./a')\nreturn a1, a2");
+
+    let mut graph = MultiModuleModel::new();
+    let a = graph.add_module("a", a_block, a_model).expect("module a");
+    let b = graph.add_module("b", b_block, b_model).expect("module b");
+
+    let alias1 = symbol_named(&graph.module(b).model, "a1");
+    let alias2 = symbol_named(&graph.module(b).model, "a2");
+    graph.bind_import(b, alias1, a);
+    graph.bind_import(b, alias2, a);
+
+    let (target, id) = graph
+        .resolve_imported_type(b, "Point")
+        .expect("two aliases of one module are not ambiguous");
+    assert_eq!(target, a);
+    assert_eq!(graph.module(a).interface.type_alias("Point"), Some(id));
+}
+
+#[test]
 fn imported_value_resolves_by_identity() {
     let (a_block, a_model) =
         analyze("local function add(a, b) return a + b end\nreturn { add = add }");
@@ -223,6 +245,22 @@ fn bundling_respects_private_type_shadowing() {
         .strict_types()
         .analyze(&reparsed)
         .expect("shadowed types must resolve strictly");
+}
+
+#[test]
+fn bundling_discovers_requires_in_prefix_position() {
+    let mut provider = MemoryModuleProvider::new();
+    provider.insert("a", "return { value = 1 }");
+
+    let (mut block, model) = analyze("local value = require('./a').value\nreturn value");
+    let count = bundle_modules(&mut block, &model, &provider).expect("bundling must succeed");
+    assert_eq!(count, 1, "the prefix-position require must be discovered");
+
+    let output = generate(&block);
+    assert!(
+        !output.contains("require("),
+        "the prefix-position require must be converted: {output}"
+    );
 }
 
 #[test]

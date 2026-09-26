@@ -583,12 +583,19 @@ impl AnalyzerState {
 
         // Record a bare alias such as `type A = B` so that alias chains can be
         // expanded without re-analyzing the tree. The target is already
-        // declared because every type in the block is hoisted first.
-        if let crate::nodes::Type::Name(type_name) = declaration.get_type() {
-            if !type_name.has_type_parameters() {
-                if let Some(target) = self.lookup_type_name(type_name.get_type_name().get_name()) {
-                    if target != id {
-                        self.types[id.index()].alias_of = Some(target);
+        // declared because every type in the block is hoisted first. A generic
+        // alias (`type A<T> = ...`) has no single expansion and its
+        // right-hand side may reference its own parameters, so it is not an
+        // alias of anything.
+        if declaration.get_generic_parameters().is_none() {
+            if let crate::nodes::Type::Name(type_name) = declaration.get_type() {
+                let target_name = type_name.get_type_name().get_name();
+                if !type_name.has_type_parameters() && !self.is_generic_type_parameter(target_name)
+                {
+                    if let Some(target) = self.lookup_type_name(target_name) {
+                        if target != id {
+                            self.types[id.index()].alias_of = Some(target);
+                        }
                     }
                 }
             }

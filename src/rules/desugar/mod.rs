@@ -23,7 +23,7 @@ pub use convert_luau_number::{convert_luau_number, convert_luau_number_with_code
 pub use make_assignment_local::make_assignment_local;
 pub use remove_attribute::remove_attribute;
 pub use remove_compound_assign::remove_compound_assign;
-pub use remove_continue::remove_continue;
+pub use remove_continue::{remove_continue, RemoveContinueError};
 pub use remove_floor_division::remove_floor_division;
 pub use remove_if_expression::remove_if_expression;
 pub use remove_interpolated_string::{

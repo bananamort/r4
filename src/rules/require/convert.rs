@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::nodes::{Block, Expression, FunctionCall, Statement};
+use crate::nodes::{Block, Expression, FunctionCall, Prefix, Statement};
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::semantic::SemanticModel;
 use crate::utils::expressions_as_statement;
@@ -146,6 +146,25 @@ impl<C: RequirePathConverter> NodeProcessor for Processor<'_, C> {
             self.converted += 1;
         }
     }
+
+    fn process_prefix_expression(&mut self, prefix: &mut Prefix) {
+        // A call used as the prefix of a field/index/another call
+        // (`require('./m').field`, `require('./m')()`) is not an
+        // `Expression::Call`, so it must be handled here.
+        let Prefix::Call(call) = prefix else {
+            return;
+        };
+        let Some(classified) = self.classify(call) else {
+            return;
+        };
+        if self.error.is_some() {
+            return;
+        }
+        if let Some(replacement) = self.replacement(classified) {
+            *prefix = Prefix::from(replacement);
+            self.converted += 1;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -213,6 +232,37 @@ mod test {
     #[test]
     fn rejects_non_literal_arguments() {
         let (mut block, model) = analyze("return require(path)");
+        let error = convert_require(&mut block, &model, &IdentifierConverter)
+            .expect_err("a dynamic require argument must be reported");
+
+        assert!(matches!(
+            error,
+            ConvertRequireError::NonLiteralRequireArgument { .. }
+        ));
+    }
+
+    #[test]
+    fn converts_calls_in_prefix_position() {
+        for code in [
+            "return require('./x').field",
+            "return require('./x').a.b",
+            "return require('./x')()",
+            "return (require('./x')).field",
+        ] {
+            let (mut block, model) = analyze(code);
+            let converted = convert_require(&mut block, &model, &IdentifierConverter)
+                .expect("global require must convert");
+
+            assert_eq!(converted, 1, "failed to convert `{code}`");
+            let output = generate(&block);
+            assert!(output.contains("module_x"), "unexpected: {output}");
+            assert!(!output.contains("require("), "unexpected: {output}");
+        }
+    }
+
+    #[test]
+    fn rejects_non_literal_require_in_prefix_position() {
+        let (mut block, model) = analyze("return require(path).field");
         let error = convert_require(&mut block, &model, &IdentifierConverter)
             .expect_err("a dynamic require argument must be reported");
 

@@ -248,7 +248,11 @@ impl HexNumber {
     /// Computes the actual numerical value represented by this hexadecimal number.
     pub fn compute_value(&self) -> f64 {
         if let Some((exponent, _)) = self.exponent {
-            (self.integer * 2_u64.pow(exponent)) as f64
+            // `2_u64.pow(exponent)` overflows for `exponent >= 64`. Scale in
+            // `f64` instead, clamping the exponent so a huge power saturates to
+            // infinity the way Lua's own conversion does.
+            let scale = 2_f64.powi(exponent.min(i32::MAX as u32) as i32);
+            self.integer as f64 * scale
         } else {
             self.integer as f64
         }
@@ -878,5 +882,21 @@ mod test {
             binary_zero("0b0") => 0b0,
             binary_ten("0b1010") => 0b1010,
         );
+    }
+
+    #[test]
+    fn hex_exponent_does_not_overflow_u64() {
+        // `0x1p64` is 2^64, which does not fit in `u64`; computing it in `u64`
+        // would panic in debug builds or wrap in release builds.
+        let value = HexNumber::new(1, false)
+            .with_exponent(64, false)
+            .compute_value();
+        assert_eq!(value, 2_f64.powi(64));
+
+        // A huge exponent saturates to infinity, as Lua's conversion does.
+        let value = HexNumber::new(1, false)
+            .with_exponent(u32::MAX, false)
+            .compute_value();
+        assert!(value.is_infinite());
     }
 }

@@ -79,7 +79,6 @@ impl NodeProcessor for DetokenizeProcessor {
         process_variable_expression: Identifier,
         process_index_expression: IndexExpression,
         process_if_expression: IfExpression,
-        process_number_expression: NumberExpression,
         process_parenthese_expression: ParentheseExpression,
         process_string_expression: StringExpression,
         process_interpolated_string_expression: InterpolatedStringExpression,
@@ -105,6 +104,13 @@ impl NodeProcessor for DetokenizeProcessor {
 
     fn process_block(&mut self, block: &mut Block) {
         block.remove_tokens();
+    }
+
+    fn process_number_expression(&mut self, expression: &mut NumberExpression) {
+        expression.remove_tokens();
+        // The case of a hex/binary prefix, digit or exponent marker is source
+        // presentation only, so it must not take part in equivalence.
+        expression.set_uppercase(false);
     }
 
     fn process_function_call(&mut self, call: &mut FunctionCall) {

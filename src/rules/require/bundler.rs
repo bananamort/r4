@@ -180,7 +180,9 @@ pub fn bundle_modules_with_config<P: ModuleProvider>(
     parser: crate::Parser,
     options: crate::semantic::SemanticOptions,
 ) -> Result<usize, BundleError> {
-    let root_block = mem::take(block);
+    // Resolve from a clone so a failed resolve leaves the caller's block
+    // untouched; the original is only replaced once bundling succeeds.
+    let root_block = block.clone();
     let resolved = ModuleResolver::new(provider)
         .with_parser(parser)
         .with_semantic_options(options)

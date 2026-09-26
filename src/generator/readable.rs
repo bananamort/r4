@@ -562,7 +562,7 @@ impl LuaGenerator for ReadableLuaGenerator {
         self.push_can_add_new_line(false);
 
         let variables = assign.get_variables();
-        let last_variable_index = variables.len() - 1;
+        let last_variable_index = variables.len().saturating_sub(1);
         variables.iter().enumerate().for_each(|(index, variable)| {
             self.write_variable(variable);
 
@@ -574,7 +574,7 @@ impl LuaGenerator for ReadableLuaGenerator {
 
         self.raw_push_str(" = ");
 
-        let last_value_index = assign.values_len() - 1;
+        let last_value_index = assign.values_len().saturating_sub(1);
         assign.iter_values().enumerate().for_each(|(index, value)| {
             self.write_expression(value);
 
@@ -1655,5 +1655,27 @@ impl LuaGenerator for ReadableLuaGenerator {
     fn write_generic_type_pack(&mut self, generic_type_pack: &nodes::GenericTypePack) {
         self.write_identifier(generic_type_pack.get_name());
         self.push_str("...");
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::nodes::{AssignStatement, Block, Statement, Variable};
+
+    #[test]
+    fn an_empty_assignment_does_not_panic() {
+        // `AssignStatement` is publicly constructible with empty vectors; the
+        // readable generator must not underflow on the "last index".
+        let block = Block::new(
+            vec![Statement::Assign(AssignStatement::new(
+                vec![Variable::new("x")],
+                vec![],
+            ))],
+            None,
+        );
+        let mut generator = ReadableLuaGenerator::default();
+        generator.write_block(&block);
+        assert!(generator.into_string().contains('='));
     }
 }

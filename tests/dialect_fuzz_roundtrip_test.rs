@@ -103,6 +103,9 @@ fn fuzzed_luau_blocks_lower_to_reparseable_lua51() {
             Err(DesugarError::UnsupportedDialect(DialectSupportError::ContinueNotSupported {
                 ..
             })) => {}
+            // A `repeat` loop whose `until` condition reads a body local cannot
+            // be lowered without changing that condition's meaning.
+            Err(DesugarError::Continue(_)) => {}
             Err(DesugarError::Cfg(error)) => {
                 panic!("iteration {iteration} lowering reported invalid control flow: {error}")
             }

@@ -326,3 +326,31 @@ fn rename_symbol_renames_a_single_shadowed_local() {
         "the rename must not touch the shadowing declaration: {output}"
     );
 }
+
+#[test]
+fn rename_symbol_rejects_a_name_declared_in_an_enclosing_scope() {
+    use r4::rules::rename_variables::{rename_symbol, RenameSymbolError};
+
+    // `outer` is declared in the chunk scope and is visible inside the `do`
+    // block where `inner` is declared, so renaming `inner` to `outer` would
+    // silently shadow the outer local and change what its later reads see.
+    let mut block = parse(
+        "local outer = 1\n\
+         do\n\
+             local inner = 2\n\
+             return inner + outer\n\
+         end",
+    );
+    let model = analyze_block(&block);
+    let inner = model
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "inner")
+        .expect("inner")
+        .id;
+
+    let error =
+        rename_symbol(&mut block, &model, inner, "outer").expect_err("`outer` is visible here");
+    assert_eq!(error.code(), "rename/conflict");
+    assert!(matches!(error, RenameSymbolError::Conflict { .. }));
+}

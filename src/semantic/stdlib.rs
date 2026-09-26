@@ -37,6 +37,11 @@ pub fn call_is_pure(model: &SemanticModel, call: &FunctionCall) -> bool {
     if global_symbol.kind != SymbolKind::Global {
         return false;
     }
+    if global_symbol.write_count != 0 {
+        // The program reassigns this global, so it no longer denotes the
+        // standard-library function hidden behind its name.
+        return false;
+    }
     if !model.name_is_transparent_global(&global_symbol.name) {
         return false;
     }

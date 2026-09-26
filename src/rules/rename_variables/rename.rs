@@ -357,6 +357,15 @@ pub fn rename_symbol(
         visible.extend(model.scope(scope).children.iter().copied());
         index += 1;
     }
+    // The declaring scope and its descendants are the scopes the renamed symbol
+    // is visible in. A declaration in an *enclosing* scope is visible at the
+    // rename site too, so renaming to its name would shadow it; include the
+    // ancestor scopes (their other descendants are siblings, not visible here).
+    let mut ancestor = model.scope(declaring).parent;
+    while let Some(scope) = ancestor {
+        visible.push(scope);
+        ancestor = model.scope(scope).parent;
+    }
     for scope in &visible {
         for &other in &model.scope(*scope).symbols {
             if other != symbol && model.symbol(other).name == new_name {

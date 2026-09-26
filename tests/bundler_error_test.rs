@@ -39,6 +39,29 @@ fn bundling_reports_parse_and_load_errors() {
 }
 
 #[test]
+fn bundling_a_failing_graph_leaves_the_input_block_untouched() {
+    use r4::generator::{LuaGenerator, ReadableLuaGenerator};
+
+    let mut provider = MemoryModuleProvider::new();
+    provider.insert("a", "local x = ");
+    let (mut block, model) = analyze("local before = require('./a')\nreturn before");
+
+    let mut generator = ReadableLuaGenerator::default();
+    generator.write_block(&block);
+    let before = generator.into_string();
+
+    bundle_modules(&mut block, &model, &provider).expect_err("a parse error");
+
+    let mut generator = ReadableLuaGenerator::default();
+    generator.write_block(&block);
+    assert_eq!(
+        before,
+        generator.into_string(),
+        "a failed bundle must not clear the caller's block"
+    );
+}
+
+#[test]
 fn bundle_error_conversions_render() {
     let parse_error = Parser::default()
         .parse("local x = ")

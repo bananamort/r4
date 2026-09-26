@@ -107,6 +107,21 @@ mod test {
     }
 
     #[test]
+    fn keeps_assert_calls_when_the_global_is_reassigned() {
+        let (mut block, model) = analyze_with_tokens(
+            "assert = function(value) return value end\nlocal x = assert(true)\nreturn x",
+        );
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(
+            removed, 0,
+            "a reassigned `assert` global no longer denotes the builtin"
+        );
+        assert!(generate(&block).contains("assert(true)"));
+    }
+
+    #[test]
     fn removes_assert_calls_through_a_read_only_alias() {
         let (mut block, model) =
             analyze_with_tokens("local assert = assert\nlocal x = assert(true)\nreturn x");

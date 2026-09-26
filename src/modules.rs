@@ -958,6 +958,14 @@ fn module_dependencies(
                 self.check(call);
             }
         }
+
+        fn process_prefix_expression(&mut self, prefix: &mut Prefix) {
+            // `require('./m').field` and `require('./m')()` place the call in
+            // prefix position, where it is not an `Expression::Call`.
+            if let Prefix::Call(call) = prefix {
+                self.check(call);
+            }
+        }
     }
 
     let mut collector = Collector {
