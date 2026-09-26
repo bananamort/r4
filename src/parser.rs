@@ -4,6 +4,7 @@ use full_moon::{ast::Ast, LuaVersion};
 
 use crate::{
     ast_converter::{AstConverter, ConvertError},
+    equivalence::Equivalent,
     nodes::*,
     semantic::{SemanticAnalyzer, SemanticError, SemanticModel},
     utils::Timer,
@@ -136,7 +137,13 @@ impl Parser {
         if parsed.is_empty() {
             return Ok(Detection::Union);
         }
-        if parsed.iter().all(|(_, block)| block == &parsed[0].1) {
+        // Equivalent trees mean the choice cannot matter; only a genuine
+        // structural divergence (the two readings are different programs) is a
+        // problem worth failing on.
+        if parsed
+            .iter()
+            .all(|(_, block)| block.is_equivalent_to(&parsed[0].1))
+        {
             let (dialect, block) = parsed.swap_remove(0);
             Ok(Detection::Dialect(dialect, block))
         } else {
