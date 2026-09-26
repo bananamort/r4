@@ -42,6 +42,11 @@ variant_registry!(SemanticErrorTag, SemanticErrorKind,
     UndefinedLabel => SemanticErrorKind::UndefinedLabel { .. },
     GotoIntoLocalScope => SemanticErrorKind::GotoIntoLocalScope { .. },
     UnresolvedType => SemanticErrorKind::UnresolvedType { .. },
+    ConstReassignment => SemanticErrorKind::ConstReassignment { .. },
+    CloseReassignment => SemanticErrorKind::CloseReassignment { .. },
+    DuplicateTypeParameter => SemanticErrorKind::DuplicateTypeParameter { .. },
+    MisplacedExportType => SemanticErrorKind::MisplacedExportType { .. },
+    UnknownLocalAttribute => SemanticErrorKind::UnknownLocalAttribute { .. },
 );
 
 variant_registry!(QueryErrorTag, SemanticQueryError,
@@ -77,6 +82,7 @@ variant_registry!(RenameSymbolErrorTag, RenameSymbolError,
 
 variant_registry!(DialectSupportErrorTag, DialectSupportError,
     CompoundAssignmentNotSupported => DialectSupportError::CompoundAssignmentNotSupported { .. },
+    ConstDeclarationNotSupported => DialectSupportError::ConstDeclarationNotSupported { .. },
     ContinueNotSupported => DialectSupportError::ContinueNotSupported { .. },
     IfExpressionNotSupported => DialectSupportError::IfExpressionNotSupported { .. },
     InterpolatedStringNotSupported => DialectSupportError::InterpolatedStringNotSupported { .. },
@@ -155,6 +161,21 @@ fn semantic_errors_are_all_triggered() {
             .strict_types()
             .analyze(&luau("type A = Missing"))
             .expect_err("strict types rejects the undeclared type"),
+        SemanticAnalyzer::new()
+            .analyze(&luau("local x <const> = 1\nx = 2"))
+            .expect_err("a const variable cannot be reassigned"),
+        SemanticAnalyzer::new()
+            .analyze(&luau("local x <close> = f()\nx = 2"))
+            .expect_err("a close variable cannot be reassigned"),
+        SemanticAnalyzer::new()
+            .analyze(&luau("local function f<T, T>() end"))
+            .expect_err("a duplicate generic parameter is rejected"),
+        SemanticAnalyzer::new()
+            .analyze(&luau("do export type T = number end"))
+            .expect_err("a nested export type is rejected"),
+        SemanticAnalyzer::new()
+            .analyze(&luau("local x <foo> = 1"))
+            .expect_err("an unknown local attribute is rejected"),
     ];
 
     let produced: BTreeSet<&'static str> = errors
@@ -1520,6 +1541,8 @@ fn dialect_support_errors_are_all_triggered() {
 
     let cases = [
         luau("value += 1"),
+        luau("const value = 1"),
+        luau("const function f() end"),
         luau("while true do continue end"),
         luau("return if a then 1 else 2"),
         luau("return `a {b}`"),

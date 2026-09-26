@@ -11,7 +11,7 @@ use super::analyzer::AnalyzerState;
 use super::error::SemanticResult;
 use super::goto::is_block_end_label;
 use super::scope::{ScopeId, ScopeKind};
-use super::symbol::{AccessKind, SymbolKind};
+use super::symbol::SymbolKind;
 
 impl AnalyzerState {
     /// Walks every statement of a block (including its optional last statement).
@@ -20,7 +20,7 @@ impl AnalyzerState {
     /// everything else is dispatched to [`Self::walk_statement`].
     pub(super) fn walk_block_statements(&mut self, block: &Block) -> SemanticResult<()> {
         self.assign_block_identity(block);
-        self.hoist_type_declarations(block);
+        self.hoist_type_declarations(block)?;
 
         // Record which scope this block introduces, so node-keyed queries can
         // map a block back to its scope.
@@ -58,9 +58,10 @@ impl AnalyzerState {
     /// reference one declared later in the same block (including mutually
     /// recursive aliases). Hoisting the names first makes those forward
     /// references resolve exactly like a later declaration would.
-    fn hoist_type_declarations(&mut self, block: &Block) {
+    fn hoist_type_declarations(&mut self, block: &Block) -> SemanticResult<()> {
         for statement in block.iter_statements() {
             if let Statement::TypeDeclaration(declaration) = statement {
+                self.check_export_type_placement(declaration)?;
                 self.declare_type_symbol(
                     declaration.get_name().get_name(),
                     declaration.is_exported(),
@@ -68,6 +69,7 @@ impl AnalyzerState {
                 );
             }
         }
+        Ok(())
     }
 
     fn enter_block(&mut self) -> ScopeId {
@@ -111,8 +113,7 @@ impl AnalyzerState {
                 self.walk_variable_read(assign.get_variable())?;
                 self.walk_expression(assign.get_value())?;
                 if let Variable::Identifier(identifier) = assign.get_variable() {
-                    let symbol = self.resolve_name(identifier.get_name(), Some(identifier))?;
-                    self.record_access(symbol, AccessKind::Write, Some(identifier));
+                    self.write_identifier(identifier)?;
                 }
             }
             Statement::Do(do_statement) => {
@@ -129,7 +130,8 @@ impl AnalyzerState {
                         identifier.get_name(),
                         SymbolKind::Iteration,
                         Some(identifier.get_identifier()),
-                    );
+                        identifier.get_attribute(),
+                    )?;
                 }
                 for identifier in generic_for.iter_identifiers() {
                     if let Some(r#type) = identifier.get_type() {
@@ -174,7 +176,8 @@ impl AnalyzerState {
                         variable.get_name(),
                         SymbolKind::Local,
                         Some(variable.get_identifier()),
-                    );
+                        variable.get_attribute(),
+                    )?;
                     if let Some(Some(target)) = initializers.get(index) {
                         self.set_symbol_initializer(symbol, *target);
                     }
@@ -190,16 +193,20 @@ impl AnalyzerState {
                     function.get_name(),
                     SymbolKind::Local,
                     Some(function.get_identifier()),
-                );
+                    None,
+                )?;
                 self.enter_function();
                 for parameter in function.iter_parameters() {
                     self.declare_symbol(
                         parameter.get_name(),
                         SymbolKind::Parameter,
                         Some(parameter.get_identifier()),
-                    );
+                        parameter.get_attribute(),
+                    )?;
                 }
-                self.push_type_parameters(generic_type_names(function.get_generic_parameters()));
+                let names = generic_type_names(function.get_generic_parameters());
+                self.check_generic_parameters(&names)?;
+                self.push_type_parameters(names);
                 let result = (|| {
                     self.walk_signature_types(
                         function.iter_parameters().collect(),
@@ -224,7 +231,8 @@ impl AnalyzerState {
                     identifier.get_name(),
                     SymbolKind::Iteration,
                     Some(identifier.get_identifier()),
-                );
+                    identifier.get_attribute(),
+                )?;
                 if let Some(r#type) = identifier.get_type() {
                     self.walk_type(r#type)?;
                 }
@@ -255,9 +263,12 @@ impl AnalyzerState {
                         parameter.get_name(),
                         SymbolKind::Parameter,
                         Some(parameter.get_identifier()),
-                    );
+                        parameter.get_attribute(),
+                    )?;
                 }
-                self.push_type_parameters(generic_type_names(function.get_generic_parameters()));
+                let names = generic_type_names(function.get_generic_parameters());
+                self.check_generic_parameters(&names)?;
+                self.push_type_parameters(names);
                 let result = (|| {
                     self.walk_signature_types(
                         function.iter_parameters().collect(),
@@ -295,16 +306,19 @@ impl AnalyzerState {
 
         self.enter_function();
         if name.get_method().is_some() {
-            self.declare_symbol("self", SymbolKind::Parameter, None);
+            self.declare_symbol("self", SymbolKind::Parameter, None, None)?;
         }
         for parameter in function.iter_parameters() {
             self.declare_symbol(
                 parameter.get_name(),
                 SymbolKind::Parameter,
                 Some(parameter.get_identifier()),
-            );
+                parameter.get_attribute(),
+            )?;
         }
-        self.push_type_parameters(generic_type_names(function.get_generic_parameters()));
+        let names = generic_type_names(function.get_generic_parameters());
+        self.check_generic_parameters(&names)?;
+        self.push_type_parameters(names);
         let result = (|| {
             self.walk_signature_types(
                 function.iter_parameters().collect(),
@@ -325,9 +339,12 @@ impl AnalyzerState {
                 parameter.get_name(),
                 SymbolKind::Parameter,
                 Some(parameter.get_identifier()),
-            );
+                parameter.get_attribute(),
+            )?;
         }
-        self.push_type_parameters(generic_type_names(function.get_generic_parameters()));
+        let names = generic_type_names(function.get_generic_parameters());
+        self.check_generic_parameters(&names)?;
+        self.push_type_parameters(names);
         let result = (|| {
             self.walk_signature_types(
                 function.iter_parameters().collect(),
@@ -592,6 +609,7 @@ impl AnalyzerState {
             }
         }
 
+        self.check_generic_parameters(&names)?;
         self.push_type_parameters(names);
         let result = (|| {
             for default in defaults {

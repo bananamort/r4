@@ -77,9 +77,40 @@ pub struct Symbol {
     /// initializer resolves to. Declarations with any other expression (or no
     /// value) leave this `None`.
     pub initializer: Option<SymbolId>,
+    /// The Lua 5.4 local attribute (`const`/`close`) attached to this symbol's
+    /// declaration, if any. `None` for every other dialect and for parameters,
+    /// which cannot carry attributes.
+    pub attribute: Option<String>,
 }
 
 impl Symbol {
+    /// Returns the local attribute (`const`/`close`) of this symbol, if any.
+    #[inline]
+    pub fn attribute(&self) -> Option<&str> {
+        self.attribute.as_deref()
+    }
+
+    /// Returns whether this symbol was declared `<const>`.
+    #[inline]
+    pub fn is_const(&self) -> bool {
+        self.attribute.as_deref() == Some("const")
+    }
+
+    /// Returns whether this symbol was declared `<close>`.
+    #[inline]
+    pub fn is_close(&self) -> bool {
+        self.attribute.as_deref() == Some("close")
+    }
+
+    /// Returns whether this symbol cannot be assigned after its declaration.
+    ///
+    /// Lua 5.4 makes both `<const>` and `<close>` variables read-only after the
+    /// declaration.
+    #[inline]
+    pub fn is_read_only(&self) -> bool {
+        self.is_const() || self.is_close()
+    }
+
     /// Returns whether this symbol is captured by any nested function.
     #[inline]
     pub fn is_captured(&self) -> bool {

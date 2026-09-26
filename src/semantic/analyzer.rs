@@ -5,7 +5,7 @@
 //! tables. The AST traversal lives in [`super::walker`], and the Lua 5.2+
 //! goto/label pass lives in [`super::goto`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::nodes::{Block, BlockIdentity, Identifier};
@@ -322,7 +322,17 @@ impl AnalyzerState {
         name: &str,
         kind: SymbolKind,
         identifier: Option<&Identifier>,
-    ) -> SymbolId {
+        attribute: Option<&str>,
+    ) -> SemanticResult<SymbolId> {
+        if let Some(attribute) = attribute {
+            if !matches!(attribute, "const" | "close") {
+                self.report(SemanticError::unknown_local_attribute(
+                    attribute,
+                    identifier.and_then(line_of),
+                ))?;
+            }
+        }
+
         let scope = self.current_scope();
         let id = SymbolId(self.symbols.len() as u32);
 
@@ -336,6 +346,7 @@ impl AnalyzerState {
             read_count: 0,
             write_count: 0,
             initializer: None,
+            attribute: attribute.map(str::to_owned),
         });
         self.uses.push(Vec::new());
         self.scopes[scope.index()].symbols.push(id);
@@ -346,7 +357,7 @@ impl AnalyzerState {
         }
         self.record_access(id, AccessKind::Declaration, identifier);
 
-        id
+        Ok(id)
     }
 
     /// Records that `symbol` is initialized from `target` (for example
@@ -369,6 +380,7 @@ impl AnalyzerState {
             read_count: 0,
             write_count: 0,
             initializer: None,
+            attribute: None,
         });
         self.uses.push(Vec::new());
         self.scopes[scope.index()].symbols.push(id);
@@ -621,8 +633,57 @@ impl AnalyzerState {
 
     pub(super) fn write_identifier(&mut self, identifier: &Identifier) -> SemanticResult<SymbolId> {
         let symbol = self.resolve_name(identifier.get_name(), Some(identifier))?;
+        self.check_reassignment(symbol, identifier)?;
         self.record_access(symbol, AccessKind::Write, Some(identifier));
         Ok(symbol)
+    }
+
+    /// Rejects an assignment to a `<const>`/`<close>` variable.
+    pub(super) fn check_reassignment(
+        &mut self,
+        symbol: SymbolId,
+        identifier: &Identifier,
+    ) -> SemanticResult<()> {
+        let (name, is_const) = {
+            let data = &self.symbols[symbol.index()];
+            if !data.is_read_only() {
+                return Ok(());
+            }
+            (data.name.clone(), data.is_const())
+        };
+
+        let error = if is_const {
+            SemanticError::const_reassignment(&name, line_of(identifier))
+        } else {
+            SemanticError::close_reassignment(&name, line_of(identifier))
+        };
+        self.report(error.with_span(span_of(identifier)))?;
+        Ok(())
+    }
+
+    /// Rejects a generic parameter list with a repeated name.
+    pub(super) fn check_generic_parameters(&mut self, names: &[String]) -> SemanticResult<()> {
+        let mut seen = HashSet::new();
+        for name in names {
+            if !seen.insert(name.as_str()) {
+                self.report(SemanticError::duplicate_type_parameter(name, None))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Rejects an `export type` that is not at the top level of the module.
+    pub(super) fn check_export_type_placement(
+        &mut self,
+        declaration: &crate::nodes::TypeDeclarationStatement,
+    ) -> SemanticResult<()> {
+        if declaration.is_exported() && self.current_scope() != self.chunk_scope {
+            self.report(SemanticError::misplaced_export_type(
+                declaration.get_name().get_name(),
+                line_of(declaration.get_name()),
+            ))?;
+        }
+        Ok(())
     }
 }
 

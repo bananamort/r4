@@ -120,3 +120,19 @@ fn desugar_to_lua51_accepts_luau() {
     r4::rules::desugar_to_lua51(&mut block).expect("Luau lowers to valid Lua 5.1");
     r4::validate_dialect(&block, Dialect::Lua51).expect("the lowered block is valid Lua 5.1");
 }
+
+#[test]
+fn desugar_to_lua51_lowers_const_declarations() {
+    let mut block = luau("const value = 1\nconst function f() end\nreturn value");
+    r4::rules::desugar_to_lua51(&mut block).expect("const declarations lower to locals");
+
+    let mut generator = ReadableLuaGenerator::default();
+    generator.write_block(&block);
+    let output = generator.into_string();
+    assert!(
+        !output.contains("const"),
+        "`const` must be lowered: {output}"
+    );
+    assert!(output.contains("local value = 1"), "{output}");
+    assert!(output.contains("local function f()"), "{output}");
+}

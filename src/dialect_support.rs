@@ -12,7 +12,8 @@
 use std::fmt;
 
 use crate::nodes::{
-    Expression, LastStatement, NumberExpression, Prefix, Statement, TypedIdentifier, UnaryOperator,
+    AssignmentKind, Expression, LastStatement, NumberExpression, Prefix, Statement,
+    TypedIdentifier, UnaryOperator,
 };
 use crate::process::{ImmutableProcessor, ImmutableVisitor, Walk};
 use crate::Dialect;
@@ -22,6 +23,12 @@ use crate::Dialect;
 pub enum DialectSupportError {
     /// A compound assignment (`x += 1`), which only Luau accepts.
     CompoundAssignmentNotSupported {
+        /// The target dialect.
+        dialect: Dialect,
+    },
+    /// A Luau `const` declaration (`const x = 1`, `const function f() end`),
+    /// which only Luau accepts.
+    ConstDeclarationNotSupported {
         /// The target dialect.
         dialect: Dialect,
     },
@@ -93,6 +100,7 @@ impl DialectSupportError {
     pub fn dialect(&self) -> Dialect {
         match self {
             Self::CompoundAssignmentNotSupported { dialect }
+            | Self::ConstDeclarationNotSupported { dialect }
             | Self::ContinueNotSupported { dialect }
             | Self::IfExpressionNotSupported { dialect }
             | Self::InterpolatedStringNotSupported { dialect }
@@ -111,6 +119,7 @@ impl DialectSupportError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::CompoundAssignmentNotSupported { .. } => "dialect/compound-assignment",
+            Self::ConstDeclarationNotSupported { .. } => "dialect/const-declaration",
             Self::ContinueNotSupported { .. } => "dialect/continue",
             Self::IfExpressionNotSupported { .. } => "dialect/if-expression",
             Self::InterpolatedStringNotSupported { .. } => "dialect/interpolated-string",
@@ -132,6 +141,9 @@ impl fmt::Display for DialectSupportError {
         match self {
             Self::CompoundAssignmentNotSupported { .. } => {
                 write!(f, "compound assignment is not supported by {dialect}")
+            }
+            Self::ConstDeclarationNotSupported { .. } => {
+                write!(f, "`const` declarations are not supported by {dialect}")
             }
             Self::ContinueNotSupported { .. } => {
                 write!(f, "`continue` is not supported by {dialect}")
@@ -243,13 +255,31 @@ impl ImmutableProcessor for Validator {
                     |dialect| DialectSupportError::CompoundAssignmentNotSupported { dialect },
                 );
             }
+            Statement::LocalAssign(assign)
+                if assign.get_assignment_kind() == AssignmentKind::Const
+                    && !accepts_luau_only(self.target) =>
+            {
+                self.reject(
+                    |dialect| DialectSupportError::ConstDeclarationNotSupported { dialect },
+                );
+            }
+            Statement::LocalFunction(function)
+                if function.get_assignment_kind() == AssignmentKind::Const
+                    && !accepts_luau_only(self.target) =>
+            {
+                self.reject(
+                    |dialect| DialectSupportError::ConstDeclarationNotSupported { dialect },
+                );
+            }
             Statement::Goto(_) if !accepts_goto_and_labels(self.target) => {
                 self.reject(|dialect| DialectSupportError::GotoNotSupported { dialect });
             }
             Statement::Label(_) if !accepts_goto_and_labels(self.target) => {
                 self.reject(|dialect| DialectSupportError::LabelsNotSupported { dialect });
             }
-            Statement::TypeDeclaration(_) | Statement::TypeFunction(_) => {
+            Statement::TypeDeclaration(_) | Statement::TypeFunction(_)
+                if !accepts_luau_only(self.target) =>
+            {
                 self.reject(|dialect| DialectSupportError::TypesNotSupported { dialect });
             }
             _ => {}
@@ -272,7 +302,9 @@ impl ImmutableProcessor for Validator {
                     |dialect| DialectSupportError::InterpolatedStringNotSupported { dialect },
                 );
             }
-            Expression::TypeCast(_) | Expression::TypeInstantiation(_) => {
+            Expression::TypeCast(_) | Expression::TypeInstantiation(_)
+                if !accepts_luau_only(self.target) =>
+            {
                 self.reject(|dialect| DialectSupportError::TypesNotSupported { dialect });
             }
             Expression::Binary(binary) => {
@@ -306,13 +338,15 @@ impl ImmutableProcessor for Validator {
     }
 
     fn process_prefix(&mut self, prefix: &Prefix) {
-        if matches!(prefix, Prefix::TypeInstantiation(_)) {
+        if matches!(prefix, Prefix::TypeInstantiation(_)) && !accepts_luau_only(self.target) {
             self.reject(|dialect| DialectSupportError::TypesNotSupported { dialect });
         }
     }
 
     fn process_type(&mut self, _: &crate::nodes::Type) {
-        self.reject(|dialect| DialectSupportError::TypesNotSupported { dialect });
+        if !accepts_luau_only(self.target) {
+            self.reject(|dialect| DialectSupportError::TypesNotSupported { dialect });
+        }
     }
 
     fn process_typed_identifier(&mut self, identifier: &TypedIdentifier) {
@@ -370,6 +404,18 @@ mod test {
             (
                 luau("value += 1"),
                 DialectSupportError::CompoundAssignmentNotSupported {
+                    dialect: Dialect::Lua51,
+                },
+            ),
+            (
+                luau("const value = 1"),
+                DialectSupportError::ConstDeclarationNotSupported {
+                    dialect: Dialect::Lua51,
+                },
+            ),
+            (
+                luau("const function f() end"),
+                DialectSupportError::ConstDeclarationNotSupported {
                     dialect: Dialect::Lua51,
                 },
             ),
@@ -446,6 +492,22 @@ mod test {
                     dialect: Dialect::Lua51
                 })
             );
+        }
+    }
+
+    #[test]
+    fn luau_types_validate_against_luau() {
+        for code in [
+            luau("local x: number = 1"),
+            luau("type A = number\nreturn 1"),
+            luau("local function f<T>(x: T): T return x end"),
+            luau("return value :: number"),
+            luau("return f<<number>>(value)"),
+            luau("@native function f() end"),
+            luau("const value = 1"),
+            luau("const function f() end"),
+        ] {
+            assert_eq!(validate_dialect(&code, Dialect::Luau), Ok(()));
         }
     }
 

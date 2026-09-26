@@ -84,6 +84,31 @@ pub enum SemanticErrorKind {
         /// The offending type name.
         name: String,
     },
+    /// A Lua 5.4 `<const>` variable was assigned after its declaration.
+    ConstReassignment {
+        /// The offending name.
+        name: String,
+    },
+    /// A Lua 5.4 `<close>` variable was assigned after its declaration.
+    CloseReassignment {
+        /// The offending name.
+        name: String,
+    },
+    /// A generic type parameter is declared more than once in the same list.
+    DuplicateTypeParameter {
+        /// The duplicated parameter name.
+        name: String,
+    },
+    /// An `export type` was declared outside the top level of the module.
+    MisplacedExportType {
+        /// The exported type's name.
+        name: String,
+    },
+    /// A local attribute is neither `const` nor `close`.
+    UnknownLocalAttribute {
+        /// The offending attribute.
+        attribute: String,
+    },
 }
 
 impl SemanticError {
@@ -143,6 +168,56 @@ impl SemanticError {
         }
     }
 
+    pub(crate) fn const_reassignment(name: &str, line: Option<usize>) -> Self {
+        Self {
+            kind: SemanticErrorKind::ConstReassignment {
+                name: name.to_string(),
+            },
+            line,
+            span: None,
+        }
+    }
+
+    pub(crate) fn close_reassignment(name: &str, line: Option<usize>) -> Self {
+        Self {
+            kind: SemanticErrorKind::CloseReassignment {
+                name: name.to_string(),
+            },
+            line,
+            span: None,
+        }
+    }
+
+    pub(crate) fn duplicate_type_parameter(name: &str, line: Option<usize>) -> Self {
+        Self {
+            kind: SemanticErrorKind::DuplicateTypeParameter {
+                name: name.to_string(),
+            },
+            line,
+            span: None,
+        }
+    }
+
+    pub(crate) fn misplaced_export_type(name: &str, line: Option<usize>) -> Self {
+        Self {
+            kind: SemanticErrorKind::MisplacedExportType {
+                name: name.to_string(),
+            },
+            line,
+            span: None,
+        }
+    }
+
+    pub(crate) fn unknown_local_attribute(attribute: &str, line: Option<usize>) -> Self {
+        Self {
+            kind: SemanticErrorKind::UnknownLocalAttribute {
+                attribute: attribute.to_string(),
+            },
+            line,
+            span: None,
+        }
+    }
+
     /// Attaches the byte range of the offending construct.
     pub(crate) fn with_span(mut self, span: Option<TextSpan>) -> Self {
         self.span = span;
@@ -157,6 +232,11 @@ impl SemanticError {
             SemanticErrorKind::UndefinedLabel { .. } => "semantic/undefined-label",
             SemanticErrorKind::GotoIntoLocalScope { .. } => "semantic/goto-into-local-scope",
             SemanticErrorKind::UnresolvedType { .. } => "semantic/unresolved-type",
+            SemanticErrorKind::ConstReassignment { .. } => "semantic/const-reassignment",
+            SemanticErrorKind::CloseReassignment { .. } => "semantic/close-reassignment",
+            SemanticErrorKind::DuplicateTypeParameter { .. } => "semantic/duplicate-type-parameter",
+            SemanticErrorKind::MisplacedExportType { .. } => "semantic/misplaced-export-type",
+            SemanticErrorKind::UnknownLocalAttribute { .. } => "semantic/unknown-local-attribute",
         }
     }
 
@@ -330,6 +410,23 @@ impl fmt::Display for SemanticError {
             ),
             SemanticErrorKind::UnresolvedType { name } => {
                 write!(f, "unresolved type `{}`", name)
+            }
+            SemanticErrorKind::ConstReassignment { name } => {
+                write!(f, "cannot assign to `<const>` variable `{}`", name)
+            }
+            SemanticErrorKind::CloseReassignment { name } => {
+                write!(f, "cannot assign to `<close>` variable `{}`", name)
+            }
+            SemanticErrorKind::DuplicateTypeParameter { name } => {
+                write!(f, "duplicate type parameter `{}`", name)
+            }
+            SemanticErrorKind::MisplacedExportType { name } => write!(
+                f,
+                "`export type {}` is only allowed at the top level of a module",
+                name
+            ),
+            SemanticErrorKind::UnknownLocalAttribute { attribute } => {
+                write!(f, "unknown local attribute `{}`", attribute)
             }
         }
     }

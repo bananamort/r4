@@ -329,6 +329,137 @@ print(converted, mapped)
 return converted, mapped
 "#,
     ),
+    (
+        "string and table library",
+        r#"
+local words = { "delta", "alpha", "charlie", "bravo" }
+table.sort(words)
+table.insert(words, "echo")
+local joined = table.concat(words, ",")
+print(joined, string.upper(words[1]), #words, string.sub(joined, 1, 3))
+return joined, #words
+"#,
+    ),
+    (
+        "metatables and operators",
+        r#"
+local Vec = {}
+Vec.__index = Vec
+Vec.__add = function(a, b)
+    return setmetatable({ x = a.x + b.x, y = a.y + b.y }, Vec)
+end
+Vec.__eq = function(a, b)
+    return a.x == b.x and a.y == b.y
+end
+function Vec.new(x, y)
+    return setmetatable({ x = x, y = y }, Vec)
+end
+local a = Vec.new(1, 2)
+local b = Vec.new(3, 4)
+local c = a + b
+print(c.x, c.y, a == b, a == Vec.new(1, 2))
+return c.x, c.y
+"#,
+    ),
+    (
+        "pcall and error handling",
+        r#"
+local ok = pcall(function()
+    return 1
+end)
+local failed = pcall(function()
+    error("boom", 0)
+end)
+print(ok, failed)
+return ok, failed
+"#,
+    ),
+    (
+        "recursion and memoization",
+        r#"
+local cache = {}
+local function fib(n)
+    if n < 2 then
+        return n
+    end
+    if cache[n] then
+        return cache[n]
+    end
+    local value = fib(n - 1) + fib(n - 2)
+    cache[n] = value
+    return value
+end
+print(fib(15))
+return fib(15)
+"#,
+    ),
+    (
+        "varargs and select",
+        r#"
+local function count(...)
+    return select('#', ...), ...
+end
+local n, a, b = count(10, 20)
+print(n, a, b)
+return n, a, b
+"#,
+    ),
+    (
+        "repeat until and break",
+        r#"
+local i = 0
+repeat
+    i += 1
+    if i == 3 then
+        break
+    end
+until i >= 10
+print(i)
+return i
+"#,
+    ),
+    (
+        "bit32 library and binary literals",
+        r#"
+local band = bit32.band(0b1100, 0b1010)
+local bor = bit32.bor(0b1100, 0b1010)
+local lshift = bit32.lshift(1, 4)
+print(band, bor, lshift)
+return band, bor, lshift
+"#,
+    ),
+    (
+        "roblox datatypes and enum",
+        r#"
+local roblox = require("@lune/roblox")
+local color = roblox.Color3.fromRGB(10, 20, 30)
+local size = roblox.UDim2.new(1, 0, 0, 5)
+print(color.R, color.G, color.B, size.X.Scale, size.X.Offset, size.Y.Offset)
+local folder = roblox.Instance.new("Folder")
+folder.Name = "Root"
+return folder.Name, color.B
+"#,
+    ),
+    (
+        "counting with sorted iteration",
+        r#"
+local counts = {}
+for _, word in ipairs({ "b", "a", "b", "c", "a", "b" }) do
+    counts[word] = (counts[word] or 0) + 1
+end
+local keys = {}
+for key in pairs(counts) do
+    keys[#keys + 1] = key
+end
+table.sort(keys)
+local parts = {}
+for _, key in ipairs(keys) do
+    parts[#parts + 1] = key .. "=" .. tostring(counts[key])
+end
+print(table.concat(parts, ","))
+return table.concat(parts, ",")
+"#,
+    ),
 ];
 
 #[test]
