@@ -13,24 +13,46 @@
 //! symbol is renamed, no `SAFE_` symbol survives, the implicit receivers keep
 //! `self`, globals are unchanged, and every field/key/metamethod name is
 //! byte-identical.
+//!
+//! `goto`/labels are Lua 5.2 syntax while the main fixture is Luau (compound
+//! assignment, type packs and `continue` are Luau-only), so labels are covered
+//! by a companion fixture (`fixtures/adversarial_rename_labels.lua`) parsed with
+//! the Lua 5.2 dialect; it asserts labels occupy their own namespace and are
+//! never renamed.
+//!
+//! The same file also drives the fixture through the full transformation
+//! pipeline (canonicalization and desugaring followed by renaming) and checks
+//! that the result re-parses, re-analyzes and lowers to a valid CFG.
 
 use std::collections::BTreeSet;
 
+use r4::cfg::{build_chunk, validate_block_identities};
 use r4::generator::{LuaGenerator, ReadableLuaGenerator};
 use r4::nodes::{
     Block, Expression, FunctionCall, Prefix, Statement, TableEntry, TableExpression, TypeName,
 };
 use r4::process::{ImmutableProcessor, ImmutableVisitor, Walk};
-use r4::rules::rename_variables::rename_variables;
+use r4::rules::rename_variables::{
+    rename_variables, rename_variables_with_options, RenameOptions, ROBLOX_GLOBALS,
+};
+use r4::rules::{canonicalize, desugar, Session};
 use r4::semantic::{AccessKind, SemanticAnalyzer, SemanticModel, SymbolKind};
 use r4::Parser;
 
 const FIXTURE: &str = include_str!("fixtures/adversarial_rename.lua");
+const LABELS_FIXTURE: &str = include_str!("fixtures/adversarial_rename_labels.lua");
 
 fn parse(code: &str) -> Block {
     Parser::default()
         .parse(code)
         .unwrap_or_else(|error| panic!("failed to parse: {error}"))
+}
+
+fn parse_lua52(code: &str) -> Block {
+    Parser::default()
+        .lua52()
+        .parse(code)
+        .unwrap_or_else(|error| panic!("failed to parse Lua 5.2: {error}"))
 }
 
 fn analyze(block: &Block) -> SemanticModel {
@@ -258,6 +280,10 @@ fn adversarial_program_survives_renaming() {
         "__eq",
         "__lt",
         "__le",
+        "__namecall",
+        "__iter",
+        "__mode",
+        "__metatable",
     ] {
         assert!(
             before_keys.contains(preserved),
@@ -327,6 +353,8 @@ fn adversarial_program_survives_renaming() {
     );
     assert!(type_names(&model).contains("UNSAFE_Alias"));
     assert!(type_names(&model).contains("UNSAFE_Exported"));
+    assert!(type_names(&model).contains("UNSAFE_Pack"));
+    assert!(type_names(&model).contains("UNSAFE_Default"));
 
     // The implicit colon receivers stay `self` with the same use counts.
     assert_eq!(
@@ -366,6 +394,205 @@ fn adversarial_program_survives_renaming() {
         assert!(
             output.contains(literal),
             "`{literal}` must survive renaming untouched:\n{output}"
+        );
+    }
+}
+
+#[test]
+fn labels_are_an_independent_namespace() {
+    let block = parse_lua52(LABELS_FIXTURE);
+    let model = analyze(&block);
+
+    let before_labels: BTreeSet<String> = model
+        .labels
+        .iter()
+        .map(|label| label.name.clone())
+        .collect();
+    assert!(
+        before_labels.contains("SAFE_mark"),
+        "the fixture must declare a label that shares a variable's name: {before_labels:?}"
+    );
+    assert!(before_labels.contains("UNSAFE_after"));
+    assert!(before_labels.contains("UNSAFE_outer"));
+
+    let renamable = model
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.kind != SymbolKind::Global && !symbol.is_implicit())
+        .count();
+    let before_bindings = model.goto_bindings.len();
+    assert!(before_bindings >= 3, "the fixture must contain gotos");
+
+    let mut renamed_block = block.clone();
+    let renamed = rename_variables(&mut renamed_block, &model).expect("renaming must succeed");
+    assert_eq!(renamed, renamable);
+
+    let output = generate(&renamed_block);
+    let output_block = parse_lua52(&output);
+    let output_model = analyze(&output_block);
+
+    // No `SAFE_` runtime symbol survives, including the one sharing a label's name.
+    for symbol in &output_model.symbols {
+        assert!(
+            !symbol.name.starts_with("SAFE_"),
+            "`{}` should have been renamed",
+            symbol.name
+        );
+    }
+
+    // Labels are in their own namespace: their names and bindings are unchanged.
+    let after_labels: BTreeSet<String> = output_model
+        .labels
+        .iter()
+        .map(|label| label.name.clone())
+        .collect();
+    assert_eq!(after_labels, before_labels, "labels must not be renamed");
+    assert_eq!(
+        output_model.goto_bindings.len(),
+        before_bindings,
+        "every goto must still bind"
+    );
+    for (before, after) in model
+        .goto_bindings
+        .iter()
+        .zip(output_model.goto_bindings.iter())
+    {
+        assert_eq!(
+            before.site.name, after.site.name,
+            "a goto target must be unchanged"
+        );
+        assert_eq!(
+            model.label(before.label).name,
+            output_model.label(after.label).name,
+            "a goto must still resolve to the same label name"
+        );
+    }
+}
+
+#[test]
+fn renaming_reserves_the_roblox_globals() {
+    let block = parse(FIXTURE);
+    let model = analyze(&block);
+
+    let mut renamed_block = block.clone();
+    let options = RenameOptions {
+        reserved_names: ROBLOX_GLOBALS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect(),
+    };
+    rename_variables_with_options(&mut renamed_block, &model, &options)
+        .expect("renaming must succeed");
+
+    let output = generate(&renamed_block);
+    let output_model = analyze(&parse(&output));
+    for symbol in &output_model.symbols {
+        if symbol.kind == SymbolKind::Global {
+            continue;
+        }
+        assert!(
+            !ROBLOX_GLOBALS.contains(&symbol.name.as_str()),
+            "generated `{}` collides with a Roblox global",
+            symbol.name
+        );
+    }
+}
+
+#[test]
+fn the_multi_pass_pipeline_preserves_invariants() {
+    let mut session = Session::parse(FIXTURE).expect("the fixture must parse and analyze");
+
+    // Canonicalization passes.
+    session
+        .apply_semantic_result(canonicalize::remove_unused_variables)
+        .expect("remove_unused_variables");
+    session
+        .apply_semantic_result(canonicalize::remove_unreachable_code)
+        .expect("remove_unreachable_code");
+    session
+        .apply_semantic_result(canonicalize::remove_dead_stores)
+        .expect("remove_dead_stores");
+    session
+        .apply_semantic_result(canonicalize::hoist_loop_invariants)
+        .expect("hoist_loop_invariants");
+    session
+        .apply_semantic(canonicalize::remove_nil_declarations)
+        .expect("remove_nil_declarations");
+    session
+        .apply_semantic(canonicalize::remove_empty_do)
+        .expect("remove_empty_do");
+    session
+        .apply_semantic(canonicalize::group_local)
+        .expect("group_local");
+    session
+        .apply_semantic(canonicalize::convert_index_to_field)
+        .expect("convert_index_to_field");
+    session
+        .apply_semantic(canonicalize::remove_call_parens)
+        .expect("remove_call_parens");
+
+    // Desugaring passes (Luau -> vanilla Lua), each seeing a refreshed model.
+    session
+        .apply_semantic(desugar::remove_types)
+        .expect("remove_types");
+    session
+        .apply_semantic(desugar::remove_compound_assign)
+        .expect("remove_compound_assign");
+    session
+        .apply_semantic(desugar::remove_if_expression)
+        .expect("remove_if_expression");
+    session
+        .apply_semantic(desugar::remove_interpolated_string)
+        .expect("remove_interpolated_string");
+    session
+        .apply_semantic(desugar::remove_floor_division)
+        .expect("remove_floor_division");
+    session
+        .apply_semantic(desugar::remove_continue)
+        .expect("remove_continue");
+    session
+        .apply_semantic(desugar::convert_luau_number)
+        .expect("convert_luau_number");
+    session
+        .apply_semantic(desugar::remove_method_call)
+        .expect("remove_method_call");
+    session
+        .apply_semantic(desugar::remove_method_definition)
+        .expect("remove_method_definition");
+    session
+        .apply_semantic(desugar::convert_function_to_assignment)
+        .expect("convert_function_to_assignment");
+    session
+        .apply_semantic_result(desugar::convert_local_function_to_assignment)
+        .expect("convert_local_function_to_assignment");
+    session
+        .apply_semantic(desugar::remove_attribute)
+        .expect("remove_attribute");
+    session
+        .apply_semantic(desugar::make_assignment_local)
+        .expect("make_assignment_local");
+
+    let renamed = session
+        .apply_semantic_result(r4::rules::rename_variables::rename_variables)
+        .expect("rename_variables");
+    assert!(renamed > 0, "the pipeline must rename symbols");
+
+    let output = session.generate();
+    let reparsed = parse(&output);
+    let model = analyze(&reparsed);
+
+    let mut identified = reparsed.clone();
+    validate_block_identities(&mut identified).expect("provenance must be valid");
+    let cfg = build_chunk(&reparsed, &model).expect("the CFG must build");
+    cfg.verify_invariants()
+        .expect("the CFG must satisfy its invariants");
+
+    // The pipeline must not leave a `SAFE_` runtime symbol behind.
+    for symbol in &model.symbols {
+        assert!(
+            !symbol.name.starts_with("SAFE_"),
+            "`{}` should have been renamed",
+            symbol.name
         );
     }
 }

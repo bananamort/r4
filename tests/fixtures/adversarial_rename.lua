@@ -16,9 +16,12 @@ consistently, every UNSAFE_ name survives, the symbol graph is unchanged and the
 output re-parses and re-analyzes.
 ]====]
 
--- Type aliases and generics are type bindings, never runtime symbols.
+-- Type aliases and generics are type bindings, never runtime symbols. Variadic
+-- type packs and generic defaults live in type space as well.
 type UNSAFE_Alias = { value: number }
 export type UNSAFE_Exported = { n: number }
+type UNSAFE_Pack<T...> = (T...) -> ()
+type UNSAFE_Default<T = number> = { value: T }
 
 do
     ----------------------------------------------------------------------
@@ -164,6 +167,14 @@ do
         __le = function(SAFE_a, SAFE_b)
             return true
         end,
+        __namecall = function(SAFE_t, ...)
+            return SAFE_select("#", ...)
+        end,
+        __iter = function(SAFE_t)
+            return SAFE_ipairs(SAFE_t)
+        end,
+        __mode = "kv",
+        __metatable = false,
     }
     SAFE_setmetatable(SAFE_subject, SAFE_meta)
 
@@ -206,6 +217,16 @@ do
     SAFE_assert(SAFE_key == "UNSAFE_outer_key")
     SAFE_assert(SAFE_value == "UNSAFE_outer_value")
     SAFE_assert(SAFE_seen == 1)
+
+    -- Luau generalized iteration: iterate a table directly, no iterator call.
+    local SAFE_generic = { ["UNSAFE_generic_key"] = "UNSAFE_generic_value" }
+    local SAFE_generic_seen = 0
+    for SAFE_generic_key, SAFE_generic_value in SAFE_generic do
+        SAFE_assert(SAFE_generic_key == "UNSAFE_generic_key")
+        SAFE_assert(SAFE_generic_value == "UNSAFE_generic_value")
+        SAFE_generic_seen = SAFE_generic_seen + 1
+    end
+    SAFE_assert(SAFE_generic_seen == 1)
 
     local SAFE_rounds = 0
     repeat
@@ -293,6 +314,14 @@ do
     SAFE_holder.UNSAFE_count += 4
     SAFE_assert(SAFE_holder.UNSAFE_count == 4)
 
+    -- Compound assignment through a dynamic bracket index expression.
+    local SAFE_slot = "UNSAFE_dynamic_slot"
+    local SAFE_bracket = { ["UNSAFE_dynamic_slot"] = 10 }
+    SAFE_bracket[SAFE_slot] += 5
+    SAFE_assert(SAFE_bracket[SAFE_slot] == 15)
+    SAFE_bracket[SAFE_slot] -= 3
+    SAFE_assert(SAFE_bracket["UNSAFE_dynamic_slot"] == 12)
+
     ----------------------------------------------------------------------
     -- 9. Luau types, casts, generics, if-expressions, continue, attributes.
     --    Type names and generic parameters are never runtime symbols.
@@ -309,6 +338,17 @@ do
     end
     SAFE_assert(SAFE_identity(5) == 5)
     SAFE_assert(SAFE_identity<number>(6) == 6)
+
+    local function SAFE_pack<T...>(...: T...)
+        return ...
+    end
+    local SAFE_packed_a, SAFE_packed_b = SAFE_pack(1, 2)
+    SAFE_assert(SAFE_packed_a == 1 and SAFE_packed_b == 2)
+
+    local SAFE_pack_typed: UNSAFE_Pack<number> = function(SAFE_value: number) end
+    SAFE_assert(SAFE_type(SAFE_pack_typed) == "function")
+    local SAFE_defaulted: UNSAFE_Default = { value = 1 }
+    SAFE_assert(SAFE_defaulted.value == 1)
 
     local SAFE_conditional = if SAFE_left then SAFE_right else 0
     SAFE_assert(SAFE_conditional == 1)
