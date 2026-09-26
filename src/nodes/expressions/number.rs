@@ -5,14 +5,40 @@ use crate::generator::utils::write_number;
 use crate::nodes::{Token, Trivia};
 
 /// Represents a decimal number.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct DecimalNumber {
     float: f64,
     exponent: Option<(i64, bool)>,
+    /// Set when the literal (or a folded result) is a Lua 5.3/5.4 integer, so it
+    /// can be printed and folded exactly instead of through `f64`. It is
+    /// deliberately not part of equality or `Debug`: structural equivalence and
+    /// round-tripping are about the numeric value, and the integer subtype is a
+    /// folding detail recovered per dialect.
+    integer: Option<i64>,
+    /// Set when the literal was written with a fractional point (`9.`, `9.5`).
+    /// An integral value with this set must be printed with a fraction so it
+    /// does not become an integer literal in Lua 5.3/5.4.
+    fractional: bool,
     token: Option<Token>,
 }
 
+impl PartialEq for DecimalNumber {
+    fn eq(&self, other: &Self) -> bool {
+        self.float == other.float && self.exponent == other.exponent && self.token == other.token
+    }
+}
+
 impl Eq for DecimalNumber {}
+
+impl std::fmt::Debug for DecimalNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecimalNumber")
+            .field("float", &self.float)
+            .field("exponent", &self.exponent)
+            .field("token", &self.token)
+            .finish()
+    }
+}
 
 impl DecimalNumber {
     /// Creates a new decimal number with the given floating-point value.
@@ -20,8 +46,47 @@ impl DecimalNumber {
         Self {
             float: value,
             exponent: None,
+            integer: None,
+            fractional: false,
             token: None,
         }
+    }
+
+    /// Creates a new decimal number holding an exact integer value.
+    pub fn new_integer(value: i64) -> Self {
+        Self {
+            float: value as f64,
+            exponent: None,
+            integer: Some(value),
+            fractional: false,
+            token: None,
+        }
+    }
+
+    /// Returns the exact integer value, if this number is a Lua 5.3/5.4 integer.
+    #[inline]
+    pub fn get_integer(&self) -> Option<i64> {
+        self.integer
+    }
+
+    /// Returns whether the literal was written with a fractional point.
+    #[inline]
+    pub fn has_fraction(&self) -> bool {
+        self.fractional
+    }
+
+    /// Marks this number as written with a fractional point.
+    pub fn with_fraction(mut self) -> Self {
+        self.fractional = true;
+        self.integer = None;
+        self
+    }
+
+    /// Marks this number as an exact Lua 5.3/5.4 integer.
+    pub fn with_integer(mut self, value: i64) -> Self {
+        self.integer = Some(value);
+        self.fractional = false;
+        self
     }
 
     /// Attaches a token to this decimal number.
@@ -54,6 +119,8 @@ impl DecimalNumber {
     /// or lowercase 'e' notation.
     pub fn with_exponent(mut self, exponent: i64, is_uppercase: bool) -> Self {
         self.exponent.replace((exponent, is_uppercase));
+        self.integer = None;
+        self.fractional = false;
         self
     }
 
@@ -289,6 +356,23 @@ impl NumberExpression {
             Self::Decimal(decimal) => decimal.compute_value(),
             Self::Hex(hex) => hex.compute_value(),
             Self::Binary(binary) => binary.compute_value(),
+        }
+    }
+
+    /// Returns the exact integer value of this literal under Lua 5.3/5.4 number
+    /// semantics, or `None` when the literal denotes a float.
+    ///
+    /// A decimal literal is an integer when it has neither a fractional part nor
+    /// an exponent; a hexadecimal or binary literal is an integer unless it has a
+    /// binary exponent.
+    pub fn compute_integer(&self) -> Option<i64> {
+        match self {
+            Self::Decimal(decimal) => decimal.get_integer(),
+            Self::Hex(hex) => hex.get_exponent().is_none().then(|| {
+                // Lua integer literals wrap around like two's-complement values.
+                hex.get_raw_integer() as i64
+            }),
+            Self::Binary(binary) => Some(binary.get_raw_value() as i64),
         }
     }
 
@@ -542,11 +626,25 @@ impl FromStr for NumberExpression {
                     )
                     .with_exponent(exponent, exponent_is_uppercase)
                 } else {
-                    let number = filter_underscore(value)
+                    let filtered = filter_underscore(value);
+                    let number = filtered
                         .parse::<f64>()
                         .map_err(|_| Self::Err::InvalidDecimalNumber)?;
 
-                    DecimalNumber::new(number)
+                    // A decimal literal without a fractional part and without an
+                    // exponent is a Lua 5.3/5.4 integer.
+                    if !value.contains('.') {
+                        if let Ok(integer) = filtered.parse::<i64>() {
+                            return Ok(DecimalNumber::new(number).with_integer(integer).into());
+                        }
+                    }
+
+                    let number = DecimalNumber::new(number);
+                    if value.contains('.') {
+                        number.with_fraction()
+                    } else {
+                        number
+                    }
                 }
                 .into()
             }
@@ -559,6 +657,47 @@ impl FromStr for NumberExpression {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    mod integer_subtype {
+        use super::*;
+        use crate::generator::utils::write_number;
+
+        #[test]
+        fn integer_literals_compute_an_integer() {
+            let number: NumberExpression = "123".parse().unwrap();
+            assert_eq!(number.compute_integer(), Some(123));
+
+            let number: NumberExpression = "0xFF".parse().unwrap();
+            assert_eq!(number.compute_integer(), Some(255));
+
+            let number: NumberExpression = "0b101".parse().unwrap();
+            assert_eq!(number.compute_integer(), Some(5));
+        }
+
+        #[test]
+        fn float_literals_do_not_compute_an_integer() {
+            let number: NumberExpression = "1.5".parse().unwrap();
+            assert_eq!(number.compute_integer(), None);
+
+            let number: NumberExpression = "1e2".parse().unwrap();
+            assert_eq!(number.compute_integer(), None);
+
+            let number: NumberExpression = "0x1p4".parse().unwrap();
+            assert_eq!(number.compute_integer(), None);
+        }
+
+        #[test]
+        fn integral_floats_keep_their_fraction_when_printed() {
+            let number: NumberExpression = "9.".parse().unwrap();
+            assert_eq!(write_number(&number), "9.0");
+
+            let number: NumberExpression = "9.0".parse().unwrap();
+            assert_eq!(write_number(&number), "9.0");
+
+            let number: NumberExpression = "9".parse().unwrap();
+            assert_eq!(write_number(&number), "9");
+        }
+    }
 
     mod decimal {
         use super::*;

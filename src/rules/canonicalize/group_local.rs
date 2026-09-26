@@ -74,6 +74,17 @@ impl GroupLocalProcessor<'_> {
     }
 
     fn should_merge(&self, first: &VariableAssignment, next: &mut VariableAssignment) -> bool {
+        // A `<close>` local becomes active only after its whole statement
+        // completes; merging declarations would change when it closes. Keep any
+        // attributed declaration in its own statement.
+        if first
+            .iter_variables()
+            .chain(next.iter_variables())
+            .any(|identifier| identifier.get_attribute().is_some())
+        {
+            return false;
+        }
+
         let first_value_count = first.values_len();
 
         if first.variables_len() > first_value_count && first_value_count != 0 {

@@ -10,6 +10,7 @@ pub mod remove_continue;
 pub mod remove_floor_division;
 pub mod remove_if_expression;
 pub mod remove_interpolated_string;
+pub mod remove_local_attributes;
 pub mod remove_method_call;
 pub mod remove_method_definition;
 pub mod remove_types;
@@ -28,6 +29,7 @@ pub use remove_if_expression::remove_if_expression;
 pub use remove_interpolated_string::{
     remove_interpolated_string, remove_interpolated_string_with_tostring,
 };
+pub use remove_local_attributes::remove_local_attributes;
 pub use remove_method_call::remove_method_call;
 pub use remove_method_definition::remove_method_definition;
 pub use remove_types::remove_types;

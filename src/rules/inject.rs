@@ -120,6 +120,7 @@ fn literal_expression(value: &LuaValue) -> Option<Expression> {
         LuaValue::Number(number) if !number.is_finite() => None,
         LuaValue::True
         | LuaValue::False
+        | LuaValue::Integer(_)
         | LuaValue::Nil
         | LuaValue::Number(_)
         | LuaValue::String(_) => value.clone().to_expression(),

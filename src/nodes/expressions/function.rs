@@ -280,6 +280,13 @@ impl FunctionExpression {
         }
     }
 
+    /// Removes the Lua 5.4 attribute (`<const>`/`<close>`) from every parameter.
+    pub fn clear_attributes(&mut self) {
+        for parameter in &mut self.parameters {
+            parameter.remove_attribute();
+        }
+    }
+
     /// Returns a mutable reference to the first token for this function expression,
     /// creating it if missing.
     pub fn mutate_first_token(&mut self) -> &mut Token {

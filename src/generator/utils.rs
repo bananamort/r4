@@ -253,6 +253,12 @@ pub fn write_number(number: &NumberExpression) -> String {
                 } else {
                     format!("{:e}", float)
                 }
+            } else if let Some(integer) = number.get_integer() {
+                integer.to_string()
+            } else if number.has_fraction() && float.fract() == 0.0 {
+                // Keep an integral value written with a point a float literal in
+                // Lua 5.3/5.4, where `9` and `9.0` have different subtypes.
+                format!("{:.1}", float)
             } else if float.fract() == 0.0 {
                 format!("{}", float)
             } else {

@@ -41,6 +41,11 @@ impl TypedIdentifier {
         self.attribute.as_deref()
     }
 
+    /// Removes and returns the Lua 5.4 local attribute (`<const>`/`<close>`).
+    pub fn remove_attribute(&mut self) -> Option<String> {
+        self.attribute.take()
+    }
+
     /// Sets the type for this identifier and returns the updated typed identifier.
     pub fn with_type(mut self, type_value: impl Into<Type>) -> Self {
         self.r#type = Some(type_value.into());

@@ -31,6 +31,15 @@ pub(crate) fn analyze(code: &str) -> (Block, SemanticModel) {
         .unwrap_or_else(|error| panic!("failed to parse and analyze `{code}`: {error}"))
 }
 
+/// Parses and analyzes `code` as Lua 5.3, so the model records the dialect that
+/// enables integer number semantics.
+pub(crate) fn analyze_lua53(code: &str) -> (Block, SemanticModel) {
+    Parser::default()
+        .lua53()
+        .parse_analyzed(code)
+        .unwrap_or_else(|error| panic!("failed to parse and analyze `{code}`: {error}"))
+}
+
 /// Parses `code` with token data and analyzes it.
 pub(crate) fn analyze_with_tokens(code: &str) -> (Block, SemanticModel) {
     let block = Parser::default()
@@ -51,6 +60,21 @@ pub(crate) fn analyze_lua52_with_tokens(code: &str) -> (Block, SemanticModel) {
         .parse(code)
         .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
     let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .unwrap_or_else(|error| panic!("semantic analysis failed for `{code}`: {error}"));
+    (block, model)
+}
+
+/// Parses `code` as Luau with token data and records the Luau dialect on the
+/// model, so dialect-gated passes see it.
+pub(crate) fn analyze_luau_with_tokens(code: &str) -> (Block, SemanticModel) {
+    let block = Parser::default()
+        .luau()
+        .preserve_tokens()
+        .parse(code)
+        .unwrap_or_else(|error| panic!("failed to parse `{code}`: {error}"));
+    let model = SemanticAnalyzer::new()
+        .with_dialect(crate::Dialect::Luau)
         .analyze(&block)
         .unwrap_or_else(|error| panic!("semantic analysis failed for `{code}`: {error}"));
     (block, model)

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::nodes::{Block, Identifier};
+use crate::parser::Dialect;
 
 use super::display::{SymbolDisplay, SymbolDisplayFormat};
 use super::error::SemanticQueryError;
@@ -70,6 +71,10 @@ pub struct SemanticModel {
     pub goto_bindings: Vec<GotoBinding>,
     /// All declared type aliases, indexed by [`TypeId`].
     pub types: Vec<TypeSymbol>,
+    /// The source dialect the block was parsed with, or [`Dialect::Default`]
+    /// when it was not determined. Rules whose rewrite is only sound for one
+    /// dialect consult this instead of assuming Luau.
+    dialect: Dialect,
     root_scope: ScopeId,
     chunk_scope: ScopeId,
     global_symbols: HashMap<String, SymbolId>,
@@ -94,6 +99,7 @@ impl SemanticModel {
         uses: Vec<Vec<SymbolUse>>,
         block_scopes: HashMap<u32, ScopeId>,
         origin: u32,
+        dialect: Dialect,
     ) -> Self {
         Self {
             symbols,
@@ -101,6 +107,7 @@ impl SemanticModel {
             labels,
             goto_bindings,
             types,
+            dialect,
             root_scope,
             chunk_scope,
             global_symbols,
@@ -108,6 +115,15 @@ impl SemanticModel {
             block_scopes,
             origin,
         }
+    }
+
+    /// Returns the source dialect the analyzed block was parsed with.
+    ///
+    /// [`Dialect::Default`] means the dialect was not determined; a rule that is
+    /// only sound for one dialect must treat it as "not that dialect".
+    #[inline]
+    pub fn dialect(&self) -> Dialect {
+        self.dialect
     }
 
     /// Returns the global environment scope.

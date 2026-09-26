@@ -16,23 +16,23 @@ fn evaluate(operator: BinaryOperator, left: f64, right: f64) -> LuaValue {
 fn folds_bitwise_operators_to_their_lua_values() {
     assert_eq!(
         evaluate(BinaryOperator::BitwiseAnd, 6.0, 3.0),
-        LuaValue::Number(2.0)
+        LuaValue::Integer(2)
     );
     assert_eq!(
         evaluate(BinaryOperator::BitwiseOr, 6.0, 3.0),
-        LuaValue::Number(7.0)
+        LuaValue::Integer(7)
     );
     assert_eq!(
         evaluate(BinaryOperator::BitwiseXor, 6.0, 3.0),
-        LuaValue::Number(5.0)
+        LuaValue::Integer(5)
     );
     assert_eq!(
         evaluate(BinaryOperator::ShiftLeft, 6.0, 3.0),
-        LuaValue::Number(48.0)
+        LuaValue::Integer(48)
     );
     assert_eq!(
         evaluate(BinaryOperator::ShiftRight, 6.0, 3.0),
-        LuaValue::Number(0.0)
+        LuaValue::Integer(0)
     );
 }
 
@@ -55,7 +55,7 @@ fn folds_unary_bitwise_not() {
         UnaryOperator::BitwiseNot,
         Expression::from(6.0),
     )));
-    assert_eq!(evaluated, LuaValue::Number(-7.0));
+    assert_eq!(evaluated, LuaValue::Integer(-7));
 
     // A non-integer operand declines.
     let evaluated = Evaluator::default().evaluate(&Expression::from(UnaryExpression::new(
@@ -78,6 +78,6 @@ fn bitwise_expressions_are_pure_and_have_no_side_effects() {
     assert!(!evaluator.can_return_multiple_values(&expression));
     assert_eq!(
         evaluator.evaluate_with(&expression, &|_| None),
-        Some(LuaValue::Number(5.0))
+        Some(LuaValue::Integer(5))
     );
 }

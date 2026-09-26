@@ -161,10 +161,16 @@ impl LoopInvariantAnalysis {
                         continue;
                     }
 
-                    let variable = assignment
+                    let identifier = assignment
                         .iter_variables()
                         .next()
-                        .expect("the single variable was checked above");
+                        .expect("the single identifier was checked above");
+                    // A `<close>` local closes its value when its scope exits.
+                    // Hoisting it out of the loop would close it once, at the
+                    // enclosing scope, instead of once per iteration.
+                    if identifier.get_attribute().is_some() {
+                        continue;
+                    }
                     let value = assignment
                         .iter_values()
                         .next()
@@ -175,7 +181,7 @@ impl LoopInvariantAnalysis {
                     }
 
                     let symbol = model
-                        .resolve_identifier(variable.get_identifier())
+                        .resolve_identifier(identifier.get_identifier())
                         .expect("liveness resolved every identifier in the graph");
                     let info = model.symbol(symbol);
                     if info.kind != SymbolKind::Local || info.is_captured() {

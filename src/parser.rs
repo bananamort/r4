@@ -94,7 +94,7 @@ impl Parser {
     /// When the dialect is [`Dialect::Default`] the dialect is detected from the
     /// source; an explicit dialect is used as-is.
     pub fn parse(&self, code: &str) -> Result<Block, ParserError> {
-        let ast_result = self.parse_selected(code)?;
+        let (ast_result, _) = self.parse_selected(code)?;
         if !ast_result.errors().is_empty() {
             return Err(ParserError::parsing(ast_result.errors().to_vec()));
         }
@@ -108,9 +108,14 @@ impl Parser {
     /// once; unless a `<<`/`>>` call makes the dialect genuinely ambiguous, the
     /// permissive grammar reads it exactly as every dialect that accepts it
     /// would, so one parse decides it.
-    fn parse_selected(&self, code: &str) -> Result<full_moon::ast::AstResult, ParserError> {
+    fn parse_selected(
+        &self,
+        code: &str,
+    ) -> Result<(full_moon::ast::AstResult, Dialect), ParserError> {
         if self.dialect != Dialect::Default {
-            return self.parse_fallible(code, self.dialect.lua_version());
+            return self
+                .parse_fallible(code, self.dialect.lua_version())
+                .map(|result| (result, self.dialect));
         }
 
         let scan = crate::dialect::scan(code);
@@ -133,7 +138,13 @@ impl Parser {
                     .fold(LuaVersion::lua51(), |version, dialect| {
                         version | dialect.lua_version()
                     });
-                return self.parse_fallible(code, version);
+                let resolved = match non_greedy.as_slice() {
+                    [dialect] => *dialect,
+                    _ => Dialect::Default,
+                };
+                return self
+                    .parse_fallible(code, version)
+                    .map(|result| (result, resolved));
             }
         }
 
@@ -143,7 +154,9 @@ impl Parser {
         // rather than guessed, without parsing either reading.
         if scan.may_diverge && scan.candidates.contains(&Dialect::Luau) {
             if let [Dialect::Luau] = scan.candidates.as_slice() {
-                return self.parse_fallible(code, Dialect::Luau.lua_version());
+                return self
+                    .parse_fallible(code, Dialect::Luau.lua_version())
+                    .map(|result| (result, Dialect::Luau));
             }
             return Err(ParserError::ambiguous_dialect(scan.candidates));
         }
@@ -152,19 +165,30 @@ impl Parser {
         // source whose only surviving dialect is known, parses directly as that
         // dialect.
         if scan.candidates.as_slice() == [Dialect::Luau]
-            || scan.candidates.as_slice() == [Dialect::Lua51, Dialect::Luau]
             || (scan.luau_instantiation && scan.candidates.contains(&Dialect::Luau))
         {
-            return self.parse_fallible(code, Dialect::Luau.lua_version());
+            return self
+                .parse_fallible(code, Dialect::Luau.lua_version())
+                .map(|result| (result, Dialect::Luau));
+        }
+        if scan.candidates.as_slice() == [Dialect::Lua51, Dialect::Luau] {
+            // `goto` as an ordinary name reads identically in both, so the
+            // source dialect stays undetermined.
+            return self
+                .parse_fallible(code, Dialect::Luau.lua_version())
+                .map(|result| (result, Dialect::Default));
         }
         if let [dialect] = scan.candidates.as_slice() {
-            return self.parse_fallible(code, dialect.lua_version());
+            return self
+                .parse_fallible(code, dialect.lua_version())
+                .map(|result| (result, *dialect));
         }
 
         // Otherwise one permissive parse decides it. A source the permissive
         // grammar rejects is reported as a syntax error so the caller can name a
         // dialect; it is never guessed.
         self.parse_fallible(code, LuaVersion::default())
+            .map(|result| (result, Dialect::Default))
     }
 
     /// Parses Lua code, returning the recovered tree and every syntax
@@ -178,7 +202,7 @@ impl Parser {
         &self,
         code: &str,
     ) -> Result<(Block, Vec<crate::diagnostic::Diagnostic>), ParserError> {
-        let ast_result = self.parse_selected(code)?;
+        let (ast_result, _) = self.parse_selected(code)?;
         let diagnostics = ParserError::parsing(ast_result.errors().to_vec()).to_diagnostics();
         let block = self.convert(ast_result.into_ast())?;
         Ok((block, diagnostics))
@@ -281,8 +305,14 @@ impl Parser {
     /// The resulting model is bound structurally: semantic queries and
     /// transformation passes do not require token preservation.
     pub fn parse_analyzed(&self, code: &str) -> Result<(Block, SemanticModel), AnalyzedParseError> {
-        let block = self.parse(code)?;
-        let model = SemanticAnalyzer::new().analyze(&block)?;
+        let (ast_result, dialect) = self.parse_selected(code)?;
+        if !ast_result.errors().is_empty() {
+            return Err(ParserError::parsing(ast_result.errors().to_vec()).into());
+        }
+        let block = self.convert(ast_result.into_ast())?;
+        let model = SemanticAnalyzer::new()
+            .with_dialect(dialect)
+            .analyze(&block)?;
         Ok((block, model))
     }
 

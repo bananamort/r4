@@ -67,22 +67,22 @@ fn evaluates_bitwise_operators() {
     let lookup = |_: &r4::nodes::Identifier| None;
 
     let cases = [
-        ("return 1 | 2", Some(3.0)),
-        ("return 6 & 3", Some(2.0)),
-        ("return 6 ~ 3", Some(5.0)),
-        ("return 1 << 4", Some(16.0)),
-        ("return 16 >> 2", Some(4.0)),
-        ("return ~0", Some(-1.0)),
-        ("return 1 << 64", Some(0.0)),
+        ("return 1 | 2", Some(LuaValue::Integer(3))),
+        ("return 6 & 3", Some(LuaValue::Integer(2))),
+        ("return 6 ~ 3", Some(LuaValue::Integer(5))),
+        ("return 1 << 4", Some(LuaValue::Integer(16))),
+        ("return 16 >> 2", Some(LuaValue::Integer(4))),
+        ("return ~0", Some(LuaValue::Integer(-1))),
+        ("return 1 << 64", Some(LuaValue::Integer(0))),
         // A negative shift reverses direction (Lua 5.3).
-        ("return 1 << -1", Some(0.0)),
+        ("return 1 << -1", Some(LuaValue::Integer(0))),
     ];
 
     for (code, expected) in cases {
         let expression = returned_expression(code, Parser::default().lua53());
         let value = evaluator.evaluate_with(&expression, &lookup);
         match expected {
-            Some(number) => assert_eq!(value, Some(LuaValue::from(number)), "{code}"),
+            Some(number) => assert_eq!(value, Some(number), "{code}"),
             None => assert_eq!(value, None, "{code}"),
         }
     }

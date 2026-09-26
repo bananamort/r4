@@ -75,7 +75,10 @@ fn darklua_apply(rule: &dyn Rule, code: &str) -> String {
 /// Fallible passes are wrapped by the caller so an error fails the test
 /// instead of being ignored.
 fn r4_apply(pass: impl FnOnce(&mut r4::nodes::Block, &SemanticModel), code: &str) -> String {
+    // darklua is Luau-only, so r4 is compared as Luau too; this also gives the
+    // semantic model the dialect that dialect-gated passes consult.
     let (mut block, model) = R4Parser::default()
+        .luau()
         .parse_analyzed(code)
         .unwrap_or_else(|error| panic!("r4 failed to parse `{code}`: {error}"));
     pass(&mut block, &model);

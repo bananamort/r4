@@ -1,10 +1,12 @@
-use crate::nodes::{Expression, NumberExpression, StringExpression};
+use crate::nodes::{DecimalNumber, Expression, NumberExpression, StringExpression};
 
 /// Represents an evaluated Expression result.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum LuaValue {
     False,
     Function,
+    /// A Lua 5.3/5.4 integer value.
+    Integer(i64),
     Nil,
     Number(f64),
     String(Vec<u8>),
@@ -76,6 +78,7 @@ impl LuaValue {
             Self::True => Some(Expression::from(true)),
             Self::Nil => Some(Expression::nil()),
             Self::String(value) => Some(StringExpression::from_value(value).into()),
+            Self::Integer(value) => Some(Expression::from(DecimalNumber::new_integer(value))),
             Self::Number(value) => Some(Expression::from(value)),
             _ => None,
         }
@@ -112,6 +115,7 @@ impl LuaValue {
     /// possible and return the same value otherwise.
     pub fn string_coercion(self) -> Self {
         match &self {
+            Self::Integer(value) => Some(Self::from(value.to_string())),
             Self::Number(value) => Some(Self::from(value.to_string())),
             _ => None,
         }
@@ -170,6 +174,12 @@ impl<const N: usize> From<&[u8; N]> for LuaValue {
 impl From<f64> for LuaValue {
     fn from(value: f64) -> Self {
         Self::Number(value)
+    }
+}
+
+impl From<i64> for LuaValue {
+    fn from(value: i64) -> Self {
+        Self::Integer(value)
     }
 }
 

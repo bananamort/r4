@@ -41,6 +41,12 @@ pub fn desugar_to_lua51(block: &mut Block) -> Result<(), SemanticError> {
     desugar::remove_types(block, &model);
 
     let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::remove_attribute(block, &model);
+
+    let model = SemanticAnalyzer::new().analyze(block)?;
+    desugar::remove_local_attributes(block, &model);
+
+    let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::remove_compound_assign(block, &model);
 
     let model = SemanticAnalyzer::new().analyze(block)?;

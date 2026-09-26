@@ -19,6 +19,7 @@ macro_rules! matches_any_keyword {
             | "false"
             | "for"
             | "function"
+            | "goto"
             | "if"
             | "in"
             | "local"
@@ -65,5 +66,8 @@ mod test {
         assert!(!is_valid_identifier("1bar"));
         assert!(!is_valid_identifier("var "));
         assert!(!is_valid_identifier("sp ace"));
+        // `goto` is reserved from Lua 5.2 on, so a field expression would not
+        // parse in every supported dialect.
+        assert!(!is_valid_identifier("goto"));
     }
 }

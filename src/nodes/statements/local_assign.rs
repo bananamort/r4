@@ -338,6 +338,13 @@ impl VariableAssignment {
         }
     }
 
+    /// Removes the Lua 5.4 attribute (`<const>`/`<close>`) from all identifiers.
+    pub fn clear_attributes(&mut self) {
+        for identifier in &mut self.variables {
+            identifier.remove_attribute();
+        }
+    }
+
     /// Returns a mutable reference to the first token for this statement, creating it if missing.
     pub fn mutate_first_token(&mut self) -> &mut Token {
         if self.tokens.is_none() {

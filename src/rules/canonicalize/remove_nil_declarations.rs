@@ -13,6 +13,16 @@ impl NodeProcessor for Processor<'_> {
             return;
         }
 
+        // Dropping a trailing `nil` reorders the declared identifiers; an
+        // attributed declaration (`<close>`/`<const>`) must keep its binding, so
+        // leave the whole statement untouched.
+        if assignment
+            .iter_variables()
+            .any(|identifier| identifier.get_attribute().is_some())
+        {
+            return;
+        }
+
         {
             let mut pop_extra_value_at = Vec::new();
             for (index, extra_value) in assignment

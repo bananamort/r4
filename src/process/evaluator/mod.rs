@@ -2,15 +2,31 @@ mod lua_value;
 
 pub use lua_value::*;
 
+use std::cmp::Ordering;
+
 use crate::nodes::*;
 
 /// A struct to convert an Expression node into a LuaValue object.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Evaluator {
     pure_metamethods: bool,
+    /// When set, number literals are Lua 5.3/5.4 integers and arithmetic follows
+    /// the integer rules instead of always producing floats.
+    integers: bool,
 }
 
 impl Evaluator {
+    /// Enables Lua 5.3/5.4 integer number semantics.
+    pub fn with_integer_numbers(mut self) -> Self {
+        self.integers = true;
+        self
+    }
+
+    /// Returns whether Lua 5.3/5.4 integer number semantics are enabled.
+    #[inline]
+    pub fn integer_numbers(&self) -> bool {
+        self.integers
+    }
     /// When evaluating expressions related to tables, this value tells the evaluator if
     /// metamethods can have side effects. For example, indexing a normal table in Lua does not
     /// have any side effects, but if the table is a metatable, it's `__index` metamethod can
@@ -20,12 +36,22 @@ impl Evaluator {
         self
     }
 
+    /// Evaluates a number literal according to the enabled number semantics.
+    fn number_value(&self, number: &NumberExpression) -> LuaValue {
+        if self.integers {
+            if let Some(integer) = number.compute_integer() {
+                return LuaValue::Integer(integer);
+            }
+        }
+        LuaValue::Number(number.compute_value())
+    }
+
     pub fn evaluate(&self, expression: &Expression) -> LuaValue {
         match expression {
             Expression::False(_) => LuaValue::False,
             Expression::Function(_) => LuaValue::Function,
             Expression::Nil(_) => LuaValue::Nil,
-            Expression::Number(number) => LuaValue::from(number.compute_value()),
+            Expression::Number(number) => self.number_value(number),
             Expression::String(string) => LuaValue::from(string.get_value()),
             Expression::Table(_) => LuaValue::Table,
             Expression::True(_) => LuaValue::True,
@@ -55,6 +81,7 @@ impl Evaluator {
                                     result.extend_from_slice(&string);
                                 }
                                 LuaValue::Function
+                                | LuaValue::Integer(_)
                                 | LuaValue::Number(_)
                                 | LuaValue::Table
                                 | LuaValue::Unknown => return LuaValue::Unknown,
@@ -431,6 +458,7 @@ impl Evaluator {
         match value {
             LuaValue::False
             | LuaValue::Function
+            | LuaValue::Integer(_)
             | LuaValue::Nil
             | LuaValue::Number(_)
             | LuaValue::String(_)
@@ -464,15 +492,13 @@ impl Evaluator {
                     _ => LuaValue::Unknown,
                 }
             }
-            BinaryOperator::Plus => self.evaluate_math(expression, |a, b| a + b),
-            BinaryOperator::Minus => self.evaluate_math(expression, |a, b| a - b),
-            BinaryOperator::Asterisk => self.evaluate_math(expression, |a, b| a * b),
-            BinaryOperator::Slash => self.evaluate_math(expression, |a, b| a / b),
-            BinaryOperator::DoubleSlash => self.evaluate_math(expression, |a, b| (a / b).floor()),
-            BinaryOperator::Caret => self.evaluate_math(expression, |a, b| a.powf(b)),
-            BinaryOperator::Percent => {
-                self.evaluate_math(expression, |a, b| a - b * (a / b).floor())
-            }
+            BinaryOperator::Plus
+            | BinaryOperator::Minus
+            | BinaryOperator::Asterisk
+            | BinaryOperator::Slash
+            | BinaryOperator::DoubleSlash
+            | BinaryOperator::Caret
+            | BinaryOperator::Percent => self.evaluate_arithmetic(expression),
             BinaryOperator::Concat => {
                 match (
                     self.evaluate(expression.left()).string_coercion(),
@@ -485,12 +511,10 @@ impl Evaluator {
                     _ => LuaValue::Unknown,
                 }
             }
-            BinaryOperator::LowerThan => self.evaluate_relational(expression, |a, b| a < b),
-            BinaryOperator::LowerOrEqualThan => self.evaluate_relational(expression, |a, b| a <= b),
-            BinaryOperator::GreaterThan => self.evaluate_relational(expression, |a, b| a > b),
-            BinaryOperator::GreaterOrEqualThan => {
-                self.evaluate_relational(expression, |a, b| a >= b)
-            }
+            BinaryOperator::LowerThan
+            | BinaryOperator::LowerOrEqualThan
+            | BinaryOperator::GreaterThan
+            | BinaryOperator::GreaterOrEqualThan => self.evaluate_relational(expression),
             BinaryOperator::BitwiseAnd
             | BinaryOperator::BitwiseOr
             | BinaryOperator::BitwiseXor
@@ -510,52 +534,86 @@ impl Evaluator {
             (LuaValue::True, LuaValue::True)
             | (LuaValue::False, LuaValue::False)
             | (LuaValue::Nil, LuaValue::Nil) => LuaValue::True,
-            (LuaValue::Number(a), LuaValue::Number(b)) => {
-                LuaValue::from((a - b).abs() < f64::EPSILON)
-            }
+            (
+                LuaValue::Integer(_) | LuaValue::Number(_),
+                LuaValue::Integer(_) | LuaValue::Number(_),
+            ) => LuaValue::from(
+                Self::compare_numbers(left.clone(), right.clone()) == Some(Ordering::Equal),
+            ),
             (LuaValue::String(a), LuaValue::String(b)) => LuaValue::from(a == b),
             _ => LuaValue::False,
         }
     }
 
-    fn evaluate_math<F>(&self, expression: &BinaryExpression, operation: F) -> LuaValue
-    where
-        F: Fn(f64, f64) -> f64,
-    {
-        let left = self.evaluate(expression.left()).number_coercion();
-
-        if let LuaValue::Number(left) = left {
-            let right = self.evaluate(expression.right()).number_coercion();
-
-            if let LuaValue::Number(right) = right {
-                LuaValue::Number(operation(left, right))
-            } else {
-                LuaValue::Unknown
-            }
-        } else {
-            LuaValue::Unknown
-        }
+    fn evaluate_arithmetic(&self, expression: &BinaryExpression) -> LuaValue {
+        let left = self.evaluate(expression.left());
+        let right = self.evaluate(expression.right());
+        Self::arithmetic(expression.operator(), left, right, self.integers)
+            .unwrap_or(LuaValue::Unknown)
     }
 
-    fn evaluate_relational<F>(&self, expression: &BinaryExpression, operation: F) -> LuaValue
-    where
-        F: Fn(f64, f64) -> bool,
-    {
+    /// Applies an arithmetic operator with Lua 5.3/5.4 number semantics when
+    /// `integers` is set: `+`, `-` and `*` stay integers, `/` and `^` produce a
+    /// float, and `//` and `%` follow the floor rules. Division or modulo by an
+    /// integer zero is an error in Lua and is not folded.
+    fn arithmetic(
+        operator: BinaryOperator,
+        left: LuaValue,
+        right: LuaValue,
+        integers: bool,
+    ) -> Option<LuaValue> {
+        let left = left.number_coercion();
+        let right = right.number_coercion();
+
+        if integers {
+            if let (LuaValue::Integer(a), LuaValue::Integer(b)) = (&left, &right) {
+                let (a, b) = (*a, *b);
+                return Some(match operator {
+                    BinaryOperator::Plus => LuaValue::Integer(a.wrapping_add(b)),
+                    BinaryOperator::Minus => LuaValue::Integer(a.wrapping_sub(b)),
+                    BinaryOperator::Asterisk => LuaValue::Integer(a.wrapping_mul(b)),
+                    BinaryOperator::Slash => LuaValue::Number(a as f64 / b as f64),
+                    BinaryOperator::DoubleSlash if b == 0 => return None,
+                    BinaryOperator::DoubleSlash => LuaValue::Integer(floor_division(a, b)),
+                    BinaryOperator::Percent if b == 0 => return None,
+                    BinaryOperator::Percent => LuaValue::Integer(floor_modulo(a, b)),
+                    BinaryOperator::Caret => LuaValue::Number((a as f64).powf(b as f64)),
+                    _ => return None,
+                });
+            }
+        }
+
+        let LuaValue::Number(left) = left else {
+            return None;
+        };
+        let LuaValue::Number(right) = right else {
+            return None;
+        };
+
+        let value = match operator {
+            BinaryOperator::Plus => left + right,
+            BinaryOperator::Minus => left - right,
+            BinaryOperator::Asterisk => left * right,
+            BinaryOperator::Slash => left / right,
+            BinaryOperator::DoubleSlash => (left / right).floor(),
+            BinaryOperator::Caret => left.powf(right),
+            BinaryOperator::Percent => left - right * (left / right).floor(),
+            _ => return None,
+        };
+        Some(LuaValue::Number(value))
+    }
+
+    fn evaluate_relational(&self, expression: &BinaryExpression) -> LuaValue {
         let left = self.evaluate(expression.left());
 
         match left {
-            LuaValue::Number(left) => {
+            LuaValue::Integer(_) | LuaValue::Number(_) => {
                 let right = self.evaluate(expression.right());
-
-                if let LuaValue::Number(right) = right {
-                    if operation(left, right) {
-                        LuaValue::True
-                    } else {
-                        LuaValue::False
-                    }
-                } else {
-                    LuaValue::Unknown
-                }
+                Self::compare_numbers(left, right)
+                    .map(|ordering| {
+                        LuaValue::from(compare_ordering(ordering, expression.operator()))
+                    })
+                    .unwrap_or(LuaValue::Unknown)
             }
             LuaValue::String(left) => {
                 let right = self.evaluate(expression.right());
@@ -567,6 +625,20 @@ impl Evaluator {
                 }
             }
             _ => LuaValue::Unknown,
+        }
+    }
+
+    /// Compares two numbers using Lua 5.3/5.4 rules, comparing integer pairs
+    /// exactly and integer/float pairs without losing the integer's precision.
+    fn compare_numbers(left: LuaValue, right: LuaValue) -> Option<Ordering> {
+        match (left, right) {
+            (LuaValue::Integer(a), LuaValue::Integer(b)) => Some(a.cmp(&b)),
+            (LuaValue::Integer(a), LuaValue::Number(b)) => compare_integer_and_float(a, b),
+            (LuaValue::Number(a), LuaValue::Integer(b)) => {
+                compare_integer_and_float(b, a).map(Ordering::reverse)
+            }
+            (LuaValue::Number(a), LuaValue::Number(b)) => a.partial_cmp(&b),
+            _ => None,
         }
     }
 
@@ -591,7 +663,8 @@ impl Evaluator {
                 .unwrap_or(LuaValue::Unknown),
             UnaryOperator::Minus => {
                 match self.evaluate(expression.get_expression()).number_coercion() {
-                    LuaValue::Number(value) => LuaValue::from(-value),
+                    LuaValue::Integer(value) => LuaValue::Integer(value.wrapping_neg()),
+                    LuaValue::Number(value) => LuaValue::Number(-value),
                     _ => LuaValue::Unknown,
                 }
             }
@@ -643,7 +716,7 @@ impl Evaluator {
             Expression::False(_) => Some(LuaValue::False),
             Expression::Function(_) => Some(LuaValue::Function),
             Expression::Nil(_) => Some(LuaValue::Nil),
-            Expression::Number(number) => Some(LuaValue::from(number.compute_value())),
+            Expression::Number(number) => Some(self.number_value(number)),
             Expression::String(string) => Some(LuaValue::from(string.get_value())),
             Expression::Table(_) => Some(LuaValue::Table),
             Expression::True(_) => Some(LuaValue::True),
@@ -728,35 +801,10 @@ impl Evaluator {
                     | BinaryOperator::BitwiseXor
                     | BinaryOperator::ShiftLeft
                     | BinaryOperator::ShiftRight => Self::bitwise(operator, left, right),
-                    _ => Self::evaluate_math_operator(operator, left, right),
+                    _ => Self::arithmetic(operator, left, right, self.integers),
                 }
             }
         }
-    }
-
-    fn evaluate_math_operator(
-        operator: BinaryOperator,
-        left: LuaValue,
-        right: LuaValue,
-    ) -> Option<LuaValue> {
-        let LuaValue::Number(left) = left.number_coercion() else {
-            return None;
-        };
-        let LuaValue::Number(right) = right.number_coercion() else {
-            return None;
-        };
-
-        let value = match operator {
-            BinaryOperator::Plus => left + right,
-            BinaryOperator::Minus => left - right,
-            BinaryOperator::Asterisk => left * right,
-            BinaryOperator::Slash => left / right,
-            BinaryOperator::DoubleSlash => (left / right).floor(),
-            BinaryOperator::Caret => left.powf(right),
-            BinaryOperator::Percent => left - right * (left / right).floor(),
-            _ => return None,
-        };
-        Some(LuaValue::Number(value))
     }
 
     /// Folds a Lua 5.3 bitwise operator over integer-valued operands.
@@ -774,25 +822,28 @@ impl Evaluator {
             BinaryOperator::ShiftRight => Self::shift(left, right, false),
             _ => return None,
         };
-        Some(LuaValue::from(value as f64))
+        Some(LuaValue::Integer(value))
     }
 
     fn bitwise_not(value: LuaValue) -> Option<LuaValue> {
-        Some(LuaValue::from((!Self::to_integer(value)?) as f64))
+        Some(LuaValue::Integer(!Self::to_integer(value)?))
     }
 
     fn to_integer(value: LuaValue) -> Option<i64> {
-        let LuaValue::Number(value) = value.number_coercion() else {
-            return None;
-        };
-        if !value.is_finite()
-            || value.fract() != 0.0
-            || value < i64::MIN as f64
-            || value > i64::MAX as f64
-        {
-            return None;
+        match value.number_coercion() {
+            LuaValue::Integer(value) => Some(value),
+            LuaValue::Number(value) => {
+                if !value.is_finite()
+                    || value.fract() != 0.0
+                    || value < i64::MIN as f64
+                    || value > i64::MAX as f64
+                {
+                    return None;
+                }
+                Some(value as i64)
+            }
+            _ => None,
         }
-        Some(value as i64)
     }
 
     /// Implements the Lua 5.3 shift rules: a negative shift reverses direction
@@ -819,19 +870,14 @@ impl Evaluator {
         left: LuaValue,
         right: LuaValue,
     ) -> Option<LuaValue> {
-        match (left, right) {
-            (LuaValue::Number(left), LuaValue::Number(right)) => {
-                let result = match operator {
-                    BinaryOperator::LowerThan => left < right,
-                    BinaryOperator::LowerOrEqualThan => left <= right,
-                    BinaryOperator::GreaterThan => left > right,
-                    BinaryOperator::GreaterOrEqualThan => left >= right,
-                    _ => return None,
-                };
-                Some(LuaValue::from(result))
-            }
+        match (&left, &right) {
+            (
+                LuaValue::Integer(_) | LuaValue::Number(_),
+                LuaValue::Integer(_) | LuaValue::Number(_),
+            ) => Self::compare_numbers(left, right)
+                .map(|ordering| LuaValue::from(compare_ordering(ordering, operator))),
             (LuaValue::String(left), LuaValue::String(right)) => {
-                match self.compare_strings(&left, &right, operator) {
+                match self.compare_strings(left, right, operator) {
                     LuaValue::Unknown => None,
                     value => Some(value),
                 }
@@ -859,6 +905,7 @@ impl Evaluator {
         match expression.operator() {
             UnaryOperator::Not => Some(LuaValue::from(!value.is_truthy()?)),
             UnaryOperator::Minus => match value.number_coercion() {
+                LuaValue::Integer(number) => Some(LuaValue::Integer(number.wrapping_neg())),
                 LuaValue::Number(number) => Some(LuaValue::from(-number)),
                 _ => None,
             },
@@ -918,6 +965,7 @@ impl Evaluator {
                         // Matches `Evaluator::evaluate`, which cannot produce a
                         // textual form for these values.
                         LuaValue::Function
+                        | LuaValue::Integer(_)
                         | LuaValue::Number(_)
                         | LuaValue::Table
                         | LuaValue::Unknown => return None,
@@ -954,6 +1002,57 @@ impl Evaluator {
             }
             Prefix::Call(_) | Prefix::Field(_) | Prefix::Index(_) => None,
         }
+    }
+}
+
+/// Compares an integer with a float without rounding the integer through `f64`.
+fn compare_integer_and_float(integer: i64, float: f64) -> Option<Ordering> {
+    if float.is_nan() {
+        return None;
+    }
+    if float >= i64::MAX as f64 {
+        return Some(Ordering::Less);
+    }
+    if float < i64::MIN as f64 {
+        return Some(Ordering::Greater);
+    }
+    let floored = float.floor();
+    let floored_integer = floored as i64;
+    Some(match integer.cmp(&floored_integer) {
+        Ordering::Equal if float > floored => Ordering::Less,
+        ordering => ordering,
+    })
+}
+
+/// Maps a numeric ordering to the result of a relational operator.
+fn compare_ordering(ordering: Ordering, operator: BinaryOperator) -> bool {
+    match operator {
+        BinaryOperator::LowerThan => ordering == Ordering::Less,
+        BinaryOperator::LowerOrEqualThan => ordering != Ordering::Greater,
+        BinaryOperator::GreaterThan => ordering == Ordering::Greater,
+        BinaryOperator::GreaterOrEqualThan => ordering != Ordering::Less,
+        _ => false,
+    }
+}
+
+/// Lua 5.3/5.4 floor division for integers.
+fn floor_division(left: i64, right: i64) -> i64 {
+    let quotient = left.wrapping_div(right);
+    let remainder = left.wrapping_rem(right);
+    if remainder != 0 && ((remainder < 0) != (right < 0)) {
+        quotient.wrapping_sub(1)
+    } else {
+        quotient
+    }
+}
+
+/// Lua 5.3/5.4 floor modulo for integers.
+fn floor_modulo(left: i64, right: i64) -> i64 {
+    let remainder = left.wrapping_rem(right);
+    if remainder != 0 && ((remainder < 0) != (right < 0)) {
+        remainder.wrapping_add(right)
+    } else {
+        remainder
     }
 }
 

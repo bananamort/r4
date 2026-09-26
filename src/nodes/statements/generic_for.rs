@@ -141,6 +141,13 @@ impl GenericForStatement {
         }
     }
 
+    /// Removes the Lua 5.4 attribute from all identifiers.
+    pub fn clear_attributes(&mut self) {
+        for identifier in &mut self.identifiers {
+            identifier.remove_attribute();
+        }
+    }
+
     super::impl_token_fns!(iter = [tokens] children = [identifiers]);
 
     /// Returns a mutable reference to the first token for this statement, creating it if missing.

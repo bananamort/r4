@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::nodes::{Block, BlockIdentity, Identifier};
+use crate::parser::Dialect;
 
 use super::error::{SemanticError, SemanticOptions, SemanticResult};
 use super::label::{GotoLabel, GotoSite, LabelId};
@@ -54,6 +55,7 @@ impl SemanticAnalysis {
 #[derive(Clone, Debug, Default)]
 pub struct SemanticAnalyzer {
     options: SemanticOptions,
+    dialect: Dialect,
 }
 
 impl SemanticAnalyzer {
@@ -62,9 +64,27 @@ impl SemanticAnalyzer {
         Self::default()
     }
 
+    /// Sets the source dialect the analyzed block was parsed with.
+    ///
+    /// Rules whose rewrite is only sound for one dialect consult the model's
+    /// dialect; leaving it at [`Dialect::Default`] means "not determined".
+    pub fn with_dialect(mut self, dialect: Dialect) -> Self {
+        self.dialect = dialect;
+        self
+    }
+
+    /// Returns the source dialect recorded in the model.
+    #[inline]
+    pub fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+
     /// Creates a new analyzer with the given options.
     pub fn with_options(options: SemanticOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            ..Self::default()
+        }
     }
 
     /// Enables strict global checking: undeclared names produce an error instead
@@ -94,13 +114,16 @@ impl SemanticAnalyzer {
     pub fn with_directives(&self, directives: &super::Directives) -> Self {
         let mut options = self.options.clone();
         options.apply_directives(directives);
-        Self { options }
+        Self {
+            options,
+            dialect: self.dialect,
+        }
     }
 
     /// Analyzes a block (typically the root chunk of a file) and produces a
     /// [`SemanticModel`], stopping at the first error.
     pub fn analyze(&self, block: &Block) -> SemanticResult<SemanticModel> {
-        AnalyzerState::new(self.options.clone(), false).analyze(block)
+        AnalyzerState::new(self.options.clone(), self.dialect, false).analyze(block)
     }
 
     /// Analyzes a block, collecting every error and still producing a model.
@@ -109,7 +132,7 @@ impl SemanticAnalyzer {
     /// unresolved types and goto/label errors and reports all of them instead
     /// of stopping at the first.
     pub fn analyze_collecting(&self, block: &Block) -> SemanticAnalysis {
-        AnalyzerState::new(self.options.clone(), true).analyze_collecting(block)
+        AnalyzerState::new(self.options.clone(), self.dialect, true).analyze_collecting(block)
     }
 }
 
@@ -120,6 +143,7 @@ impl SemanticAnalyzer {
 /// operate on the same state.
 pub(super) struct AnalyzerState {
     pub(super) options: SemanticOptions,
+    pub(super) dialect: Dialect,
     pub(super) symbols: Vec<Symbol>,
     pub(super) scopes: Vec<Scope>,
     pub(super) labels: Vec<GotoLabel>,
@@ -144,9 +168,10 @@ pub(super) struct AnalyzerState {
 }
 
 impl AnalyzerState {
-    pub(super) fn new(options: SemanticOptions, collect_errors: bool) -> Self {
+    pub(super) fn new(options: SemanticOptions, dialect: Dialect, collect_errors: bool) -> Self {
         Self {
             options,
+            dialect,
             symbols: Vec::new(),
             scopes: Vec::new(),
             labels: Vec::new(),
@@ -217,6 +242,7 @@ impl AnalyzerState {
             self.uses,
             self.block_scopes,
             self.origin,
+            self.dialect,
         );
         Ok((model, errors))
     }

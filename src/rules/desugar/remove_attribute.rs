@@ -20,8 +20,10 @@ impl NodeProcessor for Processor {
 
 /// Removes every Luau attribute (`@native`, `@checked`, ...) from functions.
 ///
-/// Attributes only carry tooling hints, so removing them never changes
-/// runtime behavior.
+/// Attributes only carry tooling hints, so removing them never changes runtime
+/// behavior. The Lua 5.4 local attributes (`<const>`/`<close>`) are *not*
+/// removed here: `<close>` carries a runtime guarantee, so it is only dropped by
+/// the explicit lowering pipeline, never by this pass.
 pub fn remove_attribute(block: &mut Block, _model: &SemanticModel) {
     let mut processor = Processor;
     DefaultVisitor::visit_block(block, &mut processor);

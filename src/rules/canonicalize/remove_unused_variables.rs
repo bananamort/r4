@@ -177,9 +177,13 @@ impl Processor<'_> {
                     let identifier = assignment
                         .iter_variables()
                         .next()
-                        .expect("a local assignment has at least one variable")
-                        .get_identifier();
-                    self.removable_symbol(identifier).is_some()
+                        .expect("a local assignment has at least one identifier");
+                    // A `<close>` local closes its value when the scope exits;
+                    // removing the declaration would drop that call. A `<const>`
+                    // local is left alone for symmetry — the pass never needs to
+                    // rewrite an attributed declaration.
+                    identifier.get_attribute().is_none()
+                        && self.removable_symbol(identifier.get_identifier()).is_some()
                 };
 
                 if !is_unused {
