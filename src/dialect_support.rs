@@ -495,4 +495,11 @@ mod test {
             Ok(())
         );
     }
+
+    #[test]
+    fn errors_are_send_sync_static() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+        assert_send_sync_static::<DialectSupportError>();
+        assert_send_sync_static::<crate::rules::DesugarError>();
+    }
 }
