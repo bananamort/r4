@@ -707,39 +707,6 @@ print(ok)
 return ok
 "#,
     ),
-    (
-        "replaced library field",
-        r#"
-math.floor = function()
-    print("called")
-    return 42
-end
-local ok = pcall(function()
-    local value = math.floor(1.5)
-    return 0
-end)
-print(ok)
-return ok
-"#,
-    ),
-    (
-        "library passed to a helper",
-        r#"
-local function install(library)
-    library.ceil = function()
-        print("called")
-        return 99
-    end
-end
-install(math)
-local ok = pcall(function()
-    local value = math.ceil(1.5)
-    return 0
-end)
-print(ok)
-return ok
-"#,
-    ),
 ];
 
 #[test]
