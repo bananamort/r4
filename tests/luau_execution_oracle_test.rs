@@ -527,8 +527,10 @@ return table.concat(parts, ",")
 ///
 /// Several of them contain an operation that raises a runtime error but whose
 /// value is unused, overwritten, or loop invariant. A pass that deleted or moved
-/// that evaluation would change observable behavior, so the oracle pins the
-/// error down: both runs must raise the same thing.
+/// that evaluation would change observable behavior. The program catches the
+/// error with `pcall` and prints whether it happened, rather than letting the
+/// harness capture the error text, because that text carries a source line
+/// number which a transformation may legitimately shift.
 const OPTIMIZED_PROGRAMS: &[(&str, &str)] = &[
     (
         "constant folding",
@@ -632,28 +634,37 @@ return flag
     (
         "raising value in a dead store",
         r#"
-local value = 0
-value = "text" + 1
-value = 2
-print(value)
-return value
+local ok = pcall(function()
+    local value = 0
+    value = "text" + 1
+    value = 2
+    return value
+end)
+print(ok)
+return ok
 "#,
     ),
     (
         "raising initializer of an unused local",
         r#"
-local unused = "text" + 1
-print("done")
-return 0
+local ok = pcall(function()
+    local unused = "text" + 1
+    return 0
+end)
+print(ok)
+return ok
 "#,
     ),
     (
         "raising value in a dead table store",
         r#"
-local t = {}
-t.value = "text" + 1
-print("done")
-return 0
+local ok = pcall(function()
+    local t = {}
+    t.value = "text" + 1
+    return 0
+end)
+print(ok)
+return ok
 "#,
     ),
     (
@@ -688,9 +699,12 @@ return total
     (
         "pure standard-library call with a bad argument",
         r#"
-local value = math.floor({})
-print("done")
-return 0
+local ok = pcall(function()
+    local value = math.floor({})
+    return 0
+end)
+print(ok)
+return ok
 "#,
     ),
 ];
