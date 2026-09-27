@@ -47,6 +47,11 @@ pub enum DesugarError {
     /// A Luau number literal could not be normalized because its source text
     /// was not available.
     Number(desugar::ConvertLuauNumberError),
+    /// `//` could not be lowered because `math.floor` may have been replaced.
+    FloorDivision(desugar::RemoveFloorDivisionError),
+    /// An interpolated string could not be lowered because `tostring` or
+    /// `string.format` may have been replaced.
+    InterpolatedString(desugar::RemoveInterpolatedStringError),
     /// The lowered block still contains syntax Lua 5.1 cannot represent.
     UnsupportedDialect(DialectSupportError),
 }
@@ -58,6 +63,8 @@ impl std::fmt::Display for DesugarError {
             DesugarError::Cfg(error) => write!(f, "{error}"),
             DesugarError::Continue(error) => write!(f, "{error}"),
             DesugarError::Number(error) => write!(f, "{error}"),
+            DesugarError::FloorDivision(error) => write!(f, "{error}"),
+            DesugarError::InterpolatedString(error) => write!(f, "{error}"),
             DesugarError::UnsupportedDialect(error) => write!(f, "{error}"),
         }
     }
@@ -86,6 +93,18 @@ impl From<desugar::RemoveContinueError> for DesugarError {
 impl From<desugar::ConvertLuauNumberError> for DesugarError {
     fn from(error: desugar::ConvertLuauNumberError) -> Self {
         DesugarError::Number(error)
+    }
+}
+
+impl From<desugar::RemoveFloorDivisionError> for DesugarError {
+    fn from(error: desugar::RemoveFloorDivisionError) -> Self {
+        DesugarError::FloorDivision(error)
+    }
+}
+
+impl From<desugar::RemoveInterpolatedStringError> for DesugarError {
+    fn from(error: desugar::RemoveInterpolatedStringError) -> Self {
+        DesugarError::InterpolatedString(error)
     }
 }
 
@@ -150,10 +169,10 @@ fn run(block: &mut Block, code: Option<&str>) -> Result<(), DesugarError> {
     desugar::remove_if_expression(block, &model);
 
     let model = SemanticAnalyzer::new().analyze(block)?;
-    desugar::remove_interpolated_string(block, &model);
+    desugar::remove_interpolated_string(block, &model)?;
 
     let model = SemanticAnalyzer::new().analyze(block)?;
-    desugar::remove_floor_division(block, &model);
+    desugar::remove_floor_division(block, &model)?;
 
     let model = SemanticAnalyzer::new().analyze(block)?;
     desugar::remove_continue(block, &model)?;

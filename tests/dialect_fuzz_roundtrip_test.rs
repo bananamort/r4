@@ -106,6 +106,10 @@ fn fuzzed_luau_blocks_lower_to_reparseable_lua51() {
             // A `repeat` loop whose `until` condition reads a body local cannot
             // be lowered without changing that condition's meaning.
             Err(DesugarError::Continue(_)) => {}
+            // A `//` or interpolated string in a program that can replace the
+            // standard library the lowering emits a call to.
+            Err(DesugarError::FloorDivision(_)) => {}
+            Err(DesugarError::InterpolatedString(_)) => {}
             Err(DesugarError::Cfg(error)) => {
                 panic!("iteration {iteration} lowering reported invalid control flow: {error}")
             }

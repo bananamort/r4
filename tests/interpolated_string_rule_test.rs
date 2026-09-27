@@ -36,12 +36,13 @@ fn removes_interpolated_strings_with_both_strategies() {
         "local string = {}\nlocal tostring = {}\nreturn `a {x} b {y}`",
     ] {
         let (mut block, model) = analyze(code);
-        remove_interpolated_string(&mut block, &model);
+        remove_interpolated_string(&mut block, &model).expect("the standard library is stable");
         let output = generate(&block);
         assert!(!output.is_empty(), "`{code}`");
 
         let (mut block, model) = analyze(code);
-        remove_interpolated_string_with_tostring(&mut block, &model);
+        remove_interpolated_string_with_tostring(&mut block, &model)
+            .expect("the standard library is stable");
         let output = generate(&block);
         assert!(!output.is_empty(), "`{code}` (tostring)");
     }

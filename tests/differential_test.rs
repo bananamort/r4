@@ -230,11 +230,10 @@ fn parity_remove_floor_division() {
         "local x = 1\nx //= 2\nreturn x",
         "return (a + b) // (c - d)",
     ] {
-        assert_parity(
-            code,
-            &RemoveFloorDivision::default(),
-            r4::rules::desugar::remove_floor_division,
-        );
+        assert_parity(code, &RemoveFloorDivision::default(), |block, model| {
+            r4::rules::desugar::remove_floor_division(block, model)
+                .expect("the standard library is stable")
+        });
     }
 }
 
@@ -249,7 +248,10 @@ fn parity_remove_interpolated_string() {
         assert_parity(
             code,
             &RemoveInterpolatedString::default(),
-            r4::rules::desugar::remove_interpolated_string,
+            |block, model| {
+                r4::rules::desugar::remove_interpolated_string(block, model)
+                    .expect("the standard library is stable")
+            },
         );
     }
 }
@@ -417,7 +419,13 @@ fn floor_division_through_immutable_alias_darklua_aliases() {
         "local __DARKLUA_MATH_FLOOR = math.floor\nlocal math = math\n\nreturn __DARKLUA_MATH_FLOOR(value / 2)\n"
     );
 
-    let r4 = r4_apply(r4::rules::desugar::remove_floor_division, code);
+    let r4 = r4_apply(
+        |block, model| {
+            r4::rules::desugar::remove_floor_division(block, model)
+                .expect("the standard library is stable")
+        },
+        code,
+    );
     assert_eq!(r4, "local math = math\n\nreturn math.floor(value / 2)\n");
 }
 
@@ -433,7 +441,13 @@ fn interpolated_string_through_immutable_alias_darklua_aliases() {
         "local __DARKLUA_TO_STR = tostring\nlocal tostring = tostring\n\nreturn string.format('value = %s', __DARKLUA_TO_STR(value))\n"
     );
 
-    let r4 = r4_apply(r4::rules::desugar::remove_interpolated_string, code);
+    let r4 = r4_apply(
+        |block, model| {
+            r4::rules::desugar::remove_interpolated_string(block, model)
+                .expect("the standard library is stable")
+        },
+        code,
+    );
     assert_eq!(
         r4,
         "local tostring = tostring\n\nreturn string.format('value = %s', tostring(value))\n"

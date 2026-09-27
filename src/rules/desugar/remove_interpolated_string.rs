@@ -1,3 +1,4 @@
+use std::fmt;
 use std::iter;
 
 use bstr::ByteSlice;
@@ -18,12 +19,43 @@ enum ReplacementStrategy {
     ToStringSpecifier,
 }
 
+/// An error produced while lowering interpolated strings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoveInterpolatedStringError {
+    /// `tostring` may have been replaced, so the interpolation cannot be
+    /// lowered to a call to it.
+    UnstableTostring,
+    /// `string.format` may have been replaced, so the interpolation cannot be
+    /// lowered to a call to it.
+    UnstableStringFormat,
+}
+
+impl fmt::Display for RemoveInterpolatedStringError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnstableTostring => write!(
+                f,
+                "cannot lower an interpolated string: the `tostring` global may have been replaced"
+            ),
+            Self::UnstableStringFormat => write!(
+                f,
+                "cannot lower an interpolated string: the `string` global may have been replaced"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RemoveInterpolatedStringError {}
+
 struct RemoveInterpolatedStringProcessor<'a> {
     model: &'a SemanticModel,
     names: NameGenerator,
     string_format_identifier: Option<String>,
     tostring_identifier: Option<String>,
     strategy: ReplacementStrategy,
+    tostring_stable: bool,
+    string_stable: bool,
+    unstable: Option<RemoveInterpolatedStringError>,
 }
 
 const DEFAULT_TOSTRING_IDENTIFIER: &str = "tostring";
@@ -71,6 +103,26 @@ impl RemoveInterpolatedStringProcessor<'_> {
                 .clone();
             Prefix::from_name(name)
         }
+    }
+
+    /// Returns which standard-library globals the rewrite of `string` calls, as
+    /// `(tostring, string.format)`.
+    fn globals_used(&self, string: &InterpolatedStringExpression) -> (bool, bool) {
+        if string.is_empty() {
+            return (false, false);
+        }
+        if string.len() == 1 {
+            return match string.iter_segments().next().expect("a single segment") {
+                InterpolationSegment::String(_) => (false, false),
+                InterpolationSegment::Value(_) => (true, false),
+            };
+        }
+
+        let has_value = string
+            .iter_segments()
+            .any(|segment| matches!(segment, InterpolationSegment::Value(_)));
+        let tostring = has_value && self.strategy == ReplacementStrategy::StringSpecifier;
+        (tostring, true)
     }
 
     fn replace_with(&mut self, string: &InterpolatedStringExpression) -> Expression {
@@ -142,9 +194,21 @@ impl RemoveInterpolatedStringProcessor<'_> {
 
 impl NodeProcessor for RemoveInterpolatedStringProcessor<'_> {
     fn process_expression(&mut self, expression: &mut Expression) {
-        if let Expression::InterpolatedString(string) = expression {
-            *expression = self.replace_with(string);
+        let Expression::InterpolatedString(string) = expression else {
+            return;
+        };
+
+        let (tostring, string_format) = self.globals_used(string);
+        if tostring && !self.tostring_stable {
+            self.unstable = Some(RemoveInterpolatedStringError::UnstableTostring);
+            return;
         }
+        if string_format && !self.string_stable {
+            self.unstable = Some(RemoveInterpolatedStringError::UnstableStringFormat);
+            return;
+        }
+
+        *expression = self.replace_with(string);
     }
 }
 
@@ -155,29 +219,48 @@ impl NodeProcessor for RemoveInterpolatedStringProcessor<'_> {
 /// aliases such as `local tostring = tostring` are transparent, so no alias is
 /// introduced for them; otherwise a collision-free alias allocated by
 /// [`NameGenerator`] is inserted at the top of the block.
-pub fn remove_interpolated_string(block: &mut Block, model: &SemanticModel) {
-    remove_interpolated_string_with_strategy(block, model, ReplacementStrategy::StringSpecifier);
+///
+/// The lowering calls `tostring` and `string.format`, so it fails with
+/// [`RemoveInterpolatedStringError`] when the program can replace either (by
+/// writing it, or by reaching globals from code the model cannot see) rather
+/// than emitting a call that may not convert a value the way interpolation
+/// does.
+pub fn remove_interpolated_string(
+    block: &mut Block,
+    model: &SemanticModel,
+) -> Result<(), RemoveInterpolatedStringError> {
+    remove_interpolated_string_with_strategy(block, model, ReplacementStrategy::StringSpecifier)
 }
 
 /// Removes interpolated strings using the `%*` format specifier, which relies
 /// on `string.format` converting its arguments with `tostring`.
-pub fn remove_interpolated_string_with_tostring(block: &mut Block, model: &SemanticModel) {
-    remove_interpolated_string_with_strategy(block, model, ReplacementStrategy::ToStringSpecifier);
+pub fn remove_interpolated_string_with_tostring(
+    block: &mut Block,
+    model: &SemanticModel,
+) -> Result<(), RemoveInterpolatedStringError> {
+    remove_interpolated_string_with_strategy(block, model, ReplacementStrategy::ToStringSpecifier)
 }
 
 fn remove_interpolated_string_with_strategy(
     block: &mut Block,
     model: &SemanticModel,
     strategy: ReplacementStrategy,
-) {
+) -> Result<(), RemoveInterpolatedStringError> {
     let mut processor = RemoveInterpolatedStringProcessor {
         model,
         names: NameGenerator::new(model),
         string_format_identifier: None,
         tostring_identifier: None,
         strategy,
+        tostring_stable: model.global_is_stable(DEFAULT_TOSTRING_IDENTIFIER),
+        string_stable: model.global_is_stable(DEFAULT_STRING_LIBRARY),
+        unstable: None,
     };
     DefaultVisitor::visit_block(block, &mut processor);
+
+    if let Some(error) = processor.unstable {
+        return Err(error);
+    }
 
     let string_format_identifier = processor.string_format_identifier;
     let tostring_identifier = processor.tostring_identifier;
@@ -204,6 +287,8 @@ fn remove_interpolated_string_with_strategy(
 
         block.insert_statement(0, VariableAssignment::new(variables, values));
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -215,7 +300,7 @@ mod test {
     fn lowers_a_plain_interpolated_string() {
         let (mut block, model) = analyze("return `hello`");
 
-        remove_interpolated_string(&mut block, &model);
+        remove_interpolated_string(&mut block, &model).expect("no library call is emitted");
 
         insta::assert_snapshot!(generate(&block).trim(), @"return 'hello'");
     }
@@ -224,11 +309,38 @@ mod test {
     fn lowers_interpolation_with_tostring() {
         let (mut block, model) = analyze("return `value = {value}`");
 
-        remove_interpolated_string(&mut block, &model);
+        remove_interpolated_string(&mut block, &model).expect("the libraries are stable");
 
         insta::assert_snapshot!(
             generate(&block).trim(),
             @"return string.format('value = %s', tostring(value))"
         );
+    }
+
+    #[test]
+    fn rejects_a_replaced_tostring() {
+        let (mut block, model) = analyze("tostring = function() end\nreturn `{value}`");
+
+        let error =
+            remove_interpolated_string(&mut block, &model).expect_err("`tostring` was replaced");
+
+        assert_eq!(error, RemoveInterpolatedStringError::UnstableTostring);
+    }
+
+    #[test]
+    fn rejects_a_replaced_string_library() {
+        let (mut block, model) = analyze("string.format = function() end\nreturn `{a} {b}`");
+
+        let error =
+            remove_interpolated_string(&mut block, &model).expect_err("`string` was replaced");
+
+        assert_eq!(error, RemoveInterpolatedStringError::UnstableStringFormat);
+    }
+
+    #[test]
+    fn accepts_an_unstable_environment_without_interpolation() {
+        let (mut block, model) = analyze("require('./module')\nreturn value");
+
+        remove_interpolated_string(&mut block, &model).expect("there is nothing to lower");
     }
 }

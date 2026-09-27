@@ -826,6 +826,28 @@ impl SemanticModel {
         !self.exposed_globals.contains(&symbol)
     }
 
+    /// Returns whether the global `name` still denotes the standard-library
+    /// binding it was introduced with.
+    ///
+    /// False when the program reassigns it, when its table is exposed, or when
+    /// the global environment is open. True when the name is never a global at
+    /// all (the program only shadows it), because the pass that consults this
+    /// would then refer to the untouched global.
+    ///
+    /// The lowering passes use this before emitting a call to `math.floor`,
+    /// `tostring` or `string.format`, whose meaning they would otherwise assume.
+    pub fn global_is_stable(&self, name: &str) -> bool {
+        if self.global_environment_is_open() {
+            return false;
+        }
+        match self.global_symbol(name) {
+            Some(global) => {
+                self.symbol(global).write_count == 0 && !self.exposed_globals.contains(&global)
+            }
+            None => true,
+        }
+    }
+
     /// Returns whether code the model cannot see can reach or replace globals.
     ///
     /// True when the program names the global environment (`_G`, `_ENV`),

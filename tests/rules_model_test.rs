@@ -119,7 +119,7 @@ fn sqrt_optimizes_through_immutable_alias() {
 #[test]
 fn floor_pass_rewrites_and_keeps_direct_math_access() {
     let (mut block, model) = parse_tokenless("local math = math\nreturn value // 2");
-    desugar::remove_floor_division(&mut block, &model);
+    desugar::remove_floor_division(&mut block, &model).expect("the standard library is stable");
 
     let output = generate(&block);
     assert!(
@@ -135,7 +135,7 @@ fn floor_pass_rewrites_and_keeps_direct_math_access() {
 #[test]
 fn floor_pass_aliases_mutable_shadow_with_fresh_name() {
     let (mut block, model) = parse_tokenless("local math = {}\nreturn value // 2");
-    desugar::remove_floor_division(&mut block, &model);
+    desugar::remove_floor_division(&mut block, &model).expect("the standard library is stable");
 
     let output = generate(&block);
     assert!(
@@ -152,7 +152,7 @@ fn floor_pass_aliases_mutable_shadow_with_fresh_name() {
 fn floor_pass_avoids_taken_alias_names() {
     let code = "local math = {}\nlocal __R4_MATH_FLOOR = 1\nreturn value // 2";
     let (mut block, model) = parse_tokenless(code);
-    desugar::remove_floor_division(&mut block, &model);
+    desugar::remove_floor_division(&mut block, &model).expect("the standard library is stable");
 
     let output = generate(&block);
     assert!(
@@ -168,7 +168,8 @@ fn floor_pass_avoids_taken_alias_names() {
 #[test]
 fn interpolated_string_optimizes_through_immutable_alias() {
     let (mut block, model) = parse_tokens("local tostring = tostring\nreturn `value = {value}`");
-    desugar::remove_interpolated_string(&mut block, &model);
+    desugar::remove_interpolated_string(&mut block, &model)
+        .expect("the standard library is stable");
 
     let output = generate(&block);
     assert!(
@@ -185,7 +186,8 @@ fn interpolated_string_optimizes_through_immutable_alias() {
 fn interpolated_string_aliases_mutable_shadow_with_fresh_name() {
     let code = "local tostring = function(x) return x end\nreturn `{value}`";
     let (mut block, model) = parse_tokenless(code);
-    desugar::remove_interpolated_string(&mut block, &model);
+    desugar::remove_interpolated_string(&mut block, &model)
+        .expect("the standard library is stable");
 
     let output = generate(&block);
     assert!(
@@ -202,7 +204,8 @@ fn interpolated_string_aliases_mutable_shadow_with_fresh_name() {
 fn interpolated_string_avoids_taken_alias_names() {
     let code = "local tostring = function(x) return x end\nlocal __R4_TO_STR = 1\nreturn `{value}`";
     let (mut block, model) = parse_tokenless(code);
-    desugar::remove_interpolated_string(&mut block, &model);
+    desugar::remove_interpolated_string(&mut block, &model)
+        .expect("the standard library is stable");
 
     let output = generate(&block);
     assert!(
