@@ -314,6 +314,115 @@ fn total_signature(root: &str, fields: &[&str]) -> Option<Signature> {
     Some(signature)
 }
 
+fn callee_path(prefix: &Prefix) -> Option<(&Identifier, Vec<&str>)> {
+    match prefix {
+        Prefix::Identifier(identifier) => Some((identifier, Vec::new())),
+        Prefix::Field(field) => {
+            let (root, mut fields) = callee_path(field.get_prefix())?;
+            fields.push(field.get_field().get_name().as_str());
+            Some((root, fields))
+        }
+        _ => None,
+    }
+}
+
+fn is_pure_path(root: &str, fields: &[&str]) -> bool {
+    match fields {
+        // `tostring` is deliberately absent: it dispatches `__tostring`, so a
+        // call can run arbitrary user code and must not be treated as pure.
+        [] => matches!(
+            root,
+            "type" | "tonumber" | "rawequal" | "rawlen" | "rawget" | "getmetatable" | "select"
+        ),
+        [field] => match root {
+            "math" => matches!(
+                *field,
+                "abs"
+                    | "acos"
+                    | "asin"
+                    | "atan"
+                    | "atan2"
+                    | "ceil"
+                    | "clamp"
+                    | "cos"
+                    | "cosh"
+                    | "deg"
+                    | "exp"
+                    | "floor"
+                    | "fmod"
+                    | "frexp"
+                    | "ldexp"
+                    | "log"
+                    | "log10"
+                    | "max"
+                    | "min"
+                    | "modf"
+                    | "noise"
+                    | "pow"
+                    | "rad"
+                    | "round"
+                    | "sign"
+                    | "sin"
+                    | "sinh"
+                    | "sqrt"
+                    | "tan"
+                    | "tanh"
+            ),
+            "string" => matches!(
+                *field,
+                // `format` is deliberately absent: `%s` converts through
+                // `tostring`, which can dispatch `__tostring`.
+                "byte"
+                    | "char"
+                    | "find"
+                    | "len"
+                    | "lower"
+                    | "match"
+                    | "rep"
+                    | "reverse"
+                    | "split"
+                    | "sub"
+                    | "upper"
+                    | "pack"
+                    | "unpack"
+                    | "packsize"
+            ),
+            // `concat` is deliberately absent: it converts elements through
+            // `tostring`, which can dispatch `__tostring`.
+            "table" => matches!(*field, "pack" | "unpack"),
+            "utf8" => matches!(
+                *field,
+                "char"
+                    | "codepoint"
+                    | "len"
+                    | "offset"
+                    | "codes"
+                    | "nfcnormalize"
+                    | "nfdnormalize"
+                    | "graphemes"
+            ),
+            "bit32" => matches!(
+                *field,
+                "arshift"
+                    | "band"
+                    | "bnot"
+                    | "bor"
+                    | "btest"
+                    | "bxor"
+                    | "extract"
+                    | "lrotate"
+                    | "lshift"
+                    | "replace"
+                    | "rrotate"
+                    | "rshift"
+            ),
+            "os" => matches!(*field, "clock" | "date" | "difftime" | "getenv" | "time"),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -448,114 +557,5 @@ mod test {
         ] {
             assert_eq!(is_observable(code), observable, "`{code}`");
         }
-    }
-}
-
-fn callee_path(prefix: &Prefix) -> Option<(&Identifier, Vec<&str>)> {
-    match prefix {
-        Prefix::Identifier(identifier) => Some((identifier, Vec::new())),
-        Prefix::Field(field) => {
-            let (root, mut fields) = callee_path(field.get_prefix())?;
-            fields.push(field.get_field().get_name().as_str());
-            Some((root, fields))
-        }
-        _ => None,
-    }
-}
-
-fn is_pure_path(root: &str, fields: &[&str]) -> bool {
-    match fields {
-        // `tostring` is deliberately absent: it dispatches `__tostring`, so a
-        // call can run arbitrary user code and must not be treated as pure.
-        [] => matches!(
-            root,
-            "type" | "tonumber" | "rawequal" | "rawlen" | "rawget" | "getmetatable" | "select"
-        ),
-        [field] => match root {
-            "math" => matches!(
-                *field,
-                "abs"
-                    | "acos"
-                    | "asin"
-                    | "atan"
-                    | "atan2"
-                    | "ceil"
-                    | "clamp"
-                    | "cos"
-                    | "cosh"
-                    | "deg"
-                    | "exp"
-                    | "floor"
-                    | "fmod"
-                    | "frexp"
-                    | "ldexp"
-                    | "log"
-                    | "log10"
-                    | "max"
-                    | "min"
-                    | "modf"
-                    | "noise"
-                    | "pow"
-                    | "rad"
-                    | "round"
-                    | "sign"
-                    | "sin"
-                    | "sinh"
-                    | "sqrt"
-                    | "tan"
-                    | "tanh"
-            ),
-            "string" => matches!(
-                *field,
-                // `format` is deliberately absent: `%s` converts through
-                // `tostring`, which can dispatch `__tostring`.
-                "byte"
-                    | "char"
-                    | "find"
-                    | "len"
-                    | "lower"
-                    | "match"
-                    | "rep"
-                    | "reverse"
-                    | "split"
-                    | "sub"
-                    | "upper"
-                    | "pack"
-                    | "unpack"
-                    | "packsize"
-            ),
-            // `concat` is deliberately absent: it converts elements through
-            // `tostring`, which can dispatch `__tostring`.
-            "table" => matches!(*field, "pack" | "unpack"),
-            "utf8" => matches!(
-                *field,
-                "char"
-                    | "codepoint"
-                    | "len"
-                    | "offset"
-                    | "codes"
-                    | "nfcnormalize"
-                    | "nfdnormalize"
-                    | "graphemes"
-            ),
-            "bit32" => matches!(
-                *field,
-                "arshift"
-                    | "band"
-                    | "bnot"
-                    | "bor"
-                    | "btest"
-                    | "bxor"
-                    | "extract"
-                    | "lrotate"
-                    | "lshift"
-                    | "replace"
-                    | "rrotate"
-                    | "rshift"
-            ),
-            "os" => matches!(*field, "clock" | "date" | "difftime" | "getenv" | "time"),
-            _ => false,
-        },
-        _ => false,
     }
 }
