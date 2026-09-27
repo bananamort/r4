@@ -56,6 +56,7 @@ pub struct SymbolEscape {
 pub struct EscapeAnalysis {
     symbols: HashMap<SymbolId, SymbolEscape>,
     exposed_globals: HashSet<SymbolId>,
+    global_environment_open: bool,
 }
 
 impl EscapeAnalysis {
@@ -67,9 +68,11 @@ impl EscapeAnalysis {
         };
         analyzer.analyze_block(block);
         let exposed_globals = collect_exposed_globals(&analyzer.symbols, model);
+        let global_environment_open = global_environment_is_open(&analyzer.symbols, model);
         Self {
             symbols: analyzer.symbols,
             exposed_globals,
+            global_environment_open,
         }
     }
 
@@ -82,6 +85,18 @@ impl EscapeAnalysis {
     #[inline]
     pub fn exposed_globals(&self) -> &HashSet<SymbolId> {
         &self.exposed_globals
+    }
+
+    /// Returns whether the program can reach or replace globals from code the
+    /// analysis cannot see.
+    ///
+    /// True when the program loads source at runtime, changes a function's
+    /// environment, or names the global environment. Such code can replace any
+    /// global, so no global may be assumed to keep the binding the block gave
+    /// it.
+    #[inline]
+    pub fn global_environment_is_open(&self) -> bool {
+        self.global_environment_open
     }
 
     /// Returns the information collected for `symbol`, if any occurrence was
@@ -577,11 +592,6 @@ fn base_identifier(prefix: &Prefix) -> Option<&Identifier> {
 ///
 /// A global is exposed when it, or an immutable alias of it, has a field
 /// written, is written through a dynamic index, or escapes as a value.
-///
-/// The global environment also exposes every global: `_G.math.floor = custom`
-/// writes a field of `math` without naming it as a base, and `setfenv` can
-/// replace the environment wholesale. When any of those names is used, every
-/// global is treated as exposed.
 fn collect_exposed_globals(
     symbols: &HashMap<SymbolId, SymbolEscape>,
     model: &SemanticModel,
@@ -604,23 +614,59 @@ fn collect_exposed_globals(
         }
     }
 
+    exposed
+}
+
+/// Returns whether the program can reach the global environment from code the
+/// analysis cannot see.
+///
+/// The global environment is reachable when the source names it (`_G`, `_ENV`),
+/// changes a function's environment (`setfenv`, `getfenv`), loads source at
+/// runtime (`require`, `load`, `loadstring`, `dofile`, `loadfile`), or swaps an
+/// upvalue through `debug` (`debug.setupvalue`, `debug.setfenv`). Each of those
+/// can replace a global the block leaves untouched, so every global becomes
+/// unreliable.
+fn global_environment_is_open(
+    symbols: &HashMap<SymbolId, SymbolEscape>,
+    model: &SemanticModel,
+) -> bool {
     if GLOBAL_ENVIRONMENT_NAMES
         .iter()
         .any(|name| model.global_symbol(name).is_some())
     {
-        for symbol in &model.symbols {
-            if symbol.kind == SymbolKind::Global {
-                exposed.insert(symbol.id);
-            }
-        }
+        return true;
     }
 
-    exposed
+    let Some(debug) = model.global_symbol(DEBUG_LIBRARY_NAME) else {
+        return false;
+    };
+    symbols.iter().any(|(symbol, info)| {
+        model.try_immutable_alias_root(*symbol) == Some(debug)
+            && REFLECTION_FIELD_NAMES
+                .iter()
+                .any(|name| info.field_reads.contains(*name))
+    })
 }
 
-/// Names that reach the global environment, so any global's fields can be
-/// written through them.
-const GLOBAL_ENVIRONMENT_NAMES: [&str; 4] = ["_G", "_ENV", "setfenv", "getfenv"];
+/// Names that reach the global environment, so any global can be replaced
+/// through them.
+const GLOBAL_ENVIRONMENT_NAMES: [&str; 9] = [
+    "_G",
+    "_ENV",
+    "setfenv",
+    "getfenv",
+    "require",
+    "load",
+    "loadstring",
+    "dofile",
+    "loadfile",
+];
+
+/// `debug` functions that replace an upvalue or an environment.
+const REFLECTION_FIELD_NAMES: [&str; 2] = ["setupvalue", "setfenv"];
+
+/// The standard library whose fields can swap a function's environment.
+const DEBUG_LIBRARY_NAME: &str = "debug";
 
 fn string_literal(expression: &Expression) -> Option<String> {
     match expression {
@@ -705,15 +751,45 @@ mod test {
         assert!(!exposed("math.helpers.floor = 1").contains("math"));
     }
 
+    /// Returns whether the program can reach the global environment.
+    fn environment_open(code: &str) -> bool {
+        let (block, model) = Parser::default()
+            .parse_analyzed(code)
+            .unwrap_or_else(|error| panic!("`{code}` must analyze: {error}"));
+        EscapeAnalysis::analyze(&block, &model).global_environment_is_open()
+    }
+
     #[test]
-    fn the_global_environment_exposes_every_global() {
+    fn the_global_environment_is_open_through_reach_hatches() {
         for code in [
-            "_G.math.floor = function() end\nreturn math.floor(1.5)",
-            "_ENV.math.floor = function() end\nreturn math.floor(1.5)",
-            "setfenv(1, {})\nreturn math.floor(1.5)",
-            "getfenv(1)\nreturn math.floor(1.5)",
+            "_G.math.floor = function() end",
+            "_ENV.math.floor = function() end",
+            "setfenv(1, {})",
+            "getfenv(1)",
+            "require('./module')",
+            "load('return 1')",
+            "loadstring('return 1')",
+            "dofile('script.lua')",
+            "loadfile('script.lua')",
+            "debug.setupvalue(f, 1, {})",
+            "debug.setfenv(f, {})",
+            "local d = debug\nd.setupvalue(f, 1, {})",
         ] {
-            assert!(exposed(code).contains("math"), "`{code}`");
+            assert!(environment_open(code), "`{code}`");
+        }
+    }
+
+    #[test]
+    fn the_global_environment_is_closed_otherwise() {
+        for code in [
+            "return math.floor(1.5)",
+            "debug.profilebegin('x')",
+            "debug.traceback('x')",
+            "local d = debug\nreturn d.profilebegin",
+            "assert(x)",
+            "print('hello')",
+        ] {
+            assert!(!environment_open(code), "`{code}`");
         }
     }
 }

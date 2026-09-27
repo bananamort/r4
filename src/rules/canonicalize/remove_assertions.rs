@@ -63,7 +63,16 @@ impl CallMatcher for AssertMatcher {
 /// replacement is `nil` for zero arguments, the single argument for one, and
 /// `select(1, ...)` for several. When `select` is shadowed, a collision-free
 /// alias is defined at the top of the block.
+///
+/// Nothing is removed when the program can reach globals from code the model
+/// cannot see (dynamic loading, an environment change or reflection), because
+/// `assert` may have been replaced by then.
 pub fn remove_assertions(block: &mut Block, model: &SemanticModel) -> usize {
+    if model.global_environment_is_open() {
+        // A loaded chunk or an environment change can replace `assert`, so the
+        // call may no longer be the assertion it was written as.
+        return 0;
+    }
     remove_call_matches(block, model, &AssertMatcher)
 }
 
@@ -211,5 +220,16 @@ mod argument_side_effects {
         let output = generate(&block);
         assert!(!output.contains("assert"), "{output}");
         assert!(!output.contains("literal"), "{output}");
+    }
+
+    #[test]
+    fn keeps_assertions_when_the_global_environment_is_open() {
+        // A loaded chunk can replace `assert`, so the call must survive.
+        let (mut block, model) = analyze_with_tokens("require('./module')\nassert(value)");
+
+        let removed = remove_assertions(&mut block, &model);
+
+        assert_eq!(removed, 0);
+        assert!(generate(&block).contains("assert"));
     }
 }

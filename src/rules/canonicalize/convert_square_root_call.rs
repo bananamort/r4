@@ -31,7 +31,7 @@ impl Processor<'_> {
             if let Prefix::Identifier(identifier) = field_expr.get_prefix() {
                 if identifier.get_name() == DEFAULT_MATH_LIBRARY
                     && self.model.name_is_transparent_global(DEFAULT_MATH_LIBRARY)
-                    && self.math_table_is_unmodified()
+                    && self.math_is_stable()
                 {
                     return true;
                 }
@@ -41,15 +41,18 @@ impl Processor<'_> {
         false
     }
 
-    /// Returns whether `math` is still the standard-library table.
+    /// Returns whether `math` still denotes the standard-library table.
     ///
     /// `name_is_transparent_global` only rejects shadowing and reassignment of
     /// the global itself; a program can also replace a field
-    /// (`math.sqrt = custom`), so the table must be unmodified too.
-    fn math_table_is_unmodified(&self) -> bool {
-        self.model
-            .global_symbol(DEFAULT_MATH_LIBRARY)
-            .is_some_and(|symbol| self.model.global_table_is_unmodified(symbol))
+    /// (`math.sqrt = custom`), or reach `math` from code the model cannot see,
+    /// so neither may happen.
+    fn math_is_stable(&self) -> bool {
+        !self.model.global_environment_is_open()
+            && self
+                .model
+                .global_symbol(DEFAULT_MATH_LIBRARY)
+                .is_some_and(|symbol| self.model.global_table_is_unmodified(symbol))
     }
 }
 

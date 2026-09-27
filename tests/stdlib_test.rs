@@ -275,3 +275,15 @@ fn an_unmodified_library_through_an_alias_is_still_dropped() {
     let output = remove_unused("local m = math\nlocal x = m.floor(1.5)\nreturn 0");
     assert!(!output.contains("m.floor"), "{output}");
 }
+
+#[test]
+fn a_dynamic_environment_keeps_dead_results() {
+    for code in [
+        "require('./module')\nlocal x = math.floor(1.5)\nreturn 0",
+        "load('return 1')\nlocal x = math.floor(1.5)\nreturn 0",
+        "debug.setupvalue(f, 1, {})\nlocal x = math.floor(1.5)\nreturn 0",
+    ] {
+        let output = remove_unused(code);
+        assert!(output.contains("math.floor"), "`{code}`\n{output}");
+    }
+}

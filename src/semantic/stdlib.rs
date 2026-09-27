@@ -31,13 +31,19 @@ pub fn call_is_pure(model: &SemanticModel, call: &FunctionCall) -> bool {
 /// is not shadowed or reassigned and denotes a curated pure function. A
 /// library *table* must additionally be unmodified: no field of it, or of an
 /// immutable alias of it, is written and it never escapes as a value, so the
-/// field still denotes the standard-library function.
+/// field still denotes the standard-library function. Nothing is trusted while
+/// code the model cannot see can reach globals.
 fn pure_path<'c>(
     model: &SemanticModel,
     call: &'c FunctionCall,
 ) -> Option<(SymbolId, Vec<&'c str>)> {
     if call.get_method().is_some() {
         // Method calls pass a receiver; the model does not describe them.
+        return None;
+    }
+    if model.global_environment_is_open() {
+        // Dynamic code, an environment change or reflection may replace any
+        // global, so no binding can be assumed to denote the standard library.
         return None;
     }
 
@@ -556,6 +562,22 @@ mod test {
         // recognized.
         assert!(is_total("return math.floor(1.5)"));
         assert!(is_total("local m = math\nreturn m.floor(1.5)"));
+    }
+
+    #[test]
+    fn a_dynamic_environment_is_not_total() {
+        for code in [
+            "require('./module')\nreturn math.floor(1.5)",
+            "load('return 1')\nreturn math.floor(1.5)",
+            "loadstring('return 1')\nreturn math.floor(1.5)",
+            "dofile('script.lua')\nreturn math.floor(1.5)",
+            "loadfile('script.lua')\nreturn math.floor(1.5)",
+            "debug.setupvalue(f, 1, {})\nreturn math.floor(1.5)",
+            "setfenv(1, {})\nreturn math.floor(1.5)",
+            "_G.floor = f\nreturn math.floor(1.5)",
+        ] {
+            assert!(!is_total(code), "`{code}` must not be total");
+        }
     }
 
     #[test]

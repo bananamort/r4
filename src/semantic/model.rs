@@ -83,6 +83,8 @@ pub struct SemanticModel {
     origin: u32,
     /// The globals whose table an occurrence can mutate or expose as a value.
     exposed_globals: HashSet<SymbolId>,
+    /// Whether the program can reach globals from code the model cannot see.
+    global_environment_open: bool,
 }
 
 impl SemanticModel {
@@ -117,6 +119,7 @@ impl SemanticModel {
             block_scopes,
             origin,
             exposed_globals: HashSet::new(),
+            global_environment_open: false,
         }
     }
 
@@ -795,11 +798,19 @@ impl SemanticModel {
         }
     }
 
-    /// Records the globals whose table an occurrence can mutate or expose.
+    /// Records how the program can reach globals, once the escape analysis has
+    /// run over the block.
     ///
-    /// Called by the analyzer once the escape analysis has run over the block.
-    pub(crate) fn set_exposed_globals(&mut self, globals: HashSet<SymbolId>) {
-        self.exposed_globals = globals;
+    /// `exposed` are the globals whose table can be mutated or exposed as a
+    /// value; `environment_open` records whether code the model cannot see can
+    /// reach or replace globals.
+    pub(crate) fn set_global_environment(
+        &mut self,
+        exposed: HashSet<SymbolId>,
+        environment_open: bool,
+    ) {
+        self.exposed_globals = exposed;
+        self.global_environment_open = environment_open;
     }
 
     /// Returns whether the global `symbol` still denotes the table it was
@@ -813,6 +824,17 @@ impl SemanticModel {
     #[inline]
     pub fn global_table_is_unmodified(&self, symbol: SymbolId) -> bool {
         !self.exposed_globals.contains(&symbol)
+    }
+
+    /// Returns whether code the model cannot see can reach or replace globals.
+    ///
+    /// True when the program names the global environment (`_G`, `_ENV`),
+    /// changes a function's environment (`setfenv`, `getfenv`), loads source at
+    /// runtime (`require`, `load`, `loadstring`, `dofile`, `loadfile`), or swaps
+    /// an upvalue through `debug`. No global identity may be assumed then.
+    #[inline]
+    pub fn global_environment_is_open(&self) -> bool {
+        self.global_environment_open
     }
 
     /// Iterates over all symbols captured as upvalues by nested functions.

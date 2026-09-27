@@ -264,10 +264,11 @@ impl AnalyzerState {
             self.origin,
             self.dialect,
         );
-        let exposed = super::escape::EscapeAnalysis::analyze(block, &model)
-            .exposed_globals()
-            .clone();
-        model.set_exposed_globals(exposed);
+        let escape = super::escape::EscapeAnalysis::analyze(block, &model);
+        model.set_global_environment(
+            escape.exposed_globals().clone(),
+            escape.global_environment_is_open(),
+        );
         Ok((model, errors))
     }
 
