@@ -668,7 +668,7 @@ impl Evaluator {
                     _ => LuaValue::Unknown,
                 }
             }
-            UnaryOperator::Length => self.evaluate(expression.get_expression()).length(),
+            UnaryOperator::Length => self.length(self.evaluate(expression.get_expression())),
             UnaryOperator::BitwiseNot => {
                 Self::bitwise_not(self.evaluate(expression.get_expression()))
                     .unwrap_or(LuaValue::Unknown)
@@ -898,6 +898,17 @@ impl Evaluator {
         }
     }
 
+    /// Folds the `#` operator.
+    ///
+    /// `#` produces an integer in Lua 5.3/5.4 and a float in 5.1/5.2/Luau, so
+    /// the result subtype follows the evaluator's number model.
+    fn length(&self, value: LuaValue) -> LuaValue {
+        match value.length() {
+            LuaValue::Number(value) if self.integer_numbers() => LuaValue::Integer(value as i64),
+            length => length,
+        }
+    }
+
     fn evaluate_unary_with<F>(&self, expression: &UnaryExpression, lookup: &F) -> Option<LuaValue>
     where
         F: Fn(&Identifier) -> Option<LuaValue>,
@@ -911,7 +922,7 @@ impl Evaluator {
                 LuaValue::Number(number) => Some(LuaValue::from(-number)),
                 _ => None,
             },
-            UnaryOperator::Length => match value.length() {
+            UnaryOperator::Length => match self.length(value) {
                 LuaValue::Unknown => None,
                 length => Some(length),
             },
@@ -1071,6 +1082,27 @@ mod test {
                 }
             )*
         };
+    }
+
+    #[test]
+    fn the_length_operator_follows_the_number_model() {
+        let length = || {
+            Expression::from(UnaryExpression::new(
+                UnaryOperator::Length,
+                Expression::from(StringExpression::from_value("abc")),
+            ))
+        };
+
+        assert_eq!(
+            Evaluator::default().evaluate(&length()),
+            LuaValue::Number(3.0)
+        );
+        assert_eq!(
+            Evaluator::default()
+                .with_integer_numbers()
+                .evaluate(&length()),
+            LuaValue::Integer(3)
+        );
     }
 
     #[test]

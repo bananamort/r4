@@ -202,9 +202,6 @@ struct BlockAnalyzer<'a> {
     uses: BitVec,
     defs: BitVec,
     defined: BitVec,
-    /// Every read, including reads of symbols that were already defined in the
-    /// block. Used for statement-level data-flow queries such as dead stores.
-    reads: BitVec,
     /// Reads recorded by the statement currently being processed.
     current_reads: BitVec,
     /// Definitions recorded by the statement currently being processed.
@@ -218,7 +215,6 @@ impl<'a> BlockAnalyzer<'a> {
             uses: BitVec::repeat(false, symbol_count),
             defs: BitVec::repeat(false, symbol_count),
             defined: BitVec::repeat(false, symbol_count),
-            reads: BitVec::repeat(false, symbol_count),
             current_reads: BitVec::repeat(false, symbol_count),
             current_defs: BitVec::repeat(false, symbol_count),
         }
@@ -237,7 +233,6 @@ impl<'a> BlockAnalyzer<'a> {
 
     fn read_identifier(&mut self, identifier: &Identifier) -> Result<(), LivenessError> {
         let symbol = self.resolve(identifier)?;
-        self.reads.set(symbol.index(), true);
         self.current_reads.set(symbol.index(), true);
         if !self.defined[symbol.index()] {
             self.uses.set(symbol.index(), true);

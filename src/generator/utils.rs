@@ -222,7 +222,6 @@ pub fn write_number(number: &NumberExpression) -> String {
     match number {
         NumberExpression::Decimal(number) => {
             let float = number.get_raw_float();
-            #[allow(clippy::if_same_then_else)]
             if float.is_nan() {
                 "(0/0)".to_owned()
             } else if float.is_infinite() {

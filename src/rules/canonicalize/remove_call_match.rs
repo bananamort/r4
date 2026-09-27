@@ -22,7 +22,9 @@ pub trait CallMatcher {
     fn matches(&self, call: &FunctionCall, model: &SemanticModel) -> bool;
 
     /// Computes the replacement expression. `None` means the call result is
-    /// dropped; argument side effects are preserved either way.
+    /// dropped, in which case the engine preserves the arguments' side effects.
+    /// When returning `Some`, the matcher must embed any argument whose
+    /// evaluation has side effects into the replacement itself.
     fn compute_result(
         &self,
         call: &FunctionCall,
