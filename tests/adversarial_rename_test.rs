@@ -35,7 +35,7 @@ use r4::process::{ImmutableProcessor, ImmutableVisitor, Walk};
 use r4::rules::rename_variables::{
     rename_variables, rename_variables_with_options, RenameOptions, ROBLOX_GLOBALS,
 };
-use r4::rules::{canonicalize, desugar, Session, SessionError};
+use r4::rules::{canonicalize, desugar, Session};
 use r4::semantic::{AccessKind, SemanticAnalyzer, SemanticModel, SymbolKind};
 use r4::Parser;
 
@@ -541,20 +541,9 @@ fn the_multi_pass_pipeline_preserves_invariants() {
     session
         .apply_semantic(desugar::remove_if_expression)
         .expect("remove_if_expression");
-    // The fixture captures the environment (`_ENV or _G`) and hands it to a
-    // function, so the lowering cannot assume `tostring` is the builtin. It
-    // reports the error and leaves the interpolated string in place; the rest of
-    // the pipeline must still preserve every invariant.
-    let interpolation = session.apply_semantic_result(desugar::remove_interpolated_string);
-    assert!(
-        matches!(
-            interpolation,
-            Err(SessionError::Pass(
-                desugar::RemoveInterpolatedStringError::UnstableTostring
-            ))
-        ),
-        "unexpected interpolation outcome: {interpolation:?}"
-    );
+    session
+        .apply_semantic_result(desugar::remove_interpolated_string)
+        .expect("remove_interpolated_string");
     session
         .apply_semantic_result(desugar::remove_floor_division)
         .expect("remove_floor_division");

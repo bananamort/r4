@@ -224,8 +224,8 @@ mod argument_side_effects {
 
     #[test]
     fn keeps_assertions_when_the_global_environment_is_open() {
-        // A loaded chunk can replace `assert`, so the call must survive.
-        let (mut block, model) = analyze_with_tokens("require('./module')\nassert(value)");
+        // Loaded source can replace `assert`, so the call must survive.
+        let (mut block, model) = analyze_with_tokens("load('return 1')\nassert(value)");
 
         let removed = remove_assertions(&mut block, &model);
 

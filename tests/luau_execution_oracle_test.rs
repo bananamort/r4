@@ -345,7 +345,7 @@ local roblox = require("@lune/roblox")
 local velocity: Vector3 = roblox.Vector3.new(3, 4, 0)
 local speed: number = velocity.Magnitude
 local label = if speed > 4 then "fast" else "slow"
-print("speed is " .. tostring(speed) .. ": " .. label)
+print(`speed is {speed}: {label}`)
 
 local offset = velocity
 offset += roblox.Vector3.new(0, 0, 5)

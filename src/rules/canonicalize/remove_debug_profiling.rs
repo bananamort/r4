@@ -125,9 +125,9 @@ mod test {
 
     #[test]
     fn keeps_profiling_when_the_global_environment_is_open() {
-        // A loaded chunk can replace `debug`, so the call must survive.
+        // Loaded source can replace `debug`, so the call must survive.
         let (mut block, model) =
-            analyze_luau_with_tokens("require('./module')\ndebug.profilebegin('x')");
+            analyze_luau_with_tokens("load('return 1')\ndebug.profilebegin('x')");
 
         let removed = remove_debug_profiling(&mut block, &model);
 

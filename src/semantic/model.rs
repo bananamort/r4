@@ -826,34 +826,49 @@ impl SemanticModel {
         !self.exposed_globals.contains(&symbol)
     }
 
-    /// Returns whether the global `name` still denotes the standard-library
-    /// binding it was introduced with.
+    /// Returns whether the global *function* `name` still denotes the
+    /// standard-library binding it was introduced with.
     ///
-    /// False when the program reassigns it, when its table is exposed, or when
-    /// the global environment is open. True when the name is never a global at
-    /// all (the program only shadows it), because the pass that consults this
-    /// would then refer to the untouched global.
-    ///
-    /// The lowering passes use this before emitting a call to `math.floor`,
-    /// `tostring` or `string.format`, whose meaning they would otherwise assume.
-    pub fn global_is_stable(&self, name: &str) -> bool {
+    /// False when the block reassigns it or the global environment is open.
+    /// Escaping a function — passing it around or calling it — does not replace
+    /// it, so that is not considered here; use [`Self::global_table_is_stable`]
+    /// for a global used as a table. True when the name is never a global at all
+    /// (the program only shadows it), because a pass that consults this would
+    /// then refer to the untouched global.
+    pub fn global_binding_is_stable(&self, name: &str) -> bool {
         if self.global_environment_is_open() {
             return false;
         }
         match self.global_symbol(name) {
-            Some(global) => {
-                self.symbol(global).write_count == 0 && !self.exposed_globals.contains(&global)
-            }
+            Some(global) => self.symbol(global).write_count == 0,
             None => true,
         }
     }
 
-    /// Returns whether code the model cannot see can reach or replace globals.
+    /// Returns whether the global *table* `name` is untouched: its binding is
+    /// stable and no field of it, or of an immutable alias of it, is written or
+    /// exposed as a value.
     ///
-    /// True when the program names the global environment (`_G`, `_ENV`),
-    /// changes a function's environment (`setfenv`, `getfenv`), loads source at
-    /// runtime (`require`, `load`, `loadstring`, `dofile`, `loadfile`), or swaps
-    /// an upvalue through `debug`. No global identity may be assumed then.
+    /// A table that escapes can have its fields replaced by the code that
+    /// receives it, so unlike a function its exposure matters.
+    pub fn global_table_is_stable(&self, name: &str) -> bool {
+        if !self.global_binding_is_stable(name) {
+            return false;
+        }
+        match self.global_symbol(name) {
+            Some(global) => self.global_table_is_unmodified(global),
+            None => true,
+        }
+    }
+
+    /// Returns whether the block can replace globals through a route it cannot
+    /// attribute to a specific name.
+    ///
+    /// True when a write reaches the environment table (`_G`/`_ENV`), `_ENV` is
+    /// reassigned, source is loaded and run (`load`, `loadstring`, `dofile`,
+    /// `loadfile`), the environment is changed (`setfenv`, `getfenv`), or an
+    /// upvalue is swapped through `debug`. No global identity may be assumed
+    /// then. Loading a module (`require`) is not such a route.
     #[inline]
     pub fn global_environment_is_open(&self) -> bool {
         self.global_environment_open

@@ -131,7 +131,7 @@ pub fn remove_floor_division(
         model,
         names: NameGenerator::new(model),
         math_floor_identifier: None,
-        stable: model.global_is_stable(DEFAULT_MATH_LIBRARY),
+        stable: model.global_table_is_stable(DEFAULT_MATH_LIBRARY),
         unstable: false,
     };
     DefaultVisitor::visit_block(block, &mut processor);
@@ -193,7 +193,7 @@ mod test {
 
     #[test]
     fn rejects_an_open_global_environment() {
-        let (mut block, model) = analyze("require('./module')\nreturn value // 2");
+        let (mut block, model) = analyze("load('return 1')\nreturn value // 2");
 
         let error = remove_floor_division(&mut block, &model).expect_err("the environment is open");
 
@@ -202,8 +202,19 @@ mod test {
 
     #[test]
     fn accepts_an_unstable_environment_without_floor_division() {
-        let (mut block, model) = analyze("require('./module')\nreturn value");
+        let (mut block, model) = analyze("load('return 1')\nreturn value");
 
         remove_floor_division(&mut block, &model).expect("there is no `//` to lower");
+    }
+
+    #[test]
+    fn accepts_a_program_that_loads_a_module() {
+        // `require` loads a separate unit; the lowering still reasons about the
+        // block, so `//` lowers when `math` is untouched.
+        let (mut block, model) = analyze("require('./module')\nreturn value // 2");
+
+        remove_floor_division(&mut block, &model).expect("`math` is untouched");
+
+        assert!(generate(&block).contains("math.floor(value / 2)"));
     }
 }

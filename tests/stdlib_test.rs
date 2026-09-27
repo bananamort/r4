@@ -277,13 +277,20 @@ fn an_unmodified_library_through_an_alias_is_still_dropped() {
 }
 
 #[test]
-fn a_dynamic_environment_keeps_dead_results() {
+fn an_open_global_environment_keeps_dead_results() {
     for code in [
-        "require('./module')\nlocal x = math.floor(1.5)\nreturn 0",
         "load('return 1')\nlocal x = math.floor(1.5)\nreturn 0",
         "debug.setupvalue(f, 1, {})\nlocal x = math.floor(1.5)\nreturn 0",
+        "_G.math.floor = function() end\nlocal x = math.floor(1.5)\nreturn 0",
     ] {
         let output = remove_unused(code);
         assert!(output.contains("math.floor"), "`{code}`\n{output}");
     }
+}
+
+#[test]
+fn loading_a_module_keeps_optimizing() {
+    // `require` loads a unit the build can see, so the block is still modeled.
+    let output = remove_unused("require('./module')\nlocal x = math.floor(1.5)\nreturn 0");
+    assert!(!output.contains("math.floor"), "{output}");
 }

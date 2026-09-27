@@ -65,10 +65,12 @@ impl EscapeAnalysis {
         let mut analyzer = EscapeAnalyzer {
             model,
             symbols: HashMap::new(),
+            environment_written: false,
         };
         analyzer.analyze_block(block);
         let exposed_globals = collect_exposed_globals(&analyzer.symbols, model);
-        let global_environment_open = global_environment_is_open(&analyzer.symbols, model);
+        let global_environment_open =
+            global_environment_is_open(&analyzer.symbols, model, analyzer.environment_written);
         Self {
             symbols: analyzer.symbols,
             exposed_globals,
@@ -87,13 +89,13 @@ impl EscapeAnalysis {
         &self.exposed_globals
     }
 
-    /// Returns whether the program can reach or replace globals from code the
-    /// analysis cannot see.
+    /// Returns whether the block can replace globals through a route it cannot
+    /// attribute to a specific name.
     ///
-    /// True when the program loads source at runtime, changes a function's
-    /// environment, or names the global environment. Such code can replace any
-    /// global, so no global may be assumed to keep the binding the block gave
-    /// it.
+    /// True when a write reaches the environment table, source is loaded and run,
+    /// the environment is changed, or an upvalue is swapped through `debug`.
+    /// Loading a module is not such a route; its contents belong to the
+    /// whole-program build.
     #[inline]
     pub fn global_environment_is_open(&self) -> bool {
         self.global_environment_open
@@ -162,6 +164,8 @@ impl EscapeAnalysis {
 struct EscapeAnalyzer<'m> {
     model: &'m SemanticModel,
     symbols: HashMap<SymbolId, SymbolEscape>,
+    /// Set when a write goes through the global environment table.
+    environment_written: bool,
 }
 
 impl EscapeAnalyzer<'_> {
@@ -296,9 +300,11 @@ impl EscapeAnalyzer<'_> {
         match variable {
             Variable::Identifier(_) => {}
             Variable::Field(field) => {
+                self.record_environment_write(field.get_prefix());
                 self.record_field_access(field.get_prefix(), field.get_field(), true)
             }
             Variable::Index(index) => {
+                self.record_environment_write(index.get_prefix());
                 self.analyze_prefix_base(index.get_prefix());
                 self.record_index_write(index);
                 self.analyze_value(index.get_index());
@@ -315,14 +321,37 @@ impl EscapeAnalyzer<'_> {
                 }
             }
             Variable::Field(field) => {
+                self.record_environment_write(field.get_prefix());
                 self.record_field_access(field.get_prefix(), field.get_field(), true)
             }
             Variable::Index(index) => {
+                self.record_environment_write(index.get_prefix());
                 self.analyze_prefix_base(index.get_prefix());
                 self.record_index_read(index);
                 self.record_index_write(index);
                 self.analyze_value(index.get_index());
             }
+        }
+    }
+
+    /// Records a write that goes through the global environment table.
+    ///
+    /// `_G.math.floor = custom`, and `local env = _G; env.math = custom`,
+    /// replace a global's field without naming a standard-library base, so the
+    /// write is attributed to the environment rather than to a specific global.
+    fn record_environment_write(&mut self, prefix: &Prefix) {
+        let Some(identifier) = root_identifier(prefix) else {
+            return;
+        };
+        let Some(symbol) = self.symbol(identifier) else {
+            return;
+        };
+        let Some(global) = self.model.try_immutable_alias_root(symbol) else {
+            return;
+        };
+        let name = self.model.symbol(global).name.clone();
+        if ENVIRONMENT_TABLE_NAMES.contains(&name.as_str()) {
+            self.environment_written = true;
         }
     }
 
@@ -571,6 +600,36 @@ impl NodeProcessor for TypeExpressionProcessor<'_, '_> {
     }
 }
 
+/// Returns the identifier at the root of a prefix chain (`a.b.c` yields `a`).
+///
+/// A call or a computed base has no static root, so it yields `None`.
+fn root_identifier(prefix: &Prefix) -> Option<&Identifier> {
+    match prefix {
+        Prefix::Identifier(identifier) => Some(identifier),
+        Prefix::Field(field) => root_identifier(field.get_prefix()),
+        Prefix::Index(index) => root_identifier(index.get_prefix()),
+        Prefix::TypeInstantiation(instantiation) => root_identifier(instantiation.get_prefix()),
+        Prefix::Parenthese(parenthese) => {
+            root_identifier_of_expression(parenthese.inner_expression())
+        }
+        Prefix::Call(_) => None,
+    }
+}
+
+/// Returns the identifier at the root of an expression used as a base.
+fn root_identifier_of_expression(expression: &Expression) -> Option<&Identifier> {
+    match expression {
+        Expression::Identifier(identifier) => Some(identifier),
+        Expression::Field(field) => root_identifier(field.get_prefix()),
+        Expression::Index(index) => root_identifier(index.get_prefix()),
+        Expression::TypeInstantiation(instantiation) => root_identifier(instantiation.get_prefix()),
+        Expression::Parenthese(parenthese) => {
+            root_identifier_of_expression(parenthese.inner_expression())
+        }
+        _ => None,
+    }
+}
+
 /// Returns the identifier at the root of a field or index base, looking through
 /// parentheses and type instantiations.
 ///
@@ -617,22 +676,38 @@ fn collect_exposed_globals(
     exposed
 }
 
-/// Returns whether the program can reach the global environment from code the
-/// analysis cannot see.
+/// Returns whether the block itself can replace a global through a route it
+/// cannot attribute to a specific name.
 ///
-/// The global environment is reachable when the source names it (`_G`, `_ENV`),
-/// changes a function's environment (`setfenv`, `getfenv`), loads source at
-/// runtime (`require`, `load`, `loadstring`, `dofile`, `loadfile`), or swaps an
-/// upvalue through `debug` (`debug.setupvalue`, `debug.setfenv`). Each of those
-/// can replace a global the block leaves untouched, so every global becomes
-/// unreliable.
+/// That is: a write that reaches a field of the environment table (`_G` or
+/// `_ENV`), a reassignment of `_ENV`, source loaded and executed at runtime
+/// (`load`, `loadstring`, `dofile`, `loadfile`), an environment change
+/// (`setfenv`, `getfenv`), or an upvalue swap through `debug`
+/// (`debug.setupvalue`, `debug.setfenv`). Each of those can replace a global the
+/// block leaves alone, so every global becomes unreliable.
+///
+/// Loaded modules (`require`) are deliberately not one of them: a module is a
+/// separate unit that only the whole-program build can see, and treating its
+/// presence as "the world changed" would refuse every modular program instead
+/// of reasoning about the one being transformed.
 fn global_environment_is_open(
     symbols: &HashMap<SymbolId, SymbolEscape>,
     model: &SemanticModel,
+    environment_written: bool,
 ) -> bool {
+    if environment_written {
+        return true;
+    }
     if GLOBAL_ENVIRONMENT_NAMES
         .iter()
         .any(|name| model.global_symbol(name).is_some())
+    {
+        return true;
+    }
+    // Reassigning `_ENV` changes the table every global name resolves to.
+    if model
+        .global_symbol(ENVIRONMENT_NAME)
+        .is_some_and(|global| model.symbol(global).write_count != 0)
     {
         return true;
     }
@@ -648,19 +723,26 @@ fn global_environment_is_open(
     })
 }
 
-/// Names that reach the global environment, so any global can be replaced
+/// Names that run code the analysis cannot see, so any global can be replaced
 /// through them.
-const GLOBAL_ENVIRONMENT_NAMES: [&str; 9] = [
-    "_G",
-    "_ENV",
-    "setfenv",
-    "getfenv",
-    "require",
+///
+/// `require` is deliberately absent: it loads a separate unit, which only the
+/// whole-program build can see. Treating it as "the world changed" would refuse
+/// every modular program, which is not a correctness argument.
+const GLOBAL_ENVIRONMENT_NAMES: [&str; 6] = [
     "load",
     "loadstring",
     "dofile",
     "loadfile",
+    "setfenv",
+    "getfenv",
 ];
+
+/// The name that binds the environment in Lua 5.2 and later.
+const ENVIRONMENT_NAME: &str = "_ENV";
+
+/// The names that refer to the global environment table.
+const ENVIRONMENT_TABLE_NAMES: [&str; 2] = ["_G", ENVIRONMENT_NAME];
 
 /// `debug` functions that replace an upvalue or an environment.
 const REFLECTION_FIELD_NAMES: [&str; 2] = ["setupvalue", "setfenv"];
@@ -760,13 +842,16 @@ mod test {
     }
 
     #[test]
-    fn the_global_environment_is_open_through_reach_hatches() {
+    fn the_global_environment_is_open_through_writes_and_opaque_code() {
         for code in [
             "_G.math.floor = function() end",
             "_ENV.math.floor = function() end",
+            "_G[key] = 1",
+            "local env = _G\nenv.math.floor = function() end",
+            "(math).floor = 1\n_G[key] = 1",
+            "_ENV = {}",
             "setfenv(1, {})",
             "getfenv(1)",
-            "require('./module')",
             "load('return 1')",
             "loadstring('return 1')",
             "dofile('script.lua')",
@@ -788,6 +873,13 @@ mod test {
             "local d = debug\nreturn d.profilebegin",
             "assert(x)",
             "print('hello')",
+            // Loading a module, and reading the environment, replace nothing.
+            "require('./module')",
+            "local env = _ENV or _G\nreturn env",
+            // Writing a *named* global is attributed to that global, not to the
+            // environment as a whole.
+            "math.floor = function() end",
+            "local math = math\nreturn math.floor(1.5)",
         ] {
             assert!(!environment_open(code), "`{code}`");
         }

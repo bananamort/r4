@@ -252,8 +252,8 @@ fn remove_interpolated_string_with_strategy(
         string_format_identifier: None,
         tostring_identifier: None,
         strategy,
-        tostring_stable: model.global_is_stable(DEFAULT_TOSTRING_IDENTIFIER),
-        string_stable: model.global_is_stable(DEFAULT_STRING_LIBRARY),
+        tostring_stable: model.global_binding_is_stable(DEFAULT_TOSTRING_IDENTIFIER),
+        string_stable: model.global_table_is_stable(DEFAULT_STRING_LIBRARY),
         unstable: None,
     };
     DefaultVisitor::visit_block(block, &mut processor);

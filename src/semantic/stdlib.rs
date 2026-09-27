@@ -565,9 +565,8 @@ mod test {
     }
 
     #[test]
-    fn a_dynamic_environment_is_not_total() {
+    fn an_open_global_environment_is_not_total() {
         for code in [
-            "require('./module')\nreturn math.floor(1.5)",
             "load('return 1')\nreturn math.floor(1.5)",
             "loadstring('return 1')\nreturn math.floor(1.5)",
             "dofile('script.lua')\nreturn math.floor(1.5)",
@@ -578,6 +577,13 @@ mod test {
         ] {
             assert!(!is_total(code), "`{code}` must not be total");
         }
+    }
+
+    #[test]
+    fn loading_a_module_does_not_disable_the_model() {
+        // A module is a separate unit that the whole-program build can see; the
+        // transform reasons about the block, not about code it cannot read.
+        assert!(is_total("require('./module')\nreturn math.floor(1.5)"));
     }
 
     #[test]
