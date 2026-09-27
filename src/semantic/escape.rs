@@ -16,13 +16,14 @@ use std::collections::{HashMap, HashSet};
 
 use crate::nodes::{
     Arguments, AssignStatement, Block, CompoundAssignStatement, Expression, ExpressionType,
-    FunctionCall, IfExpression, IfStatement, IndexExpression, InterpolatedStringExpression,
-    LastStatement, NumericForStatement, Prefix, Statement, TableEntry, TableExpression, Type,
-    TypeDeclarationStatement, UnaryExpression, Variable, VariableAssignment,
+    FunctionCall, Identifier, IfExpression, IfStatement, IndexExpression,
+    InterpolatedStringExpression, LastStatement, NumericForStatement, Prefix, Statement,
+    TableEntry, TableExpression, Type, TypeDeclarationStatement, UnaryExpression, Variable,
+    VariableAssignment,
 };
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 
-use super::{SemanticModel, SymbolId};
+use super::{SemanticModel, SymbolId, SymbolKind};
 
 /// What the escape analysis learned about one local symbol.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -54,6 +55,7 @@ pub struct SymbolEscape {
 #[derive(Clone, Debug, Default)]
 pub struct EscapeAnalysis {
     symbols: HashMap<SymbolId, SymbolEscape>,
+    exposed_globals: HashSet<SymbolId>,
 }
 
 impl EscapeAnalysis {
@@ -64,9 +66,22 @@ impl EscapeAnalysis {
             symbols: HashMap::new(),
         };
         analyzer.analyze_block(block);
+        let exposed_globals = collect_exposed_globals(&analyzer.symbols, model);
         Self {
             symbols: analyzer.symbols,
+            exposed_globals,
         }
+    }
+
+    /// Returns the global symbols whose table an occurrence can mutate or expose.
+    ///
+    /// A global is exposed when it, or an immutable alias of it, is escaped as a
+    /// value, written through a dynamic index, or has a field written. Consumers
+    /// that rely on a global still denoting a standard-library table (for
+    /// example [`call_is_pure`](super::call_is_pure)) require its absence.
+    #[inline]
+    pub fn exposed_globals(&self) -> &HashSet<SymbolId> {
+        &self.exposed_globals
     }
 
     /// Returns the information collected for `symbol`, if any occurrence was
@@ -296,14 +311,9 @@ impl EscapeAnalyzer<'_> {
         }
     }
 
-    fn record_field_access(
-        &mut self,
-        prefix: &Prefix,
-        field: &crate::nodes::Identifier,
-        write: bool,
-    ) {
+    fn record_field_access(&mut self, prefix: &Prefix, field: &Identifier, write: bool) {
         self.analyze_prefix_base(prefix);
-        if let Prefix::Identifier(identifier) = prefix {
+        if let Some(identifier) = base_identifier(prefix) {
             if let Some(symbol) = self.symbol(identifier) {
                 let name = field.get_name().clone();
                 if write {
@@ -316,7 +326,7 @@ impl EscapeAnalyzer<'_> {
     }
 
     fn record_index_access(&mut self, index: &IndexExpression) {
-        if let Prefix::Identifier(identifier) = index.get_prefix() {
+        if let Some(identifier) = base_identifier(index.get_prefix()) {
             if let Some(symbol) = self.symbol(identifier) {
                 match string_literal(index.get_index()) {
                     Some(name) => {
@@ -330,7 +340,7 @@ impl EscapeAnalyzer<'_> {
     }
 
     fn record_index_read(&mut self, index: &IndexExpression) {
-        if let Prefix::Identifier(identifier) = index.get_prefix() {
+        if let Some(identifier) = base_identifier(index.get_prefix()) {
             if let Some(symbol) = self.symbol(identifier) {
                 match string_literal(index.get_index()) {
                     Some(name) => {
@@ -343,7 +353,7 @@ impl EscapeAnalyzer<'_> {
     }
 
     fn record_index_write(&mut self, index: &IndexExpression) {
-        if let Prefix::Identifier(identifier) = index.get_prefix() {
+        if let Some(identifier) = base_identifier(index.get_prefix()) {
             if let Some(symbol) = self.symbol(identifier) {
                 match string_literal(index.get_index()) {
                     Some(name) => {
@@ -546,11 +556,164 @@ impl NodeProcessor for TypeExpressionProcessor<'_, '_> {
     }
 }
 
+/// Returns the identifier at the root of a field or index base, looking through
+/// parentheses and type instantiations.
+///
+/// A parenthesized base such as `(table).field` still reads or writes a field of
+/// `table`, so it must be recorded like the unparenthesized form.
+fn base_identifier(prefix: &Prefix) -> Option<&Identifier> {
+    match prefix {
+        Prefix::Identifier(identifier) => Some(identifier),
+        Prefix::Parenthese(parenthese) => match parenthese.inner_expression() {
+            Expression::Identifier(identifier) => Some(identifier),
+            _ => None,
+        },
+        Prefix::TypeInstantiation(instantiation) => base_identifier(instantiation.get_prefix()),
+        Prefix::Field(_) | Prefix::Index(_) | Prefix::Call(_) => None,
+    }
+}
+
+/// Collects the globals whose table an occurrence can mutate.
+///
+/// A global is exposed when it, or an immutable alias of it, has a field
+/// written, is written through a dynamic index, or escapes as a value.
+///
+/// The global environment also exposes every global: `_G.math.floor = custom`
+/// writes a field of `math` without naming it as a base, and `setfenv` can
+/// replace the environment wholesale. When any of those names is used, every
+/// global is treated as exposed.
+fn collect_exposed_globals(
+    symbols: &HashMap<SymbolId, SymbolEscape>,
+    model: &SemanticModel,
+) -> HashSet<SymbolId> {
+    let mut exposed = HashSet::new();
+    for (symbol, info) in symbols {
+        let mutates =
+            info.hard_escapes > 0 || !info.field_writes.is_empty() || info.has_dynamic_write;
+        if !mutates {
+            continue;
+        }
+        let Some(root) = model.try_immutable_alias_root(*symbol) else {
+            continue;
+        };
+        if model
+            .try_symbol(root)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Global)
+        {
+            exposed.insert(root);
+        }
+    }
+
+    if GLOBAL_ENVIRONMENT_NAMES
+        .iter()
+        .any(|name| model.global_symbol(name).is_some())
+    {
+        for symbol in &model.symbols {
+            if symbol.kind == SymbolKind::Global {
+                exposed.insert(symbol.id);
+            }
+        }
+    }
+
+    exposed
+}
+
+/// Names that reach the global environment, so any global's fields can be
+/// written through them.
+const GLOBAL_ENVIRONMENT_NAMES: [&str; 4] = ["_G", "_ENV", "setfenv", "getfenv"];
+
 fn string_literal(expression: &Expression) -> Option<String> {
     match expression {
         Expression::String(string) => std::str::from_utf8(string.get_value())
             .ok()
             .map(str::to_owned),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::Parser;
+
+    /// Returns the names of the globals the program can mutate.
+    fn exposed(code: &str) -> HashSet<String> {
+        let (block, model) = Parser::default()
+            .parse_analyzed(code)
+            .unwrap_or_else(|error| panic!("`{code}` must analyze: {error}"));
+        EscapeAnalysis::analyze(&block, &model)
+            .exposed_globals()
+            .iter()
+            .map(|symbol| model.symbol(*symbol).name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_field_write_exposes_its_global() {
+        for code in [
+            "math.floor = function() end",
+            "math['floor'] = function() end",
+            "math[key] = function() end",
+            // A parenthesized base still writes a field of `math`.
+            "(math).floor = function() end",
+            "(math)[key] = function() end",
+        ] {
+            assert!(exposed(code).contains("math"), "`{code}`");
+        }
+    }
+
+    #[test]
+    fn an_alias_write_exposes_the_global_it_aliases() {
+        for code in [
+            "local m = math\nm.floor = function() end",
+            "local m = math\nlocal n = m\nn.floor = function() end",
+            "local m = math\nm[key] = function() end",
+        ] {
+            assert!(exposed(code).contains("math"), "`{code}`");
+        }
+    }
+
+    #[test]
+    fn escaping_a_table_exposes_its_global() {
+        for code in [
+            "install(math)",
+            "local m = math\ninstall(m)",
+            "local t = { math }",
+            "return math",
+            "math:method()",
+        ] {
+            assert!(exposed(code).contains("math"), "`{code}`");
+        }
+    }
+
+    #[test]
+    fn reading_a_table_field_does_not_expose_it() {
+        for code in [
+            "local x = math.floor(1.5)\nreturn x",
+            "local m = math\nreturn m.floor(1.5)",
+            "return math.floor",
+            "return math['floor']",
+            "math.floor(1.5)",
+        ] {
+            assert!(!exposed(code).contains("math"), "`{code}`");
+        }
+    }
+
+    #[test]
+    fn a_nested_field_write_does_not_expose_the_root() {
+        // Writing `math.helpers.floor` leaves `math.floor` untouched.
+        assert!(!exposed("math.helpers.floor = 1").contains("math"));
+    }
+
+    #[test]
+    fn the_global_environment_exposes_every_global() {
+        for code in [
+            "_G.math.floor = function() end\nreturn math.floor(1.5)",
+            "_ENV.math.floor = function() end\nreturn math.floor(1.5)",
+            "setfenv(1, {})\nreturn math.floor(1.5)",
+            "getfenv(1)\nreturn math.floor(1.5)",
+        ] {
+            assert!(exposed(code).contains("math"), "`{code}`");
+        }
     }
 }

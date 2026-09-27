@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::nodes::{Block, Identifier};
 use crate::parser::Dialect;
@@ -81,6 +81,8 @@ pub struct SemanticModel {
     uses: Vec<Vec<SymbolUse>>,
     block_scopes: HashMap<u32, ScopeId>,
     origin: u32,
+    /// The globals whose table an occurrence can mutate or expose as a value.
+    exposed_globals: HashSet<SymbolId>,
 }
 
 impl SemanticModel {
@@ -114,6 +116,7 @@ impl SemanticModel {
             uses,
             block_scopes,
             origin,
+            exposed_globals: HashSet::new(),
         }
     }
 
@@ -790,6 +793,26 @@ impl SemanticModel {
             }
             None => false,
         }
+    }
+
+    /// Records the globals whose table an occurrence can mutate or expose.
+    ///
+    /// Called by the analyzer once the escape analysis has run over the block.
+    pub(crate) fn set_exposed_globals(&mut self, globals: HashSet<SymbolId>) {
+        self.exposed_globals = globals;
+    }
+
+    /// Returns whether the global `symbol` still denotes the table it was
+    /// introduced with.
+    ///
+    /// True when no field of the global, or of an immutable alias of it, is ever
+    /// written and neither escapes as a value, so a field read such as
+    /// `math.floor` denotes the standard-library function. A program can
+    /// otherwise replace a field (`math.floor = custom`) or hand the table to
+    /// code that does.
+    #[inline]
+    pub fn global_table_is_unmodified(&self, symbol: SymbolId) -> bool {
+        !self.exposed_globals.contains(&symbol)
     }
 
     /// Iterates over all symbols captured as upvalues by nested functions.

@@ -250,7 +250,7 @@ impl AnalyzerState {
         self.pop_scope();
 
         let errors = std::mem::take(&mut self.errors);
-        let model = SemanticModel::new(
+        let mut model = SemanticModel::new(
             self.symbols,
             self.scopes,
             self.labels,
@@ -264,6 +264,10 @@ impl AnalyzerState {
             self.origin,
             self.dialect,
         );
+        let exposed = super::escape::EscapeAnalysis::analyze(block, &model)
+            .exposed_globals()
+            .clone();
+        model.set_exposed_globals(exposed);
         Ok((model, errors))
     }
 

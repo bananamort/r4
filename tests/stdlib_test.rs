@@ -241,3 +241,37 @@ fn classifies_every_pure_library_path() {
     let (block, model) = analyze("local sqrt = math.sqrt\nreturn sqrt(1)");
     assert!(!call_is_pure(&model, returned_call(&block)));
 }
+
+#[test]
+fn a_mutated_library_table_is_not_pure() {
+    for code in [
+        "math.floor = function() end\nreturn math.floor(1.5)",
+        "math['floor'] = function() end\nreturn math.floor(1.5)",
+        "math[key] = function() end\nreturn math.floor(1.5)",
+        "(math).floor = function() end\nreturn math.floor(1.5)",
+        "local m = math\nm.floor = function() end\nreturn m.floor(1.5)",
+        "install(math)\nreturn math.floor(1.5)",
+    ] {
+        let (block, model) = analyze(code);
+        assert!(!call_is_pure(&model, returned_call(&block)), "`{code}`");
+    }
+}
+
+#[test]
+fn a_mutated_library_keeps_dead_results() {
+    for code in [
+        "math.floor = function() return 42 end\nlocal x = math.floor(1.5)\nreturn 0",
+        "math['floor'] = function() return 42 end\nlocal x = math.floor(1.5)\nreturn 0",
+        "local m = math\nm.floor = function() return 42 end\nlocal x = math.floor(1.5)\nreturn 0",
+        "install(math)\nlocal x = math.floor(1.5)\nreturn 0",
+    ] {
+        let output = remove_unused(code);
+        assert!(output.contains("math.floor"), "`{code}`\n{output}");
+    }
+}
+
+#[test]
+fn an_unmodified_library_through_an_alias_is_still_dropped() {
+    let output = remove_unused("local m = math\nlocal x = m.floor(1.5)\nreturn 0");
+    assert!(!output.contains("m.floor"), "{output}");
+}

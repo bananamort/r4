@@ -28,7 +28,10 @@ pub fn call_is_pure(model: &SemanticModel, call: &FunctionCall) -> bool {
 ///
 /// Returns the global symbol and the field path (`math.floor` becomes
 /// `["floor"]`) when the callee is a global, or an immutable alias of one, that
-/// is not shadowed or reassigned and denotes a curated pure function.
+/// is not shadowed or reassigned and denotes a curated pure function. A
+/// library *table* must additionally be unmodified: no field of it, or of an
+/// immutable alias of it, is written and it never escapes as a value, so the
+/// field still denotes the standard-library function.
 fn pure_path<'c>(
     model: &SemanticModel,
     call: &'c FunctionCall,
@@ -55,6 +58,11 @@ fn pure_path<'c>(
         return None;
     }
     if !is_pure_path(&global_symbol.name, &fields) {
+        return None;
+    }
+    // A library *table* is only trusted while no code can replace its fields; a
+    // bare global function is already covered by the write-count check above.
+    if !fields.is_empty() && !model.global_table_is_unmodified(global) {
         return None;
     }
 
@@ -529,6 +537,25 @@ mod test {
         ] {
             assert!(!is_total(code), "`{code}` must not be total");
         }
+    }
+
+    #[test]
+    fn a_mutated_library_table_is_not_total() {
+        for code in [
+            "math.floor = function() end\nreturn math.floor(1.5)",
+            "math['floor'] = function() end\nreturn math.floor(1.5)",
+            "math[key] = function() end\nreturn math.floor(1.5)",
+            "(math).floor = function() end\nreturn math.floor(1.5)",
+            "local m = math\nm.floor = function() end\nreturn math.floor(1.5)",
+            "install(math)\nreturn math.floor(1.5)",
+            "_G.math.floor = function() end\nreturn math.floor(1.5)",
+        ] {
+            assert!(!is_total(code), "`{code}` must not be total");
+        }
+        // An unmodified table, including through a read-only alias, is still
+        // recognized.
+        assert!(is_total("return math.floor(1.5)"));
+        assert!(is_total("local m = math\nreturn m.floor(1.5)"));
     }
 
     #[test]

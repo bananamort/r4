@@ -223,12 +223,14 @@ fn compound_field_assignments_record_field_writes() {
 }
 
 #[test]
-fn parenthesized_bases_are_walked_without_attributing_effects() {
+fn parenthesized_bases_are_walked_and_attributed_to_the_base() {
+    // `(t).x` reads the `x` field of `t` exactly like `t.x`, without marking
+    // `t` as escaped.
     let (block, model) = analyze("local t = {}\nreturn (t).x");
     let analysis = EscapeAnalysis::analyze(&block, &model);
     let t = symbol_named(&model, "t");
     assert!(!analysis.escapes(t));
-    assert!(!analysis.is_field_read(t, "x"));
+    assert!(analysis.is_field_read(t, "x"));
 
     let (block, model) = analyze("local t = {}\nreturn (t.x).y");
     let analysis = EscapeAnalysis::analyze(&block, &model);
