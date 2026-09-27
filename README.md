@@ -58,7 +58,6 @@ builds the crate on that exact version as well as the latest stable.
 cargo test --workspace --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
 cargo llvm-cov --workspace --all-features --fail-under-lines 94
-cargo bench
 ```
 
 The `luau_execution_oracle_test` integration test runs a corpus of programs in
