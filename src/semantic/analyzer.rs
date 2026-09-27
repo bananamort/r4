@@ -52,6 +52,26 @@ impl SemanticAnalysis {
 /// The analyzer walks the AST once to build the scope tree, declare symbols and
 /// record reads/writes (pass 1), then resolves every goto against the collected
 /// labels following the Lua 5.2 scoping rules (pass 2).
+///
+/// # Example
+///
+/// ```
+/// use r4::semantic::SemanticAnalyzer;
+/// use r4::Parser;
+///
+/// let block = Parser::default()
+///     .parse("local x = 1\nreturn x")
+///     .expect("valid code");
+/// let model = SemanticAnalyzer::new().analyze(&block).expect("analysis");
+///
+/// let local = model
+///     .symbols
+///     .iter()
+///     .find(|symbol| symbol.name == "x")
+///     .expect("the local is declared");
+/// assert_eq!(local.read_count, 1);
+/// assert_eq!(local.write_count, 1);
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct SemanticAnalyzer {
     options: SemanticOptions,

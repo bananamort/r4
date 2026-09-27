@@ -102,6 +102,19 @@ impl From<DialectSupportError> for DesugarError {
 /// lowered block is finally validated against Lua 5.1: if a construct the
 /// pipeline does not lower survives (a Lua 5.2 `goto`, a Lua 5.3 bitwise
 /// operator), it fails fast instead of producing unparseable output.
+///
+/// # Example
+///
+/// ```
+/// use r4::rules::desugar_to_lua51;
+/// use r4::Parser;
+///
+/// let mut block = Parser::default()
+///     .luau()
+///     .parse("return if flag then 1 else 2")
+///     .expect("valid Luau");
+/// desugar_to_lua51(&mut block).expect("lowering to Lua 5.1");
+/// ```
 pub fn desugar_to_lua51(block: &mut Block) -> Result<(), DesugarError> {
     run(block, None)
 }

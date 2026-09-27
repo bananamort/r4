@@ -115,6 +115,21 @@ impl std::fmt::Display for Dialect {
 /// The default dialect is [`Dialect::Default`], which detects the dialect from
 /// the source. Use [`Parser::dialect`] or the per-dialect helpers to choose one
 /// explicitly; an explicit dialect bypasses detection.
+///
+/// # Example
+///
+/// ```
+/// use r4::Parser;
+///
+/// let block = Parser::default()
+///     .luau()
+///     .parse("local x: number = 1\nreturn x")
+///     .expect("valid Luau");
+/// assert!(block.first_statement().is_some());
+///
+/// // With no explicit dialect the parser detects it from the source.
+/// assert!(Parser::default().parse("goto done\n::done::").is_ok());
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parser {
     hold_token_data: bool,

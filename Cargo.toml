@@ -2,6 +2,7 @@
 name = "r4"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.82"
 description = "A semantically-aware and control-flow tracking Lua analysis and transformation engine"
 license = "MIT"
 

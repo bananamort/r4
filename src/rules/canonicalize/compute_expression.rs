@@ -52,17 +52,7 @@ fn fold(evaluator: &Evaluator, expression: &Expression) -> Option<Expression> {
     if !is_safe_literal(&value) {
         return None;
     }
-    // In Lua 5.3/5.4 an integral result of a float operation must not become an
-    // integer literal; the generator prints integral floats without a fraction,
-    // so leave those expressions in place instead of changing their subtype.
-    if evaluator.integer_numbers() {
-        if let LuaValue::Number(number) = &value {
-            if number.is_finite() && number.fract() == 0.0 {
-                return None;
-            }
-        }
-    }
-    value.to_expression()
+    evaluator.value_to_expression(value)
 }
 
 fn evaluate(evaluator: &Evaluator, expression: &Expression) -> Option<LuaValue> {
@@ -155,14 +145,35 @@ mod test {
     }
 
     #[test]
-    fn lua53_leaves_an_integral_float_alone() {
-        // Folding `2 ^ 10` would print an integral float as an integer literal,
-        // changing its subtype, so the expression is left in place.
+    fn lua53_folds_an_integral_float_to_a_float_literal() {
+        // `2 ^ 10` is a float in Lua 5.3; folding keeps the float subtype by
+        // emitting `1024.0`, not the integer-looking `1024`.
         let (mut block, model) = analyze_lua53("return 2 ^ 10");
 
         compute_expression(&mut block, &model);
 
-        insta::assert_snapshot!(generate(&block).trim(), @"return 2 ^ 10");
+        insta::assert_snapshot!(generate(&block).trim(), @"return 1024.0");
+    }
+
+    #[test]
+    fn lua53_folds_a_float_concat_with_the_float_subtype() {
+        // In Lua 5.3 `tostring(1.0)` is `"1.0"`, so the folded string keeps it.
+        let (mut block, model) = analyze_lua53("return '' .. 1.0");
+
+        compute_expression(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return '1.0'");
+    }
+
+    #[test]
+    fn lua53_string_number_coercion_uses_the_integer_subtype() {
+        // `'2' + 3` is the integer 5 in Lua 5.3, so `5 // 2` is the integer 2;
+        // coercing the string to a float would make the floor division `2.0`.
+        let (mut block, model) = analyze_lua53("return ('2' + 3) // 2");
+
+        compute_expression(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return 2");
     }
 
     #[test]
@@ -181,6 +192,17 @@ mod test {
         compute_expression(&mut block, &model);
 
         insta::assert_snapshot!(generate(&block).trim(), @"return 'ab'");
+    }
+
+    #[test]
+    fn folds_float_concat_without_the_float_subtype() {
+        // Lua 5.1/5.2/Luau have no float subtype, so an integral float prints
+        // as `1` rather than `1.0`.
+        let (mut block, model) = analyze("return '' .. 1.0");
+
+        compute_expression(&mut block, &model);
+
+        insta::assert_snapshot!(generate(&block).trim(), @"return '1'");
     }
 
     #[test]

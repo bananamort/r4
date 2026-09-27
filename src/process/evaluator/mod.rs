@@ -27,6 +27,24 @@ impl Evaluator {
     pub fn integer_numbers(&self) -> bool {
         self.integers
     }
+
+    /// Converts a folded value into an expression.
+    ///
+    /// Under Lua 5.3/5.4 integer semantics an integral result of a float
+    /// operation is kept as a float literal (`1024.0`), so folding preserves the
+    /// number subtype instead of producing an integer-looking literal that
+    /// would change it.
+    pub fn value_to_expression(&self, value: LuaValue) -> Option<Expression> {
+        match value {
+            LuaValue::Number(number)
+                if self.integers && number.is_finite() && number.fract() == 0.0 =>
+            {
+                Some(DecimalNumber::new(number).with_fraction().into())
+            }
+            value => value.to_expression(),
+        }
+    }
+
     /// When evaluating expressions related to tables, this value tells the evaluator if
     /// metamethods can have side effects. For example, indexing a normal table in Lua does not
     /// have any side effects, but if the table is a metatable, it's `__index` metamethod can
@@ -501,8 +519,14 @@ impl Evaluator {
             | BinaryOperator::Percent => self.evaluate_arithmetic(expression),
             BinaryOperator::Concat => {
                 match (
-                    self.evaluate(expression.left()).string_coercion(),
-                    self.evaluate(expression.right()).string_coercion(),
+                    lua_value::string_coercion_with_subtype(
+                        self.evaluate(expression.left()),
+                        self.integers,
+                    ),
+                    lua_value::string_coercion_with_subtype(
+                        self.evaluate(expression.right()),
+                        self.integers,
+                    ),
                 ) {
                     (LuaValue::String(mut left), LuaValue::String(right)) => {
                         left.extend_from_slice(&right);
@@ -562,8 +586,8 @@ impl Evaluator {
         right: LuaValue,
         integers: bool,
     ) -> Option<LuaValue> {
-        let left = left.number_coercion();
-        let right = right.number_coercion();
+        let left = lua_value::number_coercion_with_subtype(left, integers);
+        let right = lua_value::number_coercion_with_subtype(right, integers);
 
         if integers {
             if let (LuaValue::Integer(a), LuaValue::Integer(b)) = (&left, &right) {
@@ -784,7 +808,7 @@ impl Evaluator {
             BinaryOperator::Concat => {
                 let left = self.evaluate_with(expression.left(), lookup)?;
                 let right = self.evaluate_with(expression.right(), lookup)?;
-                Self::concatenate(left, right)
+                Self::concatenate(left, right, self.integers)
             }
             operator => {
                 let left = self.evaluate_with(expression.left(), lookup)?;
@@ -888,8 +912,11 @@ impl Evaluator {
         }
     }
 
-    fn concatenate(left: LuaValue, right: LuaValue) -> Option<LuaValue> {
-        match (left.string_coercion(), right.string_coercion()) {
+    fn concatenate(left: LuaValue, right: LuaValue, integers: bool) -> Option<LuaValue> {
+        match (
+            lua_value::string_coercion_with_subtype(left, integers),
+            lua_value::string_coercion_with_subtype(right, integers),
+        ) {
             (LuaValue::String(mut left), LuaValue::String(right)) => {
                 left.extend_from_slice(&right);
                 Some(LuaValue::String(left))

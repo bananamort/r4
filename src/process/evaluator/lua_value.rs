@@ -86,40 +86,20 @@ impl LuaValue {
 
     /// Attempt to convert the Lua value into a number value. This will convert strings when
     /// possible and return the same value otherwise.
+    ///
+    /// Numbers are always floats; `number_coercion_with_subtype` additionally
+    /// applies the Lua 5.3/5.4 integer subtype.
     pub fn number_coercion(self) -> Self {
-        match &self {
-            Self::String(string) => str::from_utf8(string)
-                .ok()
-                .map(str::trim)
-                .and_then(|string| {
-                    let number = if string.starts_with('-') {
-                        string
-                            .get(1..)
-                            .and_then(|string| string.parse::<NumberExpression>().ok())
-                            .map(|number| -number.compute_value())
-                    } else {
-                        string
-                            .parse::<NumberExpression>()
-                            .ok()
-                            .map(|number| number.compute_value())
-                    };
-
-                    number.map(LuaValue::Number)
-                }),
-            _ => None,
-        }
-        .unwrap_or(self)
+        number_coercion_with_subtype(self, false)
     }
 
     /// Attempt to convert the Lua value into a string value. This will convert numbers when
     /// possible and return the same value otherwise.
+    ///
+    /// Integral floats print without a fraction; `string_coercion_with_subtype`
+    /// additionally applies the Lua 5.3/5.4 float subtype.
     pub fn string_coercion(self) -> Self {
-        match &self {
-            Self::Integer(value) => Some(Self::from(value.to_string())),
-            Self::Number(value) => Some(Self::from(format_lua_number(*value))),
-            _ => None,
-        }
-        .unwrap_or(self)
+        string_coercion_with_subtype(self, false)
     }
 
     /// Returns the length of a Lua value (equivalent to the `#` operator).
@@ -243,6 +223,68 @@ fn trim_trailing_zeros(text: &str) -> String {
     trimmed.strip_suffix('.').unwrap_or(trimmed).to_owned()
 }
 
+/// Formats an `f64` the way Lua string coercion does, optionally keeping the
+/// Lua 5.3/5.4 float subtype.
+///
+/// Lua 5.3/5.4 format a float with `%.14g` and append `.0` when the result
+/// looks like an integer, so `tostring(1.0)` is `"1.0"` while `tostring(1)` is
+/// `"1"`. Other dialects (5.1/5.2/Luau) print `"1"`, so `lua_float_subtype`
+/// selects the behavior.
+fn format_lua_number_with_subtype(value: f64, lua_float_subtype: bool) -> String {
+    let formatted = format_lua_number(value);
+    if lua_float_subtype && formatted.chars().all(|c| c == '-' || c.is_ascii_digit()) {
+        format!("{formatted}.0")
+    } else {
+        formatted
+    }
+}
+
+/// Coerces a value to a string the way `..` does, with an optional Lua
+/// 5.3/5.4 float subtype for the number case.
+pub(crate) fn string_coercion_with_subtype(value: LuaValue, lua_float_subtype: bool) -> LuaValue {
+    let coerced = match &value {
+        LuaValue::Integer(integer) => Some(LuaValue::from(integer.to_string())),
+        LuaValue::Number(number) => Some(LuaValue::from(format_lua_number_with_subtype(
+            *number,
+            lua_float_subtype,
+        ))),
+        _ => None,
+    };
+    coerced.unwrap_or(value)
+}
+
+/// Coerces a value to a number the way arithmetic does, with an optional Lua
+/// 5.3/5.4 integer subtype for integer numerals.
+pub(crate) fn number_coercion_with_subtype(value: LuaValue, integer_subtype: bool) -> LuaValue {
+    let parsed = match &value {
+        LuaValue::String(string) => str::from_utf8(string)
+            .ok()
+            .map(str::trim)
+            .and_then(|text| parse_number_text(text, integer_subtype)),
+        _ => None,
+    };
+    parsed.unwrap_or(value)
+}
+
+fn parse_number_text(text: &str, integer_subtype: bool) -> Option<LuaValue> {
+    let (negative, magnitude) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let number = magnitude.parse::<NumberExpression>().ok()?;
+    if integer_subtype {
+        if let Some(integer) = number.compute_integer() {
+            return Some(LuaValue::Integer(if negative {
+                integer.wrapping_neg()
+            } else {
+                integer
+            }));
+        }
+    }
+    let value = number.compute_value();
+    Some(LuaValue::Number(if negative { -value } else { value }))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -357,5 +399,62 @@ mod test {
                 "formatting {value}"
             );
         }
+    }
+
+    #[test]
+    fn string_coercion_with_the_float_subtype_appends_a_fraction() {
+        for (value, expected) in [
+            (1.0, "1.0"),
+            (1.5, "1.5"),
+            (100.0, "100.0"),
+            (1e21, "1e+21"),
+            (1e-5, "1e-05"),
+            (-0.0, "-0.0"),
+        ] {
+            assert_eq!(
+                string_coercion_with_subtype(LuaValue::Number(value), true),
+                LuaValue::from(expected),
+                "formatting {value}"
+            );
+        }
+        // An integer keeps its integer form, and a non-subtype dialect has no
+        // `.0` suffix.
+        assert_eq!(
+            string_coercion_with_subtype(LuaValue::Integer(1), true),
+            LuaValue::from("1")
+        );
+        assert_eq!(
+            string_coercion_with_subtype(LuaValue::Number(1.0), false),
+            LuaValue::from("1")
+        );
+    }
+
+    #[test]
+    fn number_coercion_with_the_integer_subtype_prefers_integers() {
+        for (text, expected) in [
+            ("1", LuaValue::Integer(1)),
+            ("-3", LuaValue::Integer(-3)),
+            ("0x10", LuaValue::Integer(16)),
+            ("  7  ", LuaValue::Integer(7)),
+            ("1.0", LuaValue::Number(1.0)),
+            ("1e2", LuaValue::Number(100.0)),
+            ("-1.5", LuaValue::Number(-1.5)),
+        ] {
+            assert_eq!(
+                number_coercion_with_subtype(LuaValue::from(text), true),
+                expected,
+                "coercing {text:?}"
+            );
+        }
+        // A non-numeric string and a non-subtype dialect fall back to the
+        // float-only coercion.
+        assert_eq!(
+            number_coercion_with_subtype(LuaValue::from("nope"), true),
+            LuaValue::from("nope")
+        );
+        assert_eq!(
+            number_coercion_with_subtype(LuaValue::from("1"), false),
+            LuaValue::Number(1.0)
+        );
     }
 }
