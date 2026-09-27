@@ -49,7 +49,7 @@ assert!(generator.into_string().contains("total"));
 
 ## Toolchain
 
-r4 requires **Rust 1.87 or newer** (see `rust-version` in `Cargo.toml`). CI
+r4 requires **Rust 1.89 or newer** (see `rust-version` in `Cargo.toml`). CI
 builds the crate on that exact version as well as the latest stable.
 
 ## Testing

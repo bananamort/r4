@@ -548,17 +548,14 @@ return kept
 "#,
     ),
     (
-        "unreachable code after return",
+        "unreachable loop",
         r#"
-local function classify(value)
-    if value > 0 then
-        return "positive"
-        print("never")
-    end
-    return "non-positive"
+local total = 0
+while false do
+    total = total + 1
 end
-print(classify(1), classify(-1))
-return classify(0)
+print(total)
+return total
 "#,
     ),
     (
