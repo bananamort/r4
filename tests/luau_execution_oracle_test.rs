@@ -12,10 +12,11 @@
 //! compiler.
 
 use r4::generator::{LuaGenerator, ReadableLuaGenerator};
+use r4::rules::canonicalize;
 use r4::rules::desugar_to_lua51;
 use r4::rules::rename_variables::rename_variables;
 use r4::semantic::SemanticAnalyzer;
-use r4::Parser;
+use r4::{Dialect, Parser};
 
 /// Wraps a program so that its `print` output and its return values (or the
 /// error it raises) are captured into a single, canonical string.
@@ -110,6 +111,66 @@ fn transform(program: &str) -> String {
         .analyze(&block)
         .expect("the lowered program must analyze");
     r4::rules::canonicalize(&mut block, &model);
+
+    let mut generator = ReadableLuaGenerator::default();
+    generator.write_block(&block);
+    generator.into_string()
+}
+
+/// Analyzes `block` as Luau for an oracle transformation.
+fn analyze(block: &r4::nodes::Block) -> r4::semantic::SemanticModel {
+    SemanticAnalyzer::new()
+        .with_dialect(Dialect::Luau)
+        .analyze(block)
+        .expect("the oracle program must analyze")
+}
+
+/// Applies r4's canonicalization and optimizer passes to `program`, re-analyzing
+/// the tree before each pass so every pass sees a matching model, and returns
+/// the generated Luau.
+fn optimize(program: &str) -> String {
+    let mut block = Parser::default()
+        .luau()
+        .parse(program)
+        .unwrap_or_else(|error| panic!("the oracle program must parse as Luau: {error}"));
+
+    let model = analyze(&block);
+    canonicalize(&mut block, &model);
+
+    let model = analyze(&block);
+    canonicalize::compute_expression(&mut block, &model);
+
+    let model = analyze(&block);
+    canonicalize::group_local(&mut block, &model);
+
+    let model = analyze(&block);
+    canonicalize::remove_dead_table_stores(&mut block, &model);
+
+    let model = analyze(&block);
+    canonicalize::remove_unused_variables(&mut block, &model)
+        .expect("removing unused variables must succeed");
+
+    let model = analyze(&block);
+    canonicalize::remove_dead_stores(&mut block, &model)
+        .expect("removing dead stores must succeed");
+
+    let model = analyze(&block);
+    canonicalize::remove_unreachable_code(&mut block, &model)
+        .expect("removing unreachable code must succeed");
+
+    let model = analyze(&block);
+    canonicalize::remove_unused_labels(&mut block, &model)
+        .expect("removing unused labels must succeed");
+
+    let model = analyze(&block);
+    canonicalize::remove_assertions(&mut block, &model);
+
+    let model = analyze(&block);
+    canonicalize::convert_square_root_call(&mut block, &model);
+
+    let model = analyze(&block);
+    canonicalize::hoist_loop_invariants(&mut block, &model)
+        .expect("hoisting loop invariants must succeed");
 
     let mut generator = ReadableLuaGenerator::default();
     generator.write_block(&block);
@@ -462,6 +523,116 @@ return table.concat(parts, ",")
     ),
 ];
 
+/// Programs that exercise r4's canonicalization and optimizer passes.
+///
+/// Each stays inside the passes' documented assumptions: no `assert` that
+/// fails, and no operation whose observable effect depends on whether a pass
+/// can raise a runtime error.
+const OPTIMIZED_PROGRAMS: &[(&str, &str)] = &[
+    (
+        "constant folding",
+        r#"
+local value = 1 + 2 * 3
+print(value)
+return value
+"#,
+    ),
+    (
+        "unused variable and dead store",
+        r#"
+local unused = 42
+local kept = 1
+kept = 2
+print(kept)
+return kept
+"#,
+    ),
+    (
+        "unreachable code after return",
+        r#"
+local function classify(value)
+    if value > 0 then
+        return "positive"
+        print("never")
+    end
+    return "non-positive"
+end
+print(classify(1), classify(-1))
+return classify(0)
+"#,
+    ),
+    (
+        "adjacent locals merge",
+        r#"
+local a = 1
+local b = 2
+print(a + b)
+return a + b
+"#,
+    ),
+    (
+        "index to field and nil declaration",
+        r#"
+local t = { value = 10, other = 20 }
+local first, second = t["value"], nil
+print(first, second)
+return t["other"]
+"#,
+    ),
+    (
+        "dead table store",
+        r#"
+local t = {}
+t.x = 1
+t.x = 2
+print(t.x)
+return t.x
+"#,
+    ),
+    (
+        "loop invariant",
+        r#"
+local total = 0
+for i = 1, 3 do
+    local scale = 10
+    total = total + i * scale
+end
+print(total)
+return total
+"#,
+    ),
+    (
+        "square root call",
+        r#"
+print(math.sqrt(16))
+return math.sqrt(9)
+"#,
+    ),
+    (
+        "passing assertion",
+        r#"
+local function check(value)
+    assert(value > 0)
+    return value
+end
+print(check(5))
+return check(1)
+"#,
+    ),
+    (
+        "constant condition",
+        r#"
+local flag = 1 < 2
+if flag then
+    print("yes")
+else
+    print("no")
+end
+return flag
+"#,
+    ),
+];
+
 #[test]
 fn lowered_programs_keep_identical_behavior() {
     for (name, program) in PROGRAMS {
@@ -471,6 +642,19 @@ fn lowered_programs_keep_identical_behavior() {
         assert_eq!(
             before, after,
             "`{name}` changed behavior after transformation:\n{lowered}"
+        );
+    }
+}
+
+#[test]
+fn optimized_programs_keep_identical_behavior() {
+    for (name, program) in OPTIMIZED_PROGRAMS {
+        let before = observe(program);
+        let optimized = optimize(program);
+        let after = observe(&optimized);
+        assert_eq!(
+            before, after,
+            "`{name}` changed behavior after optimization:\n{optimized}"
         );
     }
 }

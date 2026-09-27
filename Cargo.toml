@@ -5,6 +5,8 @@ edition = "2021"
 rust-version = "1.87"
 description = "A semantically-aware and control-flow tracking Lua analysis and transformation engine"
 license = "MIT"
+repository = "https://github.com/bananamort/r4"
+readme = "README.md"
 
 [features]
 default = []
@@ -33,6 +35,11 @@ darklua = "0.19.0"
 lune = { version = "0.10.5", default-features = false, features = ["std-roblox"] }
 mlua = { version = "0.11.6", features = ["luau"] }
 async-io = "2.4"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "pipeline"
+harness = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

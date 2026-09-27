@@ -28,6 +28,28 @@ jobs:
       - name: Run cargo test
         run: cargo test --workspace --all-targets
 
+  msrv:
+    name: Check MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.87.0"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check on the declared MSRV
+        run: cargo check --workspace --all-features
+
   clippy:
     name: Run clippy
     runs-on: ubuntu-latest
@@ -69,7 +91,7 @@ jobs:
           command -v cargo-llvm-cov >/dev/null || cargo install cargo-llvm-cov --locked
 
       - name: Measure coverage
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 80
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --ignore-filename-regex 'benches/' --fail-under-lines 94
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
