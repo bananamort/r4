@@ -1,7 +1,7 @@
 use crate::{
     nodes::{Arguments, Expression, TableEntry},
     process::Evaluator,
-    semantic::{has_side_effects, SemanticModel},
+    semantic::{has_observable_effect, SemanticModel},
 };
 
 pub(crate) fn preserve_arguments_side_effects(
@@ -12,7 +12,7 @@ pub(crate) fn preserve_arguments_side_effects(
     match arguments {
         Arguments::Tuple(tuple) => tuple
             .iter_values()
-            .filter(|value| has_side_effects(model, evaluator, value))
+            .filter(|value| has_observable_effect(model, evaluator, value))
             .cloned()
             .collect(),
         Arguments::Table(table) => {
@@ -22,7 +22,7 @@ pub(crate) fn preserve_arguments_side_effects(
                 match entry {
                     TableEntry::Field(field) => {
                         let expression = field.get_value();
-                        if has_side_effects(model, evaluator, expression) {
+                        if has_observable_effect(model, evaluator, expression) {
                             expressions.push(expression.clone());
                         }
                     }
@@ -30,15 +30,15 @@ pub(crate) fn preserve_arguments_side_effects(
                         let key = index.get_key();
                         let value = index.get_value();
 
-                        if has_side_effects(model, evaluator, key) {
+                        if has_observable_effect(model, evaluator, key) {
                             expressions.push(key.clone());
                         }
-                        if has_side_effects(model, evaluator, value) {
+                        if has_observable_effect(model, evaluator, value) {
                             expressions.push(value.clone());
                         }
                     }
                     TableEntry::Value(value) => {
-                        if has_side_effects(model, evaluator, value) {
+                        if has_observable_effect(model, evaluator, value) {
                             expressions.push(*value.clone());
                         }
                     }

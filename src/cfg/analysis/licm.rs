@@ -193,7 +193,11 @@ impl LoopInvariantAnalysis {
                         .next()
                         .expect("the single value was checked above");
 
-                    if !evaluator.is_pure(value) {
+                    // The evaluation must be unobservable: no side effects
+                    // (strict purity) and no possible runtime error, so moving
+                    // it out of a loop that may execute zero times cannot
+                    // change behavior.
+                    if !evaluator.is_pure(value) || !evaluator.cannot_raise(value) {
                         continue;
                     }
 
@@ -201,7 +205,13 @@ impl LoopInvariantAnalysis {
                         .resolve_identifier(identifier.get_identifier())
                         .expect("liveness resolved every identifier in the graph");
                     let info = model.symbol(symbol);
-                    if info.kind != SymbolKind::Local || info.is_captured() {
+                    // The hoisted local must be immutable and uncaptured, so
+                    // collapsing its per-iteration binding into one binding
+                    // before the loop is unobservable.
+                    if info.kind != SymbolKind::Local
+                        || info.is_captured()
+                        || !model.is_immutable(symbol)
+                    {
                         continue;
                     }
 

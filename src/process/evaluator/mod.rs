@@ -231,6 +231,72 @@ impl Evaluator {
         }
     }
 
+    /// Returns whether evaluating `expression` can never raise a Lua error.
+    ///
+    /// This is [`Self::cannot_raise_with`] without extra knowledge, so a call is
+    /// always treated as able to raise.
+    pub fn cannot_raise(&self, expression: &Expression) -> bool {
+        self.cannot_raise_with(expression, &|_| false)
+    }
+
+    /// Returns whether evaluating `expression` can never raise a Lua error,
+    /// treating the calls accepted by `total_call` as unable to raise.
+    ///
+    /// Literals, variable reads, function definitions and varargs reads are
+    /// total, and a table constructor is total when every key and value is. A
+    /// call is total exactly when `total_call` accepts it. Every other form is
+    /// accepted only when the evaluator folds it to a concrete value, which
+    /// proves the evaluation succeeds without raising. Anything else is
+    /// conservatively treated as able to raise, so a pass that deletes or moves
+    /// an evaluation never assumes the program cannot fail.
+    ///
+    /// `total_call` must only accept calls that cannot have side effects and
+    /// cannot raise for the values actually passed.
+    pub fn cannot_raise_with(
+        &self,
+        expression: &Expression,
+        total_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
+        match expression {
+            Expression::False(_)
+            | Expression::Function(_)
+            | Expression::Identifier(_)
+            | Expression::Nil(_)
+            | Expression::Number(_)
+            | Expression::String(_)
+            | Expression::True(_)
+            | Expression::VariableArguments(_) => true,
+            Expression::Parenthese(parenthese) => {
+                self.cannot_raise_with(parenthese.inner_expression(), total_call)
+            }
+            Expression::TypeCast(type_cast) => {
+                self.cannot_raise_with(type_cast.get_expression(), total_call)
+            }
+            Expression::Table(table) => self.table_cannot_raise(table, total_call),
+            Expression::Call(call) => total_call(call),
+            // Operators, indexing, `if` expressions and interpolated strings are
+            // total only when the evaluator folds them to a concrete value.
+            _ => self
+                .evaluate_with(expression, &|_| None)
+                .is_some_and(|value| !matches!(value, LuaValue::Unknown | LuaValue::Table)),
+        }
+    }
+
+    fn table_cannot_raise(
+        &self,
+        table: &TableExpression,
+        total_call: &dyn Fn(&FunctionCall) -> bool,
+    ) -> bool {
+        table.iter_entries().all(|entry| match entry {
+            TableEntry::Field(field) => self.cannot_raise_with(field.get_value(), total_call),
+            TableEntry::Index(index) => {
+                self.cannot_raise_with(index.get_key(), total_call)
+                    && self.cannot_raise_with(index.get_value(), total_call)
+            }
+            TableEntry::Value(value) => self.cannot_raise_with(value, total_call),
+        })
+    }
+
     pub fn has_side_effects(&self, expression: &Expression) -> bool {
         self.has_side_effects_with(expression, &|_| false)
     }
@@ -1109,6 +1175,61 @@ mod test {
                 }
             )*
         };
+    }
+
+    #[test]
+    fn cannot_raise_distinguishes_total_expressions() {
+        let evaluator = Evaluator::default();
+
+        // Literals and variable reads cannot raise.
+        assert!(evaluator.cannot_raise(&Expression::from(1)));
+        assert!(evaluator.cannot_raise(&Expression::identifier("x")));
+
+        // A fully constant expression is folded, which proves it cannot raise.
+        let folded = Expression::from(BinaryExpression::new(
+            BinaryOperator::Plus,
+            Expression::from(1),
+            Expression::from(2),
+        ));
+        assert!(evaluator.cannot_raise(&folded));
+
+        // Arithmetic on a variable can raise a type error.
+        let arithmetic = Expression::from(BinaryExpression::new(
+            BinaryOperator::Plus,
+            Expression::identifier("x"),
+            Expression::from(1),
+        ));
+        assert!(!evaluator.cannot_raise(&arithmetic));
+
+        // A length operation on a variable can raise too.
+        let length = Expression::from(UnaryExpression::new(
+            UnaryOperator::Length,
+            Expression::identifier("x"),
+        ));
+        assert!(!evaluator.cannot_raise(&length));
+
+        // A table constructor is total when every key and value is.
+        assert!(evaluator.cannot_raise(&Expression::Table(TableExpression::default())));
+        let literal_table =
+            Expression::Table(TableExpression::new(Vec::new()).append_array_value(1));
+        assert!(evaluator.cannot_raise(&literal_table));
+        let erroring_entry = Expression::Table(
+            TableExpression::new(Vec::new()).append_array_value(arithmetic.clone()),
+        );
+        assert!(!evaluator.cannot_raise(&erroring_entry));
+        let erroring_key =
+            Expression::Table(TableExpression::new(Vec::new()).append_index(arithmetic, 1));
+        assert!(!evaluator.cannot_raise(&erroring_key));
+    }
+
+    #[test]
+    fn cannot_raise_with_uses_the_call_predicate() {
+        let evaluator = Evaluator::default();
+        // Without a predicate a call is treated as able to raise.
+        let call = Expression::from(FunctionCall::from_name("f"));
+        assert!(!evaluator.cannot_raise(&call));
+        assert!(evaluator.cannot_raise_with(&call, &|_| true));
+        assert!(!evaluator.cannot_raise_with(&call, &|_| false));
     }
 
     #[test]

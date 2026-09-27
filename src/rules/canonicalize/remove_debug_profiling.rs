@@ -96,4 +96,21 @@ mod test {
         assert_eq!(removed, 0, "a non-Luau source must not be rewritten");
         assert!(generate(&block).contains("profilebegin"));
     }
+
+    #[test]
+    fn preserves_arguments_that_can_raise() {
+        // `x + 1` raises when `x` is not a number; dropping it would remove the
+        // error, so the removed call's argument must survive.
+        let (mut block, model) = analyze_luau_with_tokens("debug.profilebegin(x + 1)");
+
+        let removed = remove_debug_profiling(&mut block, &model);
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("profilebegin"), "unexpected: {output}");
+        assert!(
+            output.contains("x + 1"),
+            "the argument must be preserved: {output}"
+        );
+    }
 }

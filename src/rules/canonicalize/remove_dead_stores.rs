@@ -44,7 +44,9 @@ impl std::error::Error for DeadStoreError {}
 /// Removes assignments whose value can never be observed.
 ///
 /// An assignment is dead when the written local is not live after the write and
-/// the assigned values have no side effects. Liveness is computed over the
+/// evaluating the assigned values is unobservable: they have no side effects and
+/// cannot raise a runtime error, so deleting them cannot change behavior (see
+/// [`crate::semantic::has_observable_effect`]). Liveness is computed over the
 /// control flow graph, so stores that are overwritten on every path, or written
 /// before an unconditional return, are removed while stores in conditional
 /// branches are kept.
@@ -147,7 +149,7 @@ fn is_dead_store(
 
     assignment
         .iter_values()
-        .all(|value| !crate::semantic::has_side_effects(model, evaluator, value))
+        .all(|value| !crate::semantic::has_observable_effect(model, evaluator, value))
 }
 
 struct DeadStoreRemover {
@@ -258,5 +260,32 @@ mod test {
         assert_eq!(removed, 1);
         let output = generate(&block);
         assert!(!output.contains("x = 1"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn keeps_stores_whose_value_can_raise() {
+        // `a + 1` raises when `a` is not a number, so the overwritten store is
+        // observable and must stay.
+        let (mut block, model) =
+            analyze_with_tokens("local x\nlocal a = 1\nx = a + 1\nx = 2\nreturn x");
+
+        let removed = remove_dead_stores(&mut block, &model)
+            .expect("dead store removal must succeed with tokens");
+
+        assert_eq!(removed, 0, "the value can raise");
+        assert!(generate(&block).contains("a + 1"));
+    }
+
+    #[test]
+    fn removes_a_dead_store_of_a_total_value() {
+        // A variable read cannot raise, so the overwritten store is removable.
+        let (mut block, model) =
+            analyze_with_tokens("local x\nlocal a = 1\nx = a\nx = 2\nreturn x");
+
+        let removed = remove_dead_stores(&mut block, &model)
+            .expect("dead store removal must succeed with tokens");
+
+        assert_eq!(removed, 1, "a variable read cannot raise");
+        parse(&generate(&block));
     }
 }

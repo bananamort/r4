@@ -525,9 +525,10 @@ return table.concat(parts, ",")
 
 /// Programs that exercise r4's canonicalization and optimizer passes.
 ///
-/// Each stays inside the passes' documented assumptions: no `assert` that
-/// fails, and no operation whose observable effect depends on whether a pass
-/// can raise a runtime error.
+/// Several of them contain an operation that raises a runtime error but whose
+/// value is unused, overwritten, or loop invariant. A pass that deleted or moved
+/// that evaluation would change observable behavior, so the oracle pins the
+/// error down: both runs must raise the same thing.
 const OPTIMIZED_PROGRAMS: &[(&str, &str)] = &[
     (
         "constant folding",
@@ -626,6 +627,70 @@ else
     print("no")
 end
 return flag
+"#,
+    ),
+    (
+        "raising value in a dead store",
+        r#"
+local value = 0
+value = "text" + 1
+value = 2
+print(value)
+return value
+"#,
+    ),
+    (
+        "raising initializer of an unused local",
+        r#"
+local unused = "text" + 1
+print("done")
+return 0
+"#,
+    ),
+    (
+        "raising value in a dead table store",
+        r#"
+local t = {}
+t.value = "text" + 1
+print("done")
+return 0
+"#,
+    ),
+    (
+        "invariant that would raise in a zero-iteration loop",
+        r#"
+local function run(flag)
+    local base = "text"
+    local total = 0
+    while flag do
+        local offset = base + 1
+        total = total + offset
+    end
+    return total
+end
+print(run(false))
+return run(false)
+"#,
+    ),
+    (
+        "loop accumulator that must not be hoisted",
+        r#"
+local total = 0
+for i = 1, 3 do
+    local acc = 10
+    acc = acc + i
+    total = total + acc
+end
+print(total)
+return total
+"#,
+    ),
+    (
+        "pure standard-library call with a bad argument",
+        r#"
+local value = math.floor({})
+print("done")
+return 0
 "#,
     ),
 ];

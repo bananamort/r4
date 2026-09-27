@@ -42,8 +42,9 @@ impl std::error::Error for UnusedVariableError {}
 /// Removes local variables and local functions that are never read.
 ///
 /// Unused detection is `O(1)` per declaration (`Symbol::read_count`); the
-/// initializer values are preserved as expression statements when they have
-/// side effects, using [`Evaluator::has_side_effects`].
+/// initializer values are preserved as expression statements when they are
+/// observable, so an initializer that raises a runtime error still runs (see
+/// [`crate::semantic::has_observable_effect`]).
 ///
 /// Only single-variable assignments and assignments whose variables are all
 /// unused are rewritten: partially-used multi-assignments are left untouched
@@ -147,7 +148,9 @@ impl Processor<'_> {
 
     fn side_effects<'a>(&self, values: impl Iterator<Item = &'a Expression>) -> Vec<Expression> {
         values
-            .filter(|value| crate::semantic::has_side_effects(self.model, &self.evaluator, value))
+            .filter(|value| {
+                crate::semantic::has_observable_effect(self.model, &self.evaluator, value)
+            })
             .cloned()
             .collect()
     }
@@ -285,5 +288,35 @@ mod test {
         assert_eq!(removed, 1);
         let output = generate(&block);
         assert!(!output.contains("unused"), "unexpected: {output}");
+    }
+
+    #[test]
+    fn preserves_erroring_initializers_of_unused_locals() {
+        // `a + 1` raises when `a` is not a number; removing the unused local must
+        // still evaluate its initializer.
+        let (mut block, model) = analyze_with_tokens("local unused = a + 1\nreturn 2");
+
+        let removed = remove_unused_variables(&mut block, &model)
+            .expect("unused variable removal must succeed with tokens");
+
+        assert_eq!(removed, 1);
+        let output = generate(&block);
+        assert!(!output.contains("unused"), "unexpected: {output}");
+        assert!(
+            output.contains("a + 1"),
+            "the initializer must survive: {output}"
+        );
+    }
+
+    #[test]
+    fn removes_unused_locals_with_total_initializers() {
+        // A variable read cannot raise, so the unused local is removable.
+        let (mut block, model) = analyze_with_tokens("local a = 1\nlocal unused = a\nreturn 2");
+
+        let removed = remove_unused_variables(&mut block, &model)
+            .expect("unused variable removal must succeed with tokens");
+
+        assert!(removed >= 1);
+        assert!(!generate(&block).contains("unused"));
     }
 }

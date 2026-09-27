@@ -42,6 +42,6 @@ pub use module::{
     ModuleInterface, ModuleModel, MultiModuleModel, ScopeRef, SymbolRef,
 };
 pub use scope::{Scope, ScopeId, ScopeKind};
-pub use stdlib::{call_is_pure, has_side_effects};
+pub use stdlib::{call_is_pure, call_is_total, has_observable_effect, has_side_effects};
 pub use symbol::{AccessKind, Symbol, SymbolId, SymbolKind, SymbolUse, TokenKey};
 pub use type_alias::{TypeId, TypeSymbol};

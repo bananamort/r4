@@ -3,14 +3,15 @@
 //! [`remove_dead_table_stores`] removes `table.field = value` assignments when
 //! the table is a *confined* local table (see
 //! [`crate::semantic::EscapeAnalysis`]) whose field is never
-//! read, and the assigned value has no side effects.
+//! read, and evaluating the assigned value is unobservable: it has no side
+//! effects and cannot raise a runtime error.
 //!
 //! The pass is deliberately conservative. It only fires when every occurrence
 //! of the table is a static field access, the table is never captured or
 //! reassigned, and it is never read through a dynamic index. Removing the store
 //! is then sound: no metatable can be attached (that would require passing the
-//! table to another function), no field is observed, and the value has no
-//! effects.
+//! table to another function), no field is observed, and evaluating the value is
+//! unobservable.
 
 use crate::nodes::{Block, Expression, Prefix, Statement, Variable};
 use crate::process::{DefaultVisitor, Evaluator, NodeProcessor, NodeVisitor};
@@ -62,7 +63,7 @@ impl DeadTableStoreRemover<'_> {
             .iter_values()
             .next()
             .expect("the assignment was checked to have one value");
-        if crate::semantic::has_side_effects(self.model, &self.evaluator, value) {
+        if crate::semantic::has_observable_effect(self.model, &self.evaluator, value) {
             return false;
         }
 
@@ -150,5 +151,18 @@ mod test {
         let removed = remove_dead_table_stores(&mut block, &model);
 
         assert_eq!(removed, 0, "an escaping table may be observed elsewhere");
+    }
+
+    #[test]
+    fn keeps_stores_whose_value_can_raise() {
+        // `a + 1` raises when `a` is not a number, so the never-read store is
+        // observable and must stay.
+        let (mut block, model) =
+            analyze_with_tokens("local a = 1\nlocal t = {}\nt.value = a + 1\nreturn 0");
+
+        let removed = remove_dead_table_stores(&mut block, &model);
+
+        assert_eq!(removed, 0, "the value can raise");
+        assert!(generate(&block).contains("a + 1"));
     }
 }

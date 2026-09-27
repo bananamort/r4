@@ -254,7 +254,7 @@ mod test {
             r#"
             local base = 1
             while condition do
-                local offset = base + 2
+                local offset = base
                 use(offset)
             end
             "#,
@@ -270,7 +270,7 @@ mod test {
             "the hoisted local must be renamed: {output}"
         );
         let declaration = output
-            .find("= base + 2")
+            .find("= base")
             .unwrap_or_else(|| panic!("the invariant must be declared: {output}"));
         let loop_start = output
             .find("while")
@@ -280,7 +280,7 @@ mod test {
             "the invariant must be hoisted before the loop: {output}"
         );
         assert_eq!(
-            output.matches("base + 2").count(),
+            output.matches("= base").count(),
             1,
             "the invariant must evaluate exactly once: {output}"
         );
@@ -300,6 +300,51 @@ mod test {
         assert!(
             locals.iter().any(|symbol| symbol.read_count == 1),
             "the hoisted local must be read: {output}"
+        );
+    }
+
+    #[test]
+    fn leaves_erroring_invariants_in_place() {
+        // `base + 2` raises when `base` is not a number and the loop may run
+        // zero times, so hoisting it would introduce an error that the original
+        // never reached. It must stay where it is.
+        let (mut block, model) = analyze(
+            r#"
+            local base = 1
+            while condition do
+                local offset = base + 2
+                use(offset)
+            end
+            "#,
+        );
+
+        let hoisted = hoist_loop_invariants(&mut block, &model)
+            .expect("hoisting must succeed with a matching model");
+
+        assert_eq!(hoisted, 0, "an erroring invariant must not be hoisted");
+        assert!(generate(&block).contains("base + 2"));
+    }
+
+    #[test]
+    fn leaves_invariants_written_in_the_loop_in_place() {
+        // Collapsing `acc`'s per-iteration binding into one binding before the
+        // loop would make the accumulator persist across iterations.
+        let (mut block, model) = analyze(
+            r#"
+            while condition do
+                local acc = 1
+                acc = acc + step
+                use(acc)
+            end
+            "#,
+        );
+
+        let hoisted = hoist_loop_invariants(&mut block, &model)
+            .expect("hoisting must succeed with a matching model");
+
+        assert_eq!(
+            hoisted, 0,
+            "a local written inside the loop must not be hoisted"
         );
     }
 
@@ -394,7 +439,7 @@ mod test {
         let code = r#"
             local step = 2
             for i = 1, 10 do
-                local scaled = step * 2
+                local scaled = step
                 use(scaled)
             end
             "#;
@@ -406,7 +451,7 @@ mod test {
         assert_eq!(hoisted, 1);
         let output = generate(&block);
         let declaration = output
-            .find("= step * 2")
+            .find("= step")
             .unwrap_or_else(|| panic!("the invariant must be declared: {output}"));
         let loop_start = output
             .find("for")
