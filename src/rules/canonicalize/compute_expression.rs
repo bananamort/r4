@@ -64,7 +64,7 @@ fn evaluate(evaluator: &Evaluator, expression: &Expression) -> Option<LuaValue> 
 /// Non-finite numbers (`inf`, `nan`) have no Lua literal, and very large
 /// strings are left alone to bound the resulting AST. Unknown, function and
 /// table values are never constants.
-fn is_safe_literal(value: &LuaValue) -> bool {
+pub(crate) fn is_safe_literal(value: &LuaValue) -> bool {
     match value {
         LuaValue::Integer(_) => true,
         LuaValue::Number(number) => number.is_finite(),

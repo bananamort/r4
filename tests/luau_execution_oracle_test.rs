@@ -138,6 +138,10 @@ fn optimize(program: &str) -> String {
     canonicalize(&mut block, &model);
 
     let model = analyze(&block);
+    canonicalize::propagate_constants(&mut block, &model)
+        .expect("propagating constants must succeed");
+
+    let model = analyze(&block);
     canonicalize::compute_expression(&mut block, &model);
 
     let model = analyze(&block);
@@ -705,6 +709,36 @@ local ok = pcall(function()
 end)
 print(ok)
 return ok
+"#,
+    ),
+    (
+        "constant propagation through locals",
+        r#"
+local width = 4
+local height = width + 3
+local area = width * height
+print(area)
+return width, height, area
+"#,
+    ),
+    (
+        "constant that is not provable",
+        r#"
+local total = 0
+for i = 1, 3 do
+    total = total + i
+end
+print(total)
+return total
+"#,
+    ),
+    (
+        "function value identity is preserved",
+        r#"
+local f = function() return 1 end
+local g = f
+print(f == g)
+return f == g
 "#,
     ),
 ];

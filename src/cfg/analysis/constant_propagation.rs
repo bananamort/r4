@@ -83,6 +83,11 @@ struct Definition {
 pub struct ConstantPropagation {
     entry: Vec<HashMap<SymbolId, LuaValue>>,
     exit: Vec<HashMap<SymbolId, LuaValue>>,
+    /// Per block, the constants guaranteed immediately before each statement.
+    statement_entry: Vec<Vec<HashMap<SymbolId, LuaValue>>>,
+    /// Per block, the constants guaranteed after the last statement, before the
+    /// terminator.
+    terminator_constants: Vec<HashMap<SymbolId, LuaValue>>,
 }
 
 impl ConstantPropagation {
@@ -97,21 +102,38 @@ impl ConstantPropagation {
     ) -> Result<Self, ConstantPropagationError> {
         let evaluator = Evaluator::default();
         let reachability = Reachability::analyze(cfg);
-        let (definitions, block_definitions) = collect_definitions(cfg, &evaluator, model)?;
-        let (entry_reaching, exit_reaching) =
-            reaching_definitions(cfg, &definitions, &block_definitions, &reachability);
+        let collected = collect_definitions(cfg, &evaluator, model)?;
+        let definitions = &collected.definitions;
+        let (entry_reaching, exit_reaching) = reaching_definitions(
+            cfg,
+            definitions,
+            &collected.block_definitions,
+            &reachability,
+        );
         let values = propagate_values(
-            &definitions,
-            &block_definitions,
+            definitions,
+            &collected.block_definitions,
             &entry_reaching,
             &evaluator,
             model,
         );
 
-        let entry = derive_constants(cfg, &definitions, &entry_reaching, &values);
-        let exit = derive_constants(cfg, &definitions, &exit_reaching, &values);
+        let entry = derive_constants(cfg, definitions, &entry_reaching, &values);
+        let exit = derive_constants(cfg, definitions, &exit_reaching, &values);
+        let statement_entry = derive_statement_constants(
+            cfg,
+            definitions,
+            &collected.statement_definitions,
+            &entry_reaching,
+            &values,
+        );
 
-        Ok(Self { entry, exit })
+        Ok(Self {
+            entry,
+            exit,
+            statement_entry: statement_entry.0,
+            terminator_constants: statement_entry.1,
+        })
     }
 
     /// Returns the constants guaranteed at the entry of a block.
@@ -124,6 +146,32 @@ impl ConstantPropagation {
     #[inline]
     pub fn block_exit_constants(&self, block: BlockId) -> &HashMap<SymbolId, LuaValue> {
         &self.exit[block.index()]
+    }
+
+    /// Returns the constants guaranteed immediately before the statement at
+    /// `index` in `block`, or `None` when there is no such statement.
+    ///
+    /// The map is the reaching-definition environment at that point, so a
+    /// symbol defined earlier in the same block is included once the definition
+    /// that reaches it is provably constant.
+    #[inline]
+    pub fn constants_before_statement(
+        &self,
+        block: BlockId,
+        index: usize,
+    ) -> Option<&HashMap<SymbolId, LuaValue>> {
+        self.statement_entry.get(block.index())?.get(index)
+    }
+
+    /// Returns the constants guaranteed after the last statement of `block`.
+    ///
+    /// This is the environment the terminator evaluates in. It is precise for a
+    /// symbol redefined inside the block, unlike
+    /// [`Self::block_exit_constants`], which merges every definition that may
+    /// reach the exit.
+    #[inline]
+    pub fn constants_before_terminator(&self, block: BlockId) -> &HashMap<SymbolId, LuaValue> {
+        &self.terminator_constants[block.index()]
     }
 
     /// Returns the constant value of a symbol at the entry of a block, when the
@@ -173,23 +221,48 @@ pub fn fold_constant_branches_with_propagation(
 // Definition collection
 // ----------------------------------------------------------------------
 
+/// The definitions collected from a graph.
+struct CollectedDefinitions {
+    definitions: Vec<Definition>,
+    /// Per block, the definition ids in program order.
+    block_definitions: Vec<Vec<DefId>>,
+    /// Per block, the definition ids created by each statement, in order.
+    statement_definitions: Vec<Vec<Vec<DefId>>>,
+}
+
 fn collect_definitions(
     cfg: &ControlFlowGraph,
     evaluator: &Evaluator,
     model: &SemanticModel,
-) -> Result<(Vec<Definition>, Vec<Vec<DefId>>), ConstantPropagationError> {
+) -> Result<CollectedDefinitions, ConstantPropagationError> {
     let mut definitions = Vec::new();
     let mut block_definitions = Vec::with_capacity(cfg.blocks.len());
+    let mut statement_definitions = Vec::with_capacity(cfg.blocks.len());
 
     for block in &cfg.blocks {
         let mut ids = Vec::new();
+        let mut statements = Vec::with_capacity(block.statements.len());
         for statement in &block.statements {
-            collect_statement_definitions(statement, evaluator, model, &mut definitions, &mut ids)?;
+            let mut statement_ids = Vec::new();
+            collect_statement_definitions(
+                statement,
+                evaluator,
+                model,
+                &mut definitions,
+                &mut statement_ids,
+            )?;
+            ids.extend_from_slice(&statement_ids);
+            statements.push(statement_ids);
         }
         block_definitions.push(ids);
+        statement_definitions.push(statements);
     }
 
-    Ok((definitions, block_definitions))
+    Ok(CollectedDefinitions {
+        definitions,
+        block_definitions,
+        statement_definitions,
+    })
 }
 
 fn collect_statement_definitions(
@@ -573,35 +646,97 @@ fn derive_constants(
     values: &[Option<LuaValue>],
 ) -> Vec<HashMap<SymbolId, LuaValue>> {
     cfg.iter_block_ids()
-        .map(|block| {
-            let mut constants: HashMap<SymbolId, LuaValue> = HashMap::new();
-            let mut conflicting: HashSet<SymbolId> = HashSet::new();
+        .map(|block| constants_from(definitions, &reaching[block.index()], values))
+        .collect()
+}
 
-            for id in reaching[block.index()].iter_ones() {
-                let definition = &definitions[id];
-                match &values[id] {
-                    Some(value) => match constants.get(&definition.symbol) {
-                        Some(previous) if previous != value => {
-                            conflicting.insert(definition.symbol);
-                        }
-                        Some(_) => {}
-                        None => {
-                            constants.insert(definition.symbol, value.clone());
-                        }
-                    },
-                    None => {
-                        conflicting.insert(definition.symbol);
+/// Returns the constants that hold in a reaching-definition environment.
+fn constants_from(
+    definitions: &[Definition],
+    reaching: &BitVec,
+    values: &[Option<LuaValue>],
+) -> HashMap<SymbolId, LuaValue> {
+    let mut constants: HashMap<SymbolId, LuaValue> = HashMap::new();
+    let mut conflicting: HashSet<SymbolId> = HashSet::new();
+
+    for id in reaching.iter_ones() {
+        let definition = &definitions[id];
+        match &values[id] {
+            Some(value) => match constants.get(&definition.symbol) {
+                Some(previous) if previous != value => {
+                    conflicting.insert(definition.symbol);
+                }
+                Some(_) => {}
+                None => {
+                    constants.insert(definition.symbol, value.clone());
+                }
+            },
+            None => {
+                conflicting.insert(definition.symbol);
+            }
+        }
+    }
+
+    for symbol in conflicting {
+        constants.remove(&symbol);
+    }
+
+    constants
+}
+
+/// Derives the constants that hold immediately before each statement, and the
+/// ones that hold after the last statement (before the terminator).
+///
+/// A block is straight-line, so the reaching-definition environment before a
+/// statement is the one at the block entry updated by the definitions of the
+/// statements that precede it. The trailing environment is precise where
+/// [`ConstantPropagation::block_exit_constants`] is a *may* analysis: a symbol
+/// redefined inside the block keeps only its last definition.
+#[allow(clippy::type_complexity)]
+fn derive_statement_constants(
+    cfg: &ControlFlowGraph,
+    definitions: &[Definition],
+    statement_definitions: &[Vec<Vec<DefId>>],
+    entry_reaching: &[BitVec],
+    values: &[Option<LuaValue>],
+) -> (
+    Vec<Vec<HashMap<SymbolId, LuaValue>>>,
+    Vec<HashMap<SymbolId, LuaValue>>,
+) {
+    let mut definitions_by_symbol: HashMap<SymbolId, Vec<DefId>> = HashMap::new();
+    for (id, definition) in definitions.iter().enumerate() {
+        definitions_by_symbol
+            .entry(definition.symbol)
+            .or_default()
+            .push(id);
+    }
+
+    let mut per_statement_blocks = Vec::with_capacity(cfg.blocks.len());
+    let mut terminator_constants = Vec::with_capacity(cfg.blocks.len());
+
+    for block in cfg.iter_block_ids() {
+        let statements = &statement_definitions[block.index()];
+        let mut reaching = entry_reaching[block.index()].clone();
+        let mut per_statement = Vec::with_capacity(statements.len());
+
+        for statement_definitions in statements {
+            per_statement.push(constants_from(definitions, &reaching, values));
+
+            for &id in statement_definitions {
+                if let Some(same_symbol) = definitions_by_symbol.get(&definitions[id].symbol) {
+                    for &other in same_symbol {
+                        reaching.set(other, false);
                     }
                 }
+                reaching.set(id, true);
             }
+        }
 
-            for symbol in conflicting {
-                constants.remove(&symbol);
-            }
+        terminator_constants.push(constants_from(definitions, &reaching, values));
+        per_statement_blocks.push(per_statement);
+    }
 
-            constants
-        })
-        .collect()
+    (per_statement_blocks, terminator_constants)
 }
 
 // ----------------------------------------------------------------------
