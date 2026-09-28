@@ -755,7 +755,7 @@ return double(20)
 "#,
     ),
     (
-        "helper with a body that is not inlined",
+        "helper with a statement body is inlined",
         r#"
 local function add(a, b)
     local sum = a + b
@@ -763,6 +763,21 @@ local function add(a, b)
 end
 print(add(1, 2))
 return add(3, 4)
+"#,
+    ),
+    (
+        "helper with a return inside a loop is not inlined",
+        r#"
+local function first_positive(limit)
+    for i = 1, limit do
+        if i > 0 then
+            return i
+        end
+    end
+    return 0
+end
+print(first_positive(3))
+return first_positive(4)
 "#,
     ),
     (
