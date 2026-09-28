@@ -138,6 +138,9 @@ fn optimize(program: &str) -> String {
     canonicalize(&mut block, &model);
 
     let model = analyze(&block);
+    canonicalize::inline_local_functions(&mut block, &model);
+
+    let model = analyze(&block);
     canonicalize::propagate_constants(&mut block, &model)
         .expect("propagating constants must succeed");
 
@@ -739,6 +742,42 @@ local f = function() return 1 end
 local g = f
 print(f == g)
 return f == g
+"#,
+    ),
+    (
+        "inlined local helper",
+        r#"
+local function double(value)
+    return value * 2
+end
+print(double(21))
+return double(20)
+"#,
+    ),
+    (
+        "helper with a body that is not inlined",
+        r#"
+local function add(a, b)
+    local sum = a + b
+    return sum
+end
+print(add(1, 2))
+return add(3, 4)
+"#,
+    ),
+    (
+        "observable argument is not duplicated",
+        r#"
+local calls = 0
+local function twice(value)
+    return value + value
+end
+local function bump()
+    calls = calls + 1
+    return calls
+end
+print(twice(bump()), calls)
+return calls
 "#,
     ),
 ];
