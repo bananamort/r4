@@ -766,7 +766,7 @@ return add(3, 4)
 "#,
     ),
     (
-        "helper with a return inside a loop is not inlined",
+        "helper with a return inside a loop is inlined",
         r#"
 local function first_positive(limit)
     for i = 1, limit do
@@ -778,6 +778,16 @@ local function first_positive(limit)
 end
 print(first_positive(3))
 return first_positive(4)
+"#,
+    ),
+    (
+        "helper that forwards varargs is not inlined",
+        r#"
+local function forward(...)
+    return ...
+end
+print(forward(1, 2))
+return forward(3, 4)
 "#,
     ),
     (
