@@ -819,6 +819,7 @@ impl Inliner<'_, '_, '_> {
             return None;
         }
         let symbol = self.model.resolve_identifier(callee(call.get_prefix())?)?;
+        let symbol = self.resolve_function(symbol)?;
         let function = self.functions.get(&symbol)?;
         if tail && !function.uniform {
             return None;
@@ -885,6 +886,25 @@ impl Inliner<'_, '_, '_> {
         } else {
             Some(vec![Expression::nil()])
         }
+    }
+
+    /// Resolves a call target through immutable local aliases to a recorded
+    /// function.
+    fn resolve_function(&self, mut symbol: SymbolId) -> Option<SymbolId> {
+        for _ in 0..self.model.symbols.len() {
+            if self.functions.contains_key(&symbol) {
+                return Some(symbol);
+            }
+            if !self.model.is_immutable(symbol) {
+                return None;
+            }
+            let next = self.model.symbol(symbol).initializer?;
+            if next == symbol {
+                return None;
+            }
+            symbol = next;
+        }
+        None
     }
 
     fn upvalue_is_reachable(&self, symbol: SymbolId, scope: ScopeId) -> bool {
@@ -1276,6 +1296,14 @@ mod test {
     }
 
     #[test]
+    fn inlines_through_an_immutable_alias() {
+        let output = inlined_output(
+            "local function add(a, b)\n    return a + b\nend\nlocal sum = add\nreturn sum(1, 2)",
+        );
+        assert!(!output.contains("sum(1, 2)"), "{output}");
+    }
+
+    #[test]
     fn the_inlined_output_reparses() {
         for code in [
             "local function add(a, b)\n    local sum = a + b\n    return sum\nend\nreturn add(1, 2)",
@@ -1292,6 +1320,7 @@ mod test {
             "local function make(value)\n    return function() return value end\nend\nreturn make(7)()",
             "local function first()\n    return pick()\nend\nlocal x = first()\nreturn x",
             "local function f(a)\n    return a\nend\nreturn (f)(1)",
+            "local function add(a, b)\n    return a + b\nend\nlocal sum = add\nreturn sum(1, 2)",
         ] {
             let output = inlined_output(code);
             parse(&output);
