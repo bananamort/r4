@@ -702,38 +702,38 @@ impl Inliner<'_, '_, '_> {
                 *if_expression.mutate_else_result() = else_result;
             }
             Expression::Table(table) => {
-                let mut entries: Vec<crate::nodes::TableEntry> =
+                let entries: Vec<crate::nodes::TableEntry> =
                     table.iter_entries().cloned().collect();
                 let length = entries.len();
-                let mut rewritten = Vec::with_capacity(length);
-                for (index, mut entry) in entries.drain(..).enumerate() {
+                let mut replacement: Vec<crate::nodes::TableEntry> = Vec::with_capacity(length);
+                for (index, entry) in entries.into_iter().enumerate() {
                     let tail = index + 1 == length;
-                    match &mut entry {
-                        crate::nodes::TableEntry::Field(field) => {
+                    match entry {
+                        crate::nodes::TableEntry::Field(mut field) => {
                             let mut value = field.get_value().clone();
                             self.rewrite_single(&mut value, preambles);
                             *field.mutate_value() = value;
+                            replacement.push(crate::nodes::TableEntry::Field(field));
                         }
-                        crate::nodes::TableEntry::Index(index) => {
+                        crate::nodes::TableEntry::Index(mut index) => {
                             let mut key = index.get_key().clone();
                             self.rewrite_single(&mut key, preambles);
                             *index.mutate_key() = key;
                             let mut value = index.get_value().clone();
                             self.rewrite_single(&mut value, preambles);
                             *index.mutate_value() = value;
+                            replacement.push(crate::nodes::TableEntry::Index(index));
                         }
                         crate::nodes::TableEntry::Value(value) => {
-                            let mut inner = (**value).clone();
-                            self.rewrite_single(&mut inner, preambles);
-                            **value = inner;
+                            // The last array entry takes every value, like any
+                            // other trailing value list.
+                            for result in self.rewrite((*value).clone(), tail, preambles) {
+                                replacement.push(crate::nodes::TableEntry::Value(Box::new(result)));
+                            }
                         }
                     }
-                    let _ = tail;
-                    rewritten.push(entry);
                 }
-                let mut replacement = crate::nodes::TableExpression::new(Vec::new());
-                *replacement.mutate_entries() = rewritten;
-                *table = replacement;
+                *table = crate::nodes::TableExpression::new(replacement);
             }
             Expression::Function(function) => self.rewrite_block(function.mutate_block()),
             Expression::TypeCast(type_cast) => {
@@ -775,7 +775,15 @@ impl Inliner<'_, '_, '_> {
                 *inner.mutate_prefix() = call_prefix;
                 *inner.mutate_arguments() =
                     crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
-                **call = inner;
+                // A call used as a prefix consumes one value.
+                if let Some(mut replacement) = self.try_inline(&inner, false, preambles) {
+                    let value = replacement.remove(0);
+                    *prefix = Prefix::Parenthese(Box::new(
+                        crate::nodes::ParentheseExpression::new(value),
+                    ));
+                } else {
+                    **call = inner;
+                }
             }
             Prefix::Parenthese(parenthese) => {
                 let mut inner = parenthese.inner_expression().clone();
@@ -1212,6 +1220,23 @@ mod test {
     }
 
     #[test]
+    fn inlines_multi_value_return_into_a_table() {
+        let output = inlined_output(
+            "local function pair()\n    return 1, 2\nend\nlocal t = { pair() }\nreturn #t",
+        );
+        assert!(!output.contains("{ pair() }"), "{output}");
+        parse(&output);
+    }
+
+    #[test]
+    fn inlines_a_call_used_as_a_prefix() {
+        let output = inlined_output(
+            "local function make(value)\n    return function() return value end\nend\nreturn make(7)()",
+        );
+        assert!(!output.contains("make(7)"), "{output}");
+    }
+
+    #[test]
     fn the_inlined_output_reparses() {
         for code in [
             "local function add(a, b)\n    local sum = a + b\n    return sum\nend\nreturn add(1, 2)",
@@ -1224,6 +1249,8 @@ mod test {
             "local function pick(x)\n    if x > 0 then\n        goto positive\n    end\n    do\n        return -1\n    end\n    ::positive::\n    return 1\nend\nreturn pick(1)",
             "local function f(a)\n    return a\nend\nreturn f(1, 2, 3)",
             "local function f(a)\n    return a\nend\nlocal x = f(1)\nreturn x",
+            "local function pair()\n    return 1, 2\nend\nlocal t = { pair() }\nreturn #t",
+            "local function make(value)\n    return function() return value end\nend\nreturn make(7)()",
         ] {
             let output = inlined_output(code);
             parse(&output);

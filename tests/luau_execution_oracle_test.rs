@@ -781,6 +781,27 @@ return first_positive(4)
 "#,
     ),
     (
+        "multi-value return in a table",
+        r#"
+local function pair()
+    return 1, 2
+end
+local values = { pair() }
+print(#values, values[1], values[2])
+return #values
+"#,
+    ),
+    (
+        "call used as a prefix",
+        r#"
+local function make(value)
+    return function() return value end
+end
+print(make(7)())
+return make(8)()
+"#,
+    ),
+    (
         "helper that forwards varargs is not inlined",
         r#"
 local function forward(...)
