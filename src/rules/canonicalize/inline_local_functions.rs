@@ -69,6 +69,8 @@ struct InlinableFunction {
     /// nothing, either because every `return` is bare or because the body can
     /// fall through.
     arity: usize,
+    /// Whether every call yields exactly [`Self::arity`] values.
+    uniform: bool,
     /// The symbols the body reads from outside the function.
     upvalues: Vec<SymbolId>,
 }
@@ -122,6 +124,7 @@ fn inlinable(
         loop_depth: 0,
         function_depth: 0,
         arity: None,
+        uniform: true,
         upvalues: Vec::new(),
         rejects: false,
     };
@@ -132,11 +135,8 @@ fn inlinable(
     }
 
     let arity = check.arity.unwrap_or(0);
-    // Several results require every path to return them; a body that can fall
-    // through yields nothing on that path.
-    if arity > 0 && !matches!(body.get_last_statement(), Some(LastStatement::Return(_))) {
-        return None;
-    }
+    let terminates = matches!(body.get_last_statement(), Some(LastStatement::Return(_)));
+    let uniform = check.uniform && (arity == 0 || terminates);
 
     Some(InlinableFunction {
         parameters: parameters
@@ -145,6 +145,7 @@ fn inlinable(
             .collect(),
         body: body.clone(),
         arity,
+        uniform,
         upvalues: check.upvalues,
     })
 }
@@ -158,6 +159,8 @@ struct BodyCheck<'m> {
     /// Zero while inside the function whose calls are being inlined.
     function_depth: usize,
     arity: Option<usize>,
+    /// Whether every `return` has the same expression count and none is a call.
+    uniform: bool,
     upvalues: Vec<SymbolId>,
     rejects: bool,
 }
@@ -269,21 +272,22 @@ impl BodyCheck<'_> {
 
         let expressions: Vec<&Expression> = return_statement.iter_expressions().collect();
         for expression in &expressions {
-            if matches!(
-                expression,
-                Expression::Call(_) | Expression::VariableArguments(_)
-            ) {
-                // The return yields an unknown number of values.
-                self.rejects = true;
-                return;
+            if matches!(expression, Expression::Call(_)) {
+                // A returned call yields that call's values, so the count is not
+                // fixed by the expression list.
+                self.uniform = false;
             }
             self.visit_expression(expression);
         }
 
         match self.arity {
             None => self.arity = Some(expressions.len()),
-            Some(arity) if arity == expressions.len() => {}
-            Some(_) => self.rejects = true,
+            Some(arity) => {
+                if arity != expressions.len() {
+                    self.uniform = false;
+                }
+                self.arity = Some(arity.max(expressions.len()));
+            }
         }
     }
 
@@ -495,21 +499,23 @@ impl Inliner<'_, '_, '_> {
                     self.rewrite_variable(&mut variable, preambles);
                 }
                 let mut values: Vec<Expression> = assignment.iter_values().cloned().collect();
-                self.rewrite_values(&mut values, preambles);
+                let multi_tail = variables.len() >= 2;
+                self.rewrite_values(&mut values, multi_tail, preambles);
                 *assignment = AssignStatement::new(variables, values);
             }
             Statement::LocalAssign(assignment) => {
                 let variables: Vec<TypedIdentifier> =
                     assignment.iter_variables().cloned().collect();
                 let mut values: Vec<Expression> = assignment.iter_values().cloned().collect();
-                self.rewrite_values(&mut values, preambles);
+                let multi_tail = variables.len() >= 2;
+                self.rewrite_values(&mut values, multi_tail, preambles);
                 *assignment = VariableAssignment::new(variables, values);
             }
             Statement::Call(slot) => {
                 let mut call = slot.clone();
                 self.rewrite_prefix(call.mutate_prefix(), preambles);
                 let mut values: Vec<Expression> = call.get_arguments().clone().to_expressions();
-                self.rewrite_values(&mut values, preambles);
+                self.rewrite_values(&mut values, true, preambles);
                 *call.mutate_arguments() =
                     crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
                 if self.try_inline(&call, false, preambles).is_some() {
@@ -566,7 +572,7 @@ impl Inliner<'_, '_, '_> {
             }
             Statement::GenericFor(statement) => {
                 let mut values: Vec<Expression> = statement.iter_expressions().cloned().collect();
-                self.rewrite_values(&mut values, preambles);
+                self.rewrite_values(&mut values, true, preambles);
                 for (index, value) in values.into_iter().enumerate() {
                     statement.mutate_expressions()[index].clone_from(&value);
                 }
@@ -589,7 +595,7 @@ impl Inliner<'_, '_, '_> {
             return;
         };
         let mut values: Vec<Expression> = return_statement.iter_expressions().cloned().collect();
-        self.rewrite_values(&mut values, preambles);
+        self.rewrite_values(&mut values, true, preambles);
         *return_statement = crate::nodes::ReturnStatement::new(values);
     }
 
@@ -606,11 +612,16 @@ impl Inliner<'_, '_, '_> {
         }
     }
 
-    fn rewrite_values(&mut self, values: &mut Vec<Expression>, preambles: &mut Vec<Statement>) {
+    fn rewrite_values(
+        &mut self,
+        values: &mut Vec<Expression>,
+        multi_tail: bool,
+        preambles: &mut Vec<Statement>,
+    ) {
         let length = values.len();
         let mut rewritten = Vec::with_capacity(length);
         for (index, value) in values.drain(..).enumerate() {
-            let tail = index + 1 == length;
+            let tail = multi_tail && index + 1 == length;
             rewritten.extend(self.rewrite(value, tail, preambles));
         }
         *values = rewritten;
@@ -676,7 +687,7 @@ impl Inliner<'_, '_, '_> {
                 let mut prefix = inner.get_prefix().clone();
                 self.rewrite_prefix(&mut prefix, preambles);
                 let mut values: Vec<Expression> = inner.get_arguments().clone().to_expressions();
-                self.rewrite_values(&mut values, preambles);
+                self.rewrite_values(&mut values, true, preambles);
                 *inner.mutate_prefix() = prefix;
                 *inner.mutate_arguments() =
                     crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
@@ -771,7 +782,7 @@ impl Inliner<'_, '_, '_> {
                 let mut call_prefix = inner.get_prefix().clone();
                 self.rewrite_prefix(&mut call_prefix, preambles);
                 let mut values: Vec<Expression> = inner.get_arguments().clone().to_expressions();
-                self.rewrite_values(&mut values, preambles);
+                self.rewrite_values(&mut values, true, preambles);
                 *inner.mutate_prefix() = call_prefix;
                 *inner.mutate_arguments() =
                     crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
@@ -807,11 +818,11 @@ impl Inliner<'_, '_, '_> {
         if call.get_method().is_some() {
             return None;
         }
-        let Prefix::Identifier(identifier) = call.get_prefix() else {
-            return None;
-        };
-        let symbol = self.model.resolve_identifier(identifier)?;
+        let symbol = self.model.resolve_identifier(callee(call.get_prefix())?)?;
         let function = self.functions.get(&symbol)?;
+        if tail && !function.uniform {
+            return None;
+        }
 
         let scope = self.current_scope?;
         for upvalue in &function.upvalues {
@@ -1057,6 +1068,20 @@ fn lower_statement_returns(
     }
 }
 
+/// Returns the identifier a call's prefix names, looking through parentheses
+/// and type instantiation.
+fn callee(prefix: &Prefix) -> Option<&Identifier> {
+    match prefix {
+        Prefix::Identifier(identifier) => Some(identifier),
+        Prefix::Parenthese(parenthese) => match parenthese.inner_expression() {
+            Expression::Identifier(identifier) => Some(identifier),
+            _ => None,
+        },
+        Prefix::TypeInstantiation(instantiation) => callee(instantiation.get_prefix()),
+        _ => None,
+    }
+}
+
 /// Inserts `if done then break end` after every loop at the body's own level.
 fn guard_loops(block: &mut Block, done: &str, depth: usize) {
     let mut statements = block.take_statements();
@@ -1237,6 +1262,20 @@ mod test {
     }
 
     #[test]
+    fn inlines_a_variable_arity_return_in_a_single_value_position() {
+        let output = inlined_output(
+            "local function first()\n    return pick()\nend\nlocal x = first()\nreturn x",
+        );
+        assert!(!output.contains("= first()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_parenthesized_callee() {
+        let output = inlined_output("local function f(a)\n    return a\nend\nreturn (f)(1)");
+        assert!(!output.contains("(f)(1)"), "{output}");
+    }
+
+    #[test]
     fn the_inlined_output_reparses() {
         for code in [
             "local function add(a, b)\n    local sum = a + b\n    return sum\nend\nreturn add(1, 2)",
@@ -1251,6 +1290,8 @@ mod test {
             "local function f(a)\n    return a\nend\nlocal x = f(1)\nreturn x",
             "local function pair()\n    return 1, 2\nend\nlocal t = { pair() }\nreturn #t",
             "local function make(value)\n    return function() return value end\nend\nreturn make(7)()",
+            "local function first()\n    return pick()\nend\nlocal x = first()\nreturn x",
+            "local function f(a)\n    return a\nend\nreturn (f)(1)",
         ] {
             let output = inlined_output(code);
             parse(&output);
