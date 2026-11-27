@@ -240,12 +240,12 @@ mod test {
 
     #[test]
     fn propagates_integer_constants_with_the_integer_subtype() {
-        let (mut block, model) = analyze_lua53("local a = 1\nlocal b = 2\nreturn a + b");
+        let (mut block, model) = analyze_lua53("local a = 1\nlocal b = 2\nprint(a + b)\nreturn 0");
 
         propagate_constants(&mut block, &model).expect("propagation must succeed");
 
         let output = generate(&block);
-        assert!(output.contains("return 1 + 2"), "{output}");
+        assert!(output.contains("print(1 + 2)"), "{output}");
         assert!(!output.contains("1.0"), "{output}");
     }
 
