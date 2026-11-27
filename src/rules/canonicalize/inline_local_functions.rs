@@ -3818,6 +3818,16 @@ mod test {
     }
 
     #[test]
+    fn inlining_a_callee_with_a_forward_goto_reanalyzes() {
+        let code = "local function pick(value)\n    if value > 0 then\n        goto positive\n    end\n    do\n        return -1\n    end\n    ::positive::\n    return 1\nend\nprint(pick(1), pick(-1))\nreturn pick(2)";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        crate::Parser::default()
+            .lua52()
+            .parse_analyzed(&output)
+            .unwrap_or_else(|error| panic!("failed to re-analyze:\\n{error}\\n{output}"));
+    }
+
+    #[test]
     fn the_inlined_output_reparses() {
         for code in [
             "local function add(a, b)\n    local sum = a + b\n    return sum\nend\nreturn add(1, 2)",
