@@ -20,30 +20,66 @@
 //! end
 //! ```
 //!
-//! The arguments bind to the parameters exactly as the call did, so each is
-//! evaluated once, in order, with the same multi-value adjustment; extra
-//! arguments are evaluated into fresh unused locals. The parameters keep their
-//! names inside the `do`, so the body's references resolve to the arguments
-//! exactly as they resolved to the parameters, and the body's own locals stay
-//! scoped to the inline.
+//! Arguments bind to parameters exactly as the call did, so each is evaluated
+//! once, in order, with the same multi-value adjustment. Earlier list values,
+//! table entries, and eagerly-read operands are stored in fresh locals in their
+//! original order when a later argument can inline. A bare local of the current
+//! function is read by the binary operator, index, or method call itself after
+//! the other operand runs, so it is left in place; concatenation operands and
+//! globals, upvalues, and compound expressions are read eagerly and are stored.
 //!
-//! The preamble runs at the start of the statement, so a call is inlined only
-//! when everything evaluated before it in that statement is inert or can be
-//! stored first. Earlier list values, table entries, and eagerly-read operands
-//! are stored in fresh locals in their original order, and a call's callee is
-//! stored before an inlined argument. An inlined call's own arguments are
-//! rewritten first, so nested calls are inlined too.
+//! # Which binding a call sees
 //!
-//! A bare local of the current function is read by the binary operator, index,
-//! or method call itself, after the other operand runs, so it is left in place
-//! instead of being stored early. Concatenation operands and globals, upvalues,
-//! and compound expressions are read eagerly and are stored first.
+//! The callee is resolved through the reaching definitions of its function
+//! region, so conditional assignments, loops, `goto` paths, and aliases are
+//! handled exactly:
 //!
-//! A short-circuit operand, an `if` expression branch, an `elseif` condition, a
-//! `while`/`repeat` condition, and a method receiver still stop further
-//! inlining. A function that contains a `goto` or label refuses inlining
-//! entirely, because the preamble declares locals that a forward jump could
-//! enter.
+//! * every reaching definition must denote a function whose parameters and
+//!   body are identical; otherwise a later call could observe a different
+//!   value and the call is left alone;
+//! * an alias resolves at the statement where the alias captured its value,
+//!   not at the call;
+//! * a call inside a nested function reads an upvalue. An immutable upvalue is
+//!   fixed. A mutable one is usable when no write to it can run after the
+//!   creation of the outermost closure in the chain that captures it. A write
+//!   after that creation could reach a later call, so that shape is refused.
+//!
+//! # Method calls
+//!
+//! When an argument may inline, the receiver is stored before the argument
+//! bodies. PUC Lua and LuaJIT perform the method lookup before the arguments,
+//! so the lookup value is stored there too and the call becomes a normal call
+//! with the receiver as its first argument. Luau evaluates the arguments before
+//! `NAMECALL`, so it keeps the method syntax with the stored receiver and the
+//! lookup stays at the call. An undetermined dialect only reorders when the
+//! receiver is a fresh table literal, whose lookup cannot run code.
+//!
+//! # Loop conditions
+//!
+//! A `while` condition that inlines becomes `while true do <preamble>;
+//! if not <condition> then break end; <body> end`, so the condition still runs
+//! before every iteration. `continue` already jumps to the loop condition.
+//!
+//! A `repeat` condition stays at the end of the body, where the body's
+//! top-level locals are visible. The inline preamble is appended there and the
+//! loop becomes `until <result>`. Because `continue` skips the rest of the body
+//! but not the condition, each `continue` is lowered to a flag assignment and
+//! the statements after it are guarded with `if not <flag> then ... end`; the
+//! condition section sits after those guards and always runs. If a guard would
+//! move a condition-visible local into a nested scope, its declaration is moved
+//! to the top of the loop body under a fresh name and every bound reference is
+//! renamed, preserving the per-iteration cell for closures. A repeat condition
+//! that is unreachable after a final `return`/`break`, or whose `continue`
+//! lowering would move a `<close>` local's closing point, is left alone.
+//!
+//! # `goto` and labels
+//!
+//! Labels and gotos in the callee body are renamed with fresh names. In a
+//! function that contains a `goto` or label, locals that escape the preamble
+//! are declared at the start of the function instead of before the call, so a
+//! forward jump never enters their scope. The inline body itself is wrapped in
+//! a `do` block, whose locals never escape. Label names are reserved by the
+//! name generator, so two inlined copies and the caller cannot collide.
 //!
 //! The `repeat ... until true` runs the body once and gives every `return` a
 //! `break` to leave through; the `if __done then break end` after each loop
@@ -55,23 +91,11 @@
 //! single-value position it is `__r1` (or `nil` when the body yields none). A
 //! body that can fall through yields no values, so its arity is zero.
 //!
-//! Conditions that make an inline impossible are not worked around:
-//!
-//! * a body that reads `...` cannot be reproduced, because `...` is lexical to
-//!   a function and no expression denotes a foreign vararg list;
-//! * a call is left alone when its callee cannot be resolved to a local
-//!   function that is bound before the call.
-//!
-//! A function may also be bound by a declaration and a later assignment
-//! (`local f` followed by `f = function() ... end`). Such a call is inlined
-//! only when the assignment provably runs before it: the assignment's block
-//! must contain the call, or contain the statement that leads to it, with the
-//! call after the assignment. A `goto` or label in the same function defeats
-//! that proof, because a backward jump can reach a call before the assignment.
-//!
-//! Everything else — statements, `if`, loops, `return` inside loops,
-//! fall-through, any number of results, upvalue reads, immutable aliases, and
-//! `goto`/labels in bodies — is handled.
+//! Language limits remain: a body that reads `...` cannot be reproduced
+//! because `...` is lexical to a function; a body whose value count depends on
+//! a call is not usable in a value-consuming slot; and a name that is shadowed
+//! at the call site cannot be reproduced. These are refused rather than
+//! rewritten into different behavior.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -2188,14 +2212,31 @@ impl Inliner<'_, '_, '_> {
         symbol: SymbolId,
         call_region: ScopeId,
     ) -> Option<FunctionKey> {
-        let call_root = *self.function_roots.get(&call_region)?;
-        let (block, index) = *self.parents.get(&call_root)?;
-        let creation = StatementOrigin { block, index };
         let declaring_scope = self.model.symbol(symbol).declaring_scope;
         let declaring_function = self.model.function_scope_of(declaring_scope)?;
-        if self.block_functions.get(&creation.block).copied() != Some(declaring_function) {
-            return None;
+
+        // Walk out through every enclosing function until reaching the
+        // function that declares the symbol. The creation of the outermost
+        // closure in that chain is the first point at which later writes in
+        // the declaring function can affect the value the call sees.
+        let mut region = call_region;
+        let mut creation = None;
+        for _ in 0..self.model.scopes.len() {
+            let root = *self.function_roots.get(&region)?;
+            let (block, index) = *self.parents.get(&root)?;
+            let candidate = StatementOrigin { block, index };
+            let parent = *self.block_functions.get(&candidate.block)?;
+            if parent == declaring_function {
+                creation = Some(candidate);
+                break;
+            }
+            if parent == region {
+                return None;
+            }
+            region = parent;
         }
+        let creation = creation?;
+
         let region = self.regions.get(&declaring_function)?;
         if region.has_write_after(symbol, creation)? {
             return None;
@@ -3766,6 +3807,14 @@ mod test {
         let output = inlined_dialect(code, crate::Dialect::Lua52);
         assert!(!output.contains("print(value())"), "{output}");
         parse_lua52(&output);
+    }
+
+    #[test]
+    fn inlines_a_call_in_a_closure_nested_through_another_function() {
+        let output = inlined_output(
+            "local f\nf = function()\n    return 1\nend\nlocal outer = function()\n    local inner = function()\n        return f()\n    end\n    return inner()\nend\nreturn outer()",
+        );
+        assert!(!output.contains("f()"), "{output}");
     }
 
     #[test]

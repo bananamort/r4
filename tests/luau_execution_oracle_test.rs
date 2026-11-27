@@ -1433,9 +1433,9 @@ local log = {}
 local function note(value)
     log[#log + 1] = value
 end
-local function argument()
-    note("argument")
-    return 7
+local function argument(value)
+    note(value)
+    return value
 end
 local target = setmetatable({}, {
     __index = function(_, key)
@@ -1445,7 +1445,7 @@ local target = setmetatable({}, {
         end
     end,
 })
-target:method(argument())
+target:method(argument("first"), argument("second"))
 print(table.concat(log, ","))
 return #log
 "#,
@@ -1568,6 +1568,42 @@ return 0
 "#,
     ),
     (
+        "a luau repeat condition handles multiple continues",
+        r#"
+local value = 0
+local function done(step)
+    return step >= 5
+end
+repeat
+    value = value + 1
+    local step = value
+    if step == 2 then continue end
+    do
+        if step == 3 then continue end
+    end
+    print(step)
+until done(step)
+print("done", value)
+return value
+"#,
+    ),
+    (
+        "a luau while condition runs after continue",
+        r#"
+local value = 0
+local function keep()
+    return value < 4
+end
+while keep() do
+    value = value + 1
+    if value == 2 then continue end
+    print(value)
+end
+print(value)
+return value
+"#,
+    ),
+    (
         "an elseif condition is not hoisted",
         r#"
 local calls = 0
@@ -1634,6 +1670,42 @@ repeat
 until done()
 print(count)
 return count
+"#,
+    ),
+    (
+        "a callee with goto and labels is inlined",
+        r#"
+local function pick(value)
+    if value > 0 then
+        goto positive
+    end
+    do
+        return -1
+    end
+    ::positive::
+    return 1
+end
+print(pick(1), pick(-1))
+return pick(2)
+"#,
+    ),
+    (
+        "a while condition is re-evaluated around a goto label",
+        r#"
+local function keep(n)
+    return n < 3
+end
+local n = 0
+while keep(n) do
+    n = n + 1
+    if n == 2 then
+        goto continue
+    end
+    print(n)
+    ::continue::
+end
+print(n)
+return n
 "#,
     ),
 ];
