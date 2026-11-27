@@ -108,7 +108,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dialect: [lua51, lua52, lua53, lua54, luajit]
+        include:
+          - dialect: lua51
+            package: lua5.1
+          - dialect: lua52
+            package: lua5.2
+          - dialect: lua53
+            package: lua5.3
+          - dialect: lua54
+            package: lua5.4
+          - dialect: luajit
+            package: luajit
+          - dialect: luau
+            package: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -122,21 +134,21 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install ${{ matrix.dialect }}
+      - name: Install ${{ matrix.dialect }} interpreter
+        if: matrix.package != ''
         run: |
           sudo apt-get update -qq
-          case "${{ matrix.dialect }}" in
-            lua51) sudo apt-get install -y lua5.1 ;;
-            lua52) sudo apt-get install -y lua5.2 ;;
-            lua53) sudo apt-get install -y lua5.3 ;;
-            lua54) sudo apt-get install -y lua5.4 ;;
-            luajit) sudo apt-get install -y luajit ;;
-          esac
+          sudo apt-get install -y ${{ matrix.package }}
 
-      - name: Run the dialect oracle
+      - name: Run the external dialect oracle
+        if: matrix.dialect != 'luau'
         env:
           R4_LUA_DIALECTS: ${{ matrix.dialect }}
         run: cargo test --test luau_execution_oracle_test lua_dialects
+
+      - name: Run the embedded Luau oracle
+        if: matrix.dialect == 'luau'
+        run: cargo test --test luau_execution_oracle_test
 
   code-style:
     name: Verify code format

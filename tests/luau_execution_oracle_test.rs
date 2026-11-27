@@ -7,9 +7,9 @@
 //! byte-for-byte identical observable behavior: `print` output, returned values,
 //! and the state the program returns.
 //!
-//! A separate dialect oracle reruns the optimized corpus and a seeded fuzz
-//! corpus under Lua 5.1, 5.2, 5.3, 5.4, and LuaJIT. It is enabled with
-//! `R4_LUA_DIALECTS`; CI runs each dialect in its own matrix job, so the
+//! A separate dialect oracle reruns the optimized corpus under Lua 5.1, 5.2,
+//! 5.3, 5.4, and LuaJIT, and the seeded fuzz corpus under those dialects and the
+//! embedded Luau VM. CI runs each dialect in its own matrix job, so the
 //! embedded Luau oracle itself remains self-contained.
 
 use std::fs;
@@ -1632,6 +1632,20 @@ fn fuzzed_programs_keep_identical_behavior_in_lua_dialects() {
                 dialect.name
             );
         }
+    }
+}
+
+#[test]
+fn fuzzed_programs_keep_identical_behavior_in_luau() {
+    for seed in 0..FUZZ_PROGRAMS {
+        let program = generate_fuzz_program(seed);
+        let optimized = optimize(&program);
+        let before = observe(&program);
+        let after = observe(&optimized);
+        assert_eq!(
+            before, after,
+            "fuzzed program {seed} changed behavior under Luau:\n--- source ---\n{program}\n--- optimized ---\n{optimized}"
+        );
     }
 }
 
