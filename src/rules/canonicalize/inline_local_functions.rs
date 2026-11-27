@@ -1541,10 +1541,7 @@ impl Inliner<'_, '_, '_> {
                                 .ok_or_else(|| unresolved_identifier(variable.get_identifier()))
                         })
                         .collect();
-                    let symbols = match symbols {
-                        Ok(symbols) => symbols,
-                        Err(error) => return Err(error),
-                    };
+                    let symbols = symbols?;
                     let group_visible = symbols.iter().any(|symbol| visible.contains(symbol));
                     if !group_visible {
                         continue;
