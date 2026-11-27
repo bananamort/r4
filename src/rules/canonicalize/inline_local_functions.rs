@@ -1500,6 +1500,15 @@ impl Inliner<'_, '_, '_> {
                         function.is_variadic(),
                     );
                     *expression.mutate_attributes() = function.attributes().clone();
+                    if let Some(generic) = function.get_generic_parameters() {
+                        expression.set_generic_parameters(generic.clone());
+                    }
+                    if let Some(variadic) = function.get_variadic_type() {
+                        expression.set_variadic_type(variadic.clone());
+                    }
+                    if let Some(return_type) = function.get_return_type() {
+                        expression.set_return_type(return_type.clone());
+                    }
                     transformed.push(Statement::from(AssignStatement::new(
                         vec![Variable::Identifier(Identifier::new(name))],
                         vec![Expression::Function(Box::new(expression))],

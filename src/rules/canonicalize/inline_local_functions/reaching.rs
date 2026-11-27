@@ -12,7 +12,7 @@
 //! The analysis reads cloned CFG statements and resolves identifiers through
 //! the structural bindings of the semantic model, so it never guesses.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bitvec::prelude::*;
 

@@ -1716,13 +1716,36 @@ fn generate_fuzz_program(seed: u64) -> String {
         ),
         "local alias".to_string(),
         "alias = combine".to_string(),
+        "local captured = combine".to_string(),
+        "combine = function(a, b)".to_string(),
+        "    return a * b".to_string(),
+        "end".to_string(),
+        "local switch".to_string(),
+        "if value % 2 == 0 then".to_string(),
+        "    switch = function(x) return x + base end".to_string(),
+        "else".to_string(),
+        "    switch = function(x) return x + base end".to_string(),
+        "end".to_string(),
+        "local method_log = {}".to_string(),
+        "local target = setmetatable({}, {".to_string(),
+        "    __index = function(_, key)".to_string(),
+        "        method_log[#method_log + 1] = tostring(counter)".to_string(),
+        "        return function(self, x) return x end".to_string(),
+        "    end,".to_string(),
+        "})".to_string(),
+        "local function keep_going(n)".to_string(),
+        "    return n < 3".to_string(),
+        "end".to_string(),
+        "local function finished(step)".to_string(),
+        "    return step >= 3".to_string(),
+        "end".to_string(),
     ];
 
     let statements = rng.random_range(4..=8);
     let mut next = 0usize;
     for _ in 0..statements {
         let step = rng.random_range(1..=5);
-        match rng.random_range(0..10) {
+        match rng.random_range(0..15) {
             0 => lines.push(format!("print(counter, bump({step}))")),
             1 => lines.push(format!("print(value + bump({step}))")),
             2 => lines.push(format!("print(tag .. bump({step}))")),
@@ -1747,12 +1770,48 @@ fn generate_fuzz_program(seed: u64) -> String {
             8 => lines.push(format!(
                 "do local value = {step}; print(value, read_value(), bump({step})) end"
             )),
-            _ => {
+            9 => {
                 lines.push(format!(
                     "for i = 1, {} do counter = counter + i end",
                     rng.random_range(1..=4)
                 ));
                 lines.push("print(counter)".to_string());
+            }
+            10 => {
+                lines.push(format!(
+                    "print(target:method(bump({step})), table.concat(method_log, \",\"))"
+                ));
+            }
+            11 => {
+                lines.push("local n = 0".to_string());
+                lines.push("while keep_going(n) do".to_string());
+                lines.push("    n = n + 1".to_string());
+                lines.push("    counter = counter + n".to_string());
+                lines.push("    local n = 0".to_string());
+                lines.push("    print(n)".to_string());
+                lines.push("end".to_string());
+                lines.push("print(counter, n)".to_string());
+            }
+            12 => {
+                lines.push("local r = 0".to_string());
+                lines.push("repeat".to_string());
+                lines.push("    r = r + 1".to_string());
+                lines.push("    local step = r".to_string());
+                lines.push("    counter = counter + step".to_string());
+                lines.push("    print(step)".to_string());
+                lines.push("until finished(step)".to_string());
+                lines.push("print(counter, r)".to_string());
+            }
+            13 => {
+                lines.push(format!(
+                    "print(switch({step}), captured({step}, {step}), combine({step}, {step}))"
+                ));
+            }
+            _ => {
+                lines.push("local closure = function()".to_string());
+                lines.push(format!("    return switch({step})"));
+                lines.push("end".to_string());
+                lines.push("print(closure())".to_string());
             }
         }
     }
