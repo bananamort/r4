@@ -1668,6 +1668,29 @@ return outer
 "#,
     ),
     (
+        "a luau repeat condition hoists a body-local vararg function",
+        r##"
+local i = 0
+local function id(value)
+    return value
+end
+repeat
+    i = i + 1
+    local function check(...)
+        local count = select("#", ...)
+        return i >= 3
+    end
+    local step = i
+    if i == 2 then
+        continue
+    end
+    print(step)
+until id(check(step))
+print("done", i)
+return i
+"##,
+    ),
+    (
         "an elseif condition is not hoisted",
         r#"
 local calls = 0
