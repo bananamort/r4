@@ -1007,7 +1007,7 @@ return result
 "#,
     ),
     (
-        "a binary operand is not reordered",
+        "a binary operand keeps its place",
         r#"
 local value = 1
 local function set()
@@ -1015,6 +1015,80 @@ local function set()
     return 0
 end
 print(value + set())
+return value
+"#,
+    ),
+    (
+        "a global binary operand is read before the other side",
+        r#"
+X = 1
+local function set()
+    X = 5
+    return 0
+end
+print(X + set())
+return X
+"#,
+    ),
+    (
+        "a local comparison operand is read after the other side",
+        r#"
+local value = 1
+local function set()
+    value = 2
+    return 2
+end
+print(value == set())
+return value
+"#,
+    ),
+    (
+        "a concat operand is read before the other side",
+        r#"
+local value = "a"
+local function set()
+    value = "b"
+    return "c"
+end
+print(value .. set())
+return value
+"#,
+    ),
+    (
+        "a local index base is read after the key",
+        r#"
+local t = { [1] = "one", [2] = "two" }
+local function change()
+    t = { [1] = "changed", [2] = "changed" }
+    return 1
+end
+print(t[change()])
+return 0
+"#,
+    ),
+    (
+        "a list table entry keeps its place",
+        r#"
+local value = 1
+local function set()
+    value = 5
+    return 0
+end
+local t = { value, set() }
+print(t[1], t[2])
+return value
+"#,
+    ),
+    (
+        "a keyed table entry keeps its place",
+        r#"
+local value = 1
+local function set()
+    value = 5
+    return 0
+end
+local t = { item = value, other = set() }
+print(t.item, t.other)
 return value
 "#,
     ),

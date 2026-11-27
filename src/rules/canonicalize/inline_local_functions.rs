@@ -29,16 +29,21 @@
 //!
 //! The preamble runs at the start of the statement, so a call is inlined only
 //! when everything evaluated before it in that statement is inert or can be
-//! stored first. When a later value in a list can be inlined, earlier argument
-//! values and return values are stored in fresh locals in their original order,
-//! and a call's callee is stored before an inlined argument. An inlined call's
-//! own arguments are rewritten first, so nested calls are inlined too.
+//! stored first. Earlier list values, table entries, and eagerly-read operands
+//! are stored in fresh locals in their original order, and a call's callee is
+//! stored before an inlined argument. An inlined call's own arguments are
+//! rewritten first, so nested calls are inlined too.
+//!
+//! A bare local of the current function is read by the binary operator, index,
+//! or method call itself, after the other operand runs, so it is left in place
+//! instead of being stored early. Concatenation operands and globals, upvalues,
+//! and compound expressions are read eagerly and are stored first.
 //!
 //! A short-circuit operand, an `if` expression branch, an `elseif` condition, a
-//! `while`/`repeat` condition, a binary operand after a read, and an index key
-//! after the table cannot be reordered this way and stop further inlining. A
-//! function that contains a `goto` or label refuses inlining entirely, because
-//! the preamble declares locals that a forward jump could enter.
+//! `while`/`repeat` condition, and a method receiver still stop further
+//! inlining. A function that contains a `goto` or label refuses inlining
+//! entirely, because the preamble declares locals that a forward jump could
+//! enter.
 //!
 //! The `repeat ... until true` runs the body once and gives every `return` a
 //! `break` to leave through; the `if __done then break end` after each loop
@@ -1063,8 +1068,21 @@ impl Inliner<'_, '_, '_> {
             Expression::Binary(binary) => {
                 let conditional =
                     matches!(binary.operator(), BinaryOperator::And | BinaryOperator::Or);
+                // Concatenation copies every operand into a register before the
+                // operation, so its left operand is read eagerly.
+                let concat = matches!(binary.operator(), BinaryOperator::Concat);
+                let right_may_inline = self.expression_may_inline(binary.right());
+                let clean = self.clean;
                 let mut left = binary.left().clone();
                 self.rewrite_single(&mut left, preambles);
+                if !conditional && right_may_inline && clean && self.position_allows_insertion() {
+                    // A current-function local is read by the operator after the
+                    // other operand runs, so it must not be copied early.
+                    if concat || !self.is_delayed_operand(&left) {
+                        left = self.materialize(left, preambles);
+                    }
+                    self.clean = true;
+                }
                 *binary.mutate_left() = left;
                 if conditional {
                     // The right operand only runs when the left one does not
@@ -1086,8 +1104,18 @@ impl Inliner<'_, '_, '_> {
                 *parenthese.mutate_inner_expression() = inner;
             }
             Expression::Index(index) => {
+                let key_may_inline = self.expression_may_inline(index.get_index());
+                let clean = self.clean;
                 let mut prefix = index.get_prefix().clone();
                 self.rewrite_prefix(&mut prefix, preambles);
+                if key_may_inline && clean && self.position_allows_insertion() {
+                    // A current-function local is read by the index operation
+                    // after the key runs, so it must not be copied early.
+                    if !self.prefix_is_delayed(&prefix) {
+                        prefix = self.materialize_prefix(prefix, preambles);
+                    }
+                    self.clean = true;
+                }
                 *index.mutate_prefix() = prefix;
                 let mut key = index.get_index().clone();
                 self.rewrite_single(&mut key, preambles);
@@ -1123,33 +1151,80 @@ impl Inliner<'_, '_, '_> {
             Expression::Table(table) => {
                 let entries: Vec<crate::nodes::TableEntry> =
                     table.iter_entries().cloned().collect();
+                // An entry with a computed key keeps the key in a register until
+                // the store, so earlier entries cannot be copied out of the way.
+                let spillable = entries.iter().all(|entry| match entry {
+                    crate::nodes::TableEntry::Index(index) => {
+                        expression_is_literal_key(index.get_key())
+                    }
+                    _ => true,
+                });
                 let length = entries.len();
                 let mut replacement: Vec<crate::nodes::TableEntry> = Vec::with_capacity(length);
-                for (index, entry) in entries.into_iter().enumerate() {
+                for (index, entry) in entries.iter().enumerate() {
+                    let later_may_inline = spillable
+                        && entries[index + 1..]
+                            .iter()
+                            .any(|later| self.table_entry_may_inline(later));
+                    let clean = self.clean;
                     let tail = index + 1 == length;
-                    match entry {
+                    match entry.clone() {
                         crate::nodes::TableEntry::Field(mut field) => {
                             let mut value = field.get_value().clone();
                             self.rewrite_single(&mut value, preambles);
+                            if later_may_inline && clean && self.position_allows_insertion() {
+                                value = self.materialize(value, preambles);
+                                self.clean = true;
+                            }
                             *field.mutate_value() = value;
                             replacement.push(crate::nodes::TableEntry::Field(field));
                         }
                         crate::nodes::TableEntry::Index(mut index) => {
                             let mut key = index.get_key().clone();
                             self.rewrite_single(&mut key, preambles);
+                            if spillable
+                                && later_may_inline
+                                && clean
+                                && self.position_allows_insertion()
+                            {
+                                key = self.materialize(key, preambles);
+                                self.clean = true;
+                            }
                             *index.mutate_key() = key;
                             let mut value = index.get_value().clone();
                             self.rewrite_single(&mut value, preambles);
+                            if spillable
+                                && later_may_inline
+                                && clean
+                                && self.position_allows_insertion()
+                            {
+                                value = self.materialize(value, preambles);
+                                self.clean = true;
+                            }
                             *index.mutate_value() = value;
                             replacement.push(crate::nodes::TableEntry::Index(index));
                         }
                         crate::nodes::TableEntry::Value(value) => {
                             // The last array entry takes every value, like any
                             // other trailing value list.
-                            for result in self.rewrite((*value).clone(), tail, preambles) {
+                            let results = self.rewrite((*value).clone(), tail, preambles);
+                            for result in results {
+                                let result = if later_may_inline
+                                    && clean
+                                    && self.position_allows_insertion()
+                                {
+                                    self.clean = true;
+                                    self.materialize(result, preambles)
+                                } else {
+                                    result
+                                };
                                 replacement.push(crate::nodes::TableEntry::Value(Box::new(result)));
                             }
                         }
+                    }
+                    if !spillable {
+                        // Entries after a computed key cannot be hoisted.
+                        self.clean = false;
                     }
                 }
                 *table = crate::nodes::TableExpression::new(replacement);
@@ -1418,6 +1493,58 @@ impl Inliner<'_, '_, '_> {
                 index,
             };
         }
+    }
+
+    fn table_entry_may_inline(&self, entry: &crate::nodes::TableEntry) -> bool {
+        match entry {
+            crate::nodes::TableEntry::Field(field) => self.expression_may_inline(field.get_value()),
+            crate::nodes::TableEntry::Index(index) => self.expression_may_inline(index.get_value()),
+            crate::nodes::TableEntry::Value(value) => self.expression_may_inline(value),
+        }
+    }
+
+    /// Returns whether `expression` is a bare identifier that the VM reads from
+    /// its register when the surrounding instruction runs, rather than eagerly
+    /// into a temporary.
+    fn is_delayed_operand(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Identifier(identifier) => self.is_current_local(identifier),
+            _ => false,
+        }
+    }
+
+    fn prefix_is_delayed(&self, prefix: &Prefix) -> bool {
+        match prefix {
+            Prefix::Identifier(identifier) => self.is_current_local(identifier),
+            _ => false,
+        }
+    }
+
+    /// Returns whether `identifier` names a local declared in the function that
+    /// contains the current statement. Upvalues and globals are loaded into
+    /// temporaries before a later operand runs.
+    fn is_current_local(&self, identifier: &Identifier) -> bool {
+        let Some(symbol) = self.model.resolve_identifier(identifier) else {
+            return false;
+        };
+        let info = self.model.symbol(symbol);
+        if info.kind != SymbolKind::Local {
+            return false;
+        }
+        let Some(position) = self.current_position else {
+            return false;
+        };
+        let Some(function) = self.block_functions.get(&position.block) else {
+            return false;
+        };
+        let mut scope = Some(info.declaring_scope);
+        while let Some(id) = scope {
+            if id == *function {
+                return true;
+            }
+            scope = self.model.scope(id).parent;
+        }
+        false
     }
 
     /// Returns whether `expression` contains a call that could be inlined.
@@ -1731,6 +1858,15 @@ fn lower_statement_returns(
 
 /// Returns the identifier a call's prefix names, looking through parentheses
 /// and type instantiation.
+/// Returns whether a table key is a constant that is evaluated without
+/// reading a variable or running code.
+fn expression_is_literal_key(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::Number(_) | Expression::String(_) | Expression::True(_) | Expression::False(_)
+    )
+}
+
 /// Returns whether evaluating `expression` is unobservable and cannot raise.
 fn expression_is_inert(expression: &Expression) -> bool {
     matches!(
@@ -2183,9 +2319,33 @@ mod test {
     }
 
     #[test]
-    fn keeps_a_call_after_a_read_operand() {
+    fn inlines_a_call_in_a_binary_operand() {
         let output = inlined_output(
             "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first + value(2)",
+        );
+        assert!(!output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_call_in_a_table_entry_after_a_value() {
+        let output = inlined_output(
+            "local function value(x)\n    return x\nend\nlocal first = 1\nlocal t = { first, value(2) }\nreturn t",
+        );
+        assert!(!output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_call_in_a_keyed_table_entry() {
+        let output = inlined_output(
+            "local function value(x)\n    return x\nend\nlocal first = 1\nlocal t = { item = first, other = value(2) }\nreturn t",
+        );
+        assert!(!output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_after_a_computed_table_key() {
+        let output = inlined_output(
+            "local function value(x)\n    return x\nend\nlocal key = \"item\"\nlocal t = { [key] = 1, other = value(2) }\nreturn t",
         );
         assert!(output.contains("value(2)"), "{output}");
     }
@@ -2200,11 +2360,11 @@ mod test {
     }
 
     #[test]
-    fn keeps_a_call_in_an_index_key_after_the_table() {
+    fn inlines_a_call_in_an_index_key() {
         let output = inlined_output(
             "local function value(x)\n    return x\nend\nlocal t = { 1, 2 }\nreturn t[value(2)]",
         );
-        assert!(output.contains("value(2)"), "{output}");
+        assert!(!output.contains("value(2)"), "{output}");
     }
 
     #[test]
@@ -2333,6 +2493,9 @@ mod test {
             "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first + value(2)",
             "local function value(x)\n    return x\nend\nlocal t = { 1, 2 }\nreturn t[value(2)]",
             "local function value(x)\n    return x\nend\nlocal function wrap(x)\n    return x\nend\nreturn wrap(value(2))",
+            "local function value(x)\n    return x\nend\nlocal first = 1\nlocal t = { first, value(2) }\nreturn t",
+            "local function value(x)\n    return x\nend\nlocal first = 1\nlocal t = { item = first, other = value(2) }\nreturn t",
+            "local function value(x)\n    return x\nend\nlocal first = 1\nlocal t = { [first] = 1, other = value(2) }\nreturn t",
             "local function add(a, b)\n    return a + b\nend\nlocal sum\nsum = add\nreturn sum(1, 2)",
             "local function add(a, b)\n    return a + b\nend\nlocal first\nlocal second\nfirst = second\nsecond = add\nreturn first(1, 2)",
             "local value = 0\nlocal function set(x)\n    value = x\nend\nset(5)\nreturn value",
