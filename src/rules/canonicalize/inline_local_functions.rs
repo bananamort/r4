@@ -1541,10 +1541,7 @@ impl Inliner<'_, '_, '_> {
                         .collect();
                     let symbols = match symbols {
                         Ok(symbols) => symbols,
-                        Err(error) => {
-                            body.set_statements(statements);
-                            return Err(error);
-                        }
+                        Err(error) => return Err(error),
                     };
                     let group_visible = symbols.iter().any(|symbol| visible.contains(symbol));
                     if !group_visible {
@@ -1567,9 +1564,7 @@ impl Inliner<'_, '_, '_> {
                 Statement::LocalFunction(function) => {
                     let Some(symbol) = self.model.resolve_identifier(function.get_identifier())
                     else {
-                        let error = unresolved_identifier(function.get_identifier());
-                        body.set_statements(statements);
-                        return Err(error);
+                        return Err(unresolved_identifier(function.get_identifier()));
                     };
                     if !visible.contains(&symbol) {
                         continue;
