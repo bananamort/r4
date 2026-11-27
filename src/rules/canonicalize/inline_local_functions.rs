@@ -1174,21 +1174,22 @@ impl Inliner<'_, '_, '_> {
         *statement = WhileStatement::new(body, Expression::from(true));
     }
 
-    /// Rewrites a `repeat` condition. The condition is evaluated after each
-    /// iteration and can see the body's top-level locals, including after a
-    /// `continue`. The loop is rewritten to a `while true` whose condition
-    /// check runs at the top of the body after a first-iteration guard.
+    /// Rewrites a `repeat` condition. The condition is evaluated in the body's
+    /// scope after every iteration. The inline preamble is appended at the end
+    /// of the body and the condition becomes `until <result>`.
     ///
-    /// Body locals the condition reads are declared at the top of the loop body
-    /// under fresh names, and every reference bound to them is renamed. The
-    /// declaration still runs on every iteration, so closures keep their
-    /// per-iteration cells. `continue` jumps to the `while` condition (`true`)
-    /// and then reaches the condition check, exactly like the original
-    /// `repeat`.
+    /// A `continue` jumps to the condition, skipping the rest of the body but
+    /// not the condition. Those statements are lowered structurally: each
+    /// `continue` sets a flag, and the statements after it run only when the
+    /// flag is clear. The condition section sits outside those guards, so it
+    /// always runs. Body locals the condition reads stay in the body's scope;
+    /// when a guard would otherwise move their declaration into a nested `if`,
+    /// they are declared at the top of the body under fresh names and every
+    /// reference bound to them is renamed.
     fn rewrite_repeat_statement(
         &mut self,
         statement: &mut Statement,
-        preambles: &mut Vec<Statement>,
+        _preambles: &mut Vec<Statement>,
     ) {
         let Statement::Repeat(repeat) = statement else {
             return;
@@ -1210,107 +1211,124 @@ impl Inliner<'_, '_, '_> {
         }
 
         let Some(body_scope) = body_scope else {
-            *repeat.mutate_condition() = original_condition;
-            repeat.mutate_block().clone_from(&body);
+            self.repeat_fallback(
+                repeat,
+                &mut body,
+                &original_condition,
+                condition_inlined,
+                None,
+            );
             return;
         };
 
-        if !self.hoist_repeat_condition_locals(
-            &mut body,
-            body_scope,
-            &mut condition,
-            &mut condition_preambles,
-        ) {
-            // The condition cannot be moved to the loop top. Restore the
-            // original condition and rewrite it without inlining. The body is
-            // already rewritten and remains valid.
-            *self.inlined -= condition_inlined;
-            *repeat.mutate_condition() = original_condition.clone();
-            let (fallback, fallback_preambles) = self.rewrite_condition(
+        // The condition is unreachable when the body always returns or breaks
+        // as its last statement. Appending after a trailing label would also
+        // remove the label's block-end scope relaxation for a goto that relies
+        // on it. Refuse those shapes rather than emit invalid or unreachable
+        // code.
+        if matches!(
+            body.get_last_statement(),
+            Some(LastStatement::Return(_)) | Some(LastStatement::Break(_))
+        ) || self.trailing_label_is_targeted(&body)
+        {
+            self.repeat_fallback(
+                repeat,
+                &mut body,
                 &original_condition,
-                ConditionKind::Repeat,
+                condition_inlined,
                 Some(body_scope),
-                false,
             );
-            debug_assert!(
-                fallback_preambles.is_empty(),
-                "a non-inlining condition rewrite must not produce a preamble"
-            );
-            *repeat.mutate_condition() = fallback;
-            repeat.mutate_block().clone_from(&body);
             return;
         }
 
-        let skip = self.names.generate();
-        self.declare_outside_loop(skip.clone(), Expression::from(true), preambles);
+        let has_continue = block_contains_continue(&body);
+        if has_continue
+            && (body_has_close_local(&body)
+                || !self.hoist_repeat_condition_locals(
+                    &mut body,
+                    body_scope,
+                    &mut condition,
+                    &mut condition_preambles,
+                ))
+        {
+            self.repeat_fallback(
+                repeat,
+                &mut body,
+                &original_condition,
+                condition_inlined,
+                Some(body_scope),
+            );
+            return;
+        }
 
-        let skip_identifier = || Identifier::new(skip.clone());
-        let check = Statement::from(crate::nodes::IfStatement::new(
-            vec![crate::nodes::IfBranch::new(
-                Expression::from(UnaryExpression::new(
-                    UnaryOperator::Not,
-                    Expression::identifier(skip.clone()),
+        if has_continue {
+            let flag = self.names.generate();
+            let mut statements = body.take_statements();
+            statements.insert(
+                0,
+                Statement::from(VariableAssignment::new(
+                    vec![TypedIdentifier::new(flag.clone())],
+                    vec![Expression::from(false)],
                 )),
-                Block::new(
-                    condition_preambles
-                        .into_iter()
-                        .chain(std::iter::once(Statement::from(
-                            crate::nodes::IfStatement::new(
-                                vec![crate::nodes::IfBranch::new(
-                                    condition,
-                                    Block::new(vec![], Some(LastStatement::Break(None))),
-                                )],
-                                None,
-                            ),
-                        )))
-                        .collect(),
-                    None,
-                ),
-            )],
-            None,
-        ));
+            );
+            body.set_statements(statements);
+            lower_repeat_continues(&mut body, &flag);
+        }
 
-        let clear_skip = Statement::from(AssignStatement::new(
-            vec![Variable::Identifier(skip_identifier())],
-            vec![Expression::from(false)],
-        ));
-
+        let result = self.names.generate();
         let mut statements = body.take_statements();
-        statements.insert(0, clear_skip);
-        statements.insert(0, check);
+        statements.extend(condition_preambles);
+        statements.push(Statement::from(VariableAssignment::new(
+            vec![TypedIdentifier::new(result.clone())],
+            vec![condition],
+        )));
         body.set_statements(statements);
-
-        *statement = Statement::While(WhileStatement::new(body, Expression::from(true)));
+        *repeat.mutate_condition() = Expression::identifier(result);
+        repeat.mutate_block().clone_from(&body);
     }
 
-    /// Declares a local at the enclosing statement level. In a function that
-    /// contains labels the declaration is hoisted to the function start so a
-    /// forward `goto` never enters its scope.
-    fn declare_outside_loop(
+    /// Restores a repeat condition that could not be rewritten, rewriting the
+    /// original expression without inlining. The body is already rewritten.
+    fn repeat_fallback(
         &mut self,
-        name: String,
-        value: Expression,
-        preambles: &mut Vec<Statement>,
+        repeat: &mut RepeatStatement,
+        body: &mut Block,
+        original_condition: &Expression,
+        condition_inlined: usize,
+        body_scope: Option<ScopeId>,
     ) {
-        let target = self.current_position.and_then(|position| {
-            let function = *self.block_functions.get(&position.block)?;
-            self.labelled.contains(&function).then_some(function)
-        });
-        if let Some(scope) = target {
-            self.hoisted
-                .entry(scope)
-                .or_default()
-                .push(TypedIdentifier::new(name.clone()));
-            preambles.push(Statement::from(AssignStatement::new(
-                vec![Variable::Identifier(Identifier::new(name))],
-                vec![value],
-            )));
-        } else {
-            preambles.push(Statement::from(VariableAssignment::new(
-                vec![TypedIdentifier::new(name)],
-                vec![value],
-            )));
-        }
+        *self.inlined -= condition_inlined;
+        let (fallback, fallback_preambles) =
+            self.rewrite_condition(original_condition, ConditionKind::Repeat, body_scope, false);
+        debug_assert!(
+            fallback_preambles.is_empty(),
+            "a non-inlining condition rewrite must not produce a preamble"
+        );
+        *repeat.mutate_condition() = fallback;
+        repeat.mutate_block().clone_from(body);
+    }
+
+    /// Returns whether a trailing label of `body` is the target of a goto.
+    ///
+    /// Such a label relies on the block-end relaxation: appending statements
+    /// after it would put the label inside the scope of earlier locals and
+    /// invalidate the jump in the generated code.
+    fn trailing_label_is_targeted(&self, body: &Block) -> bool {
+        let trailing: Vec<LabelId> = body
+            .iter_statements()
+            .rev()
+            .take_while(|statement| matches!(statement, Statement::Label(_)))
+            .filter_map(|statement| match statement {
+                Statement::Label(label) => self.model.resolve_label(label.get_label()),
+                _ => None,
+            })
+            .collect();
+        trailing.iter().any(|label| {
+            self.model
+                .goto_bindings
+                .iter()
+                .any(|binding| binding.label == *label)
+        })
     }
 
     /// Moves the body locals read by a repeat condition to the top of the loop
@@ -1444,10 +1462,10 @@ impl Inliner<'_, '_, '_> {
                     transformed.push(Statement::from(AssignStatement::new(variables, values)));
                 }
                 Statement::LocalFunction(function) => {
-                    let Some(symbol) = self.model.resolve_identifier(function.get_identifier())
-                    else {
-                        return false;
-                    };
+                    let symbol = self
+                        .model
+                        .resolve_identifier(function.get_identifier())
+                        .expect("the declaration scan resolved every local function");
                     if !hoisted_symbols.contains(&symbol) {
                         transformed.push(Statement::LocalFunction(function));
                         continue;
@@ -1456,11 +1474,12 @@ impl Inliner<'_, '_, '_> {
                         .get(&symbol)
                         .expect("every hoisted function has a name")
                         .clone();
-                    let expression = crate::nodes::FunctionExpression::new(
+                    let mut expression = crate::nodes::FunctionExpression::new(
                         function.get_block().clone(),
                         function.iter_parameters().cloned().collect(),
                         function.is_variadic(),
                     );
+                    *expression.mutate_attributes() = function.attributes().clone();
                     transformed.push(Statement::from(AssignStatement::new(
                         vec![Variable::Identifier(Identifier::new(name))],
                         vec![Expression::Function(expression)],
@@ -2126,6 +2145,11 @@ impl Inliner<'_, '_, '_> {
     /// chain is followed at the position each alias captured its value, not at
     /// the call site.
     fn resolve_call_function(&self, symbol: SymbolId) -> Option<FunctionKey> {
+        // A captured local written by a nested function can change whenever
+        // that function runs, and the enclosing CFG does not model those calls.
+        if self.model.symbol(symbol).write_count > 1 && self.nested_writes.contains(&symbol) {
+            return None;
+        }
         let position = self.current_position?;
         let region_scope = *self.block_functions.get(&position.block)?;
         let declaring_scope = self.model.symbol(symbol).declaring_scope;
@@ -2482,6 +2506,158 @@ impl Inliner<'_, '_, '_> {
         }
         false
     }
+}
+
+/// Returns whether a block contains a `continue` that targets this loop.
+///
+/// Continues inside a nested loop or a nested function target another loop and
+/// do not count.
+fn block_contains_continue(block: &Block) -> bool {
+    block.iter_statements().any(statement_contains_continue)
+        || matches!(block.get_last_statement(), Some(LastStatement::Continue(_)))
+}
+
+fn statement_contains_continue(statement: &Statement) -> bool {
+    match statement {
+        Statement::Do(statement) => block_contains_continue(statement.get_block()),
+        Statement::If(statement) => {
+            statement
+                .iter_branches()
+                .any(|branch| block_contains_continue(branch.get_block()))
+                || statement
+                    .get_else_block()
+                    .is_some_and(block_contains_continue)
+        }
+        _ => false,
+    }
+}
+
+/// Returns whether a block owns a `<close>` local whose closing point the
+/// structural `continue` lowering could move. Nested loops and functions keep
+/// their own scope and are not inspected.
+fn body_has_close_local(block: &Block) -> bool {
+    let mut found = false;
+    for statement in block.iter_statements() {
+        match statement {
+            Statement::LocalAssign(assignment) => {
+                if assignment
+                    .iter_variables()
+                    .any(|variable| variable.get_attribute() == Some("close"))
+                {
+                    found = true;
+                }
+            }
+            Statement::Do(statement) => found |= body_has_close_local(statement.get_block()),
+            Statement::If(statement) => {
+                found |= statement
+                    .iter_branches()
+                    .any(|branch| body_has_close_local(branch.get_block()));
+                if let Some(else_block) = statement.get_else_block() {
+                    found |= body_has_close_local(else_block);
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// Replaces every `continue` targeting this loop with a flag assignment and
+/// guards the statements that follow it with `if not flag then ... end`.
+fn lower_repeat_continues(block: &mut Block, flag: &str) {
+    let mut statements = block.take_statements();
+    if let Some(last) = block.take_last_statement() {
+        if matches!(last, LastStatement::Continue(_)) {
+            statements.push(continue_assignment(flag));
+        } else {
+            block.set_last_statement(last);
+        }
+    }
+    for statement in &mut statements {
+        lower_repeat_continue_statement(statement, flag);
+    }
+    block.set_statements(guard_statements(statements, flag));
+}
+
+fn lower_repeat_continue_statement(statement: &mut Statement, flag: &str) {
+    match statement {
+        Statement::Do(statement) => lower_repeat_continues(statement.mutate_block(), flag),
+        Statement::If(statement) => {
+            for branch in statement.mutate_branches() {
+                lower_repeat_continues(branch.mutate_block(), flag);
+            }
+            if let Some(else_block) = statement.mutate_else_block() {
+                lower_repeat_continues(else_block, flag);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn continue_assignment(flag: &str) -> Statement {
+    Statement::from(AssignStatement::new(
+        vec![Variable::Identifier(Identifier::new(flag.to_owned()))],
+        vec![Expression::from(true)],
+    ))
+}
+
+/// Builds the guarded statement sequence for one block. After the first
+/// statement that may continue, all following statements run only while the
+/// flag is clear.
+fn guard_statements(statements: Vec<Statement>, flag: &str) -> Vec<Statement> {
+    let mut result = Vec::with_capacity(statements.len());
+    let mut iterator = statements.into_iter();
+    while let Some(statement) = iterator.next() {
+        let may_continue = statement_may_continue(&statement, flag);
+        result.push(statement);
+        if may_continue {
+            let rest: Vec<Statement> = iterator.collect();
+            if !rest.is_empty() {
+                let guarded = guard_statements(rest, flag);
+                result.push(guard_block(guarded, flag));
+            }
+            break;
+        }
+    }
+    result
+}
+
+fn guard_block(statements: Vec<Statement>, flag: &str) -> Statement {
+    Statement::from(crate::nodes::IfStatement::new(
+        vec![crate::nodes::IfBranch::new(
+            Expression::from(UnaryExpression::new(
+                UnaryOperator::Not,
+                Expression::identifier(flag.to_owned()),
+            )),
+            Block::new(statements, None),
+        )],
+        None,
+    ))
+}
+
+fn statement_may_continue(statement: &Statement, flag: &str) -> bool {
+    match statement {
+        Statement::Assign(assignment) => assignment.iter_variables().any(|variable| {
+            matches!(variable, Variable::Identifier(identifier) if identifier.get_name() == flag)
+        }),
+        Statement::Do(statement) => block_may_continue(statement.get_block(), flag),
+        Statement::If(statement) => {
+            statement
+                .iter_branches()
+                .any(|branch| block_may_continue(branch.get_block(), flag))
+                || statement
+                    .get_else_block()
+                    .is_some_and(|block| block_may_continue(block, flag))
+        }
+        _ => false,
+    }
+}
+
+fn block_may_continue(block: &Block, flag: &str) -> bool {
+    block
+        .iter_statements()
+        .any(|statement| statement_may_continue(statement, flag))
+        || matches!(block.get_last_statement(), Some(LastStatement::Continue(_)))
 }
 
 /// Builds `if not condition then break end`.
