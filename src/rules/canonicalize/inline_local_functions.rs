@@ -3862,6 +3862,107 @@ mod test {
     }
 
     #[test]
+    fn inlines_after_a_later_assignment_overrides_conditional_definitions() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function()\n        return 1\n    end\nelse\n    f = function()\n        return 2\n    end\nend\nf = function()\n    return 3\nend\nreturn f()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_when_a_conditional_keeps_an_identical_previous_value() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nif math.random() > 0.5 then\n    f = function()\n        return 1\n    end\nend\nreturn f()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_a_conditional_keeps_a_different_previous_value() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nif math.random() > 0.5 then\n    f = function()\n        return 2\n    end\nend\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_function_statement_assignment() {
+        let output = inlined_output("local f\nfunction f()\n    return 1\nend\nreturn f()");
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_multiple_function_literals_from_one_declaration() {
+        let output = inlined_output(
+            "local f, g = function()\n    return 1\nend, function()\n    return 2\nend\nreturn f(), g()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+        assert!(!output.contains("g()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_conditional_alias_that_always_names_the_same_function() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nlocal g\nif math.random() > 0.5 then\n    g = f\nelse\n    g = f\nend\nreturn g()",
+        );
+        assert!(!output.contains("g()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_after_a_backward_goto_that_keeps_the_same_assignment() {
+        let code = "local f\nlocal n = 0\n::again::\nn = n + 1\nf = function()\n    return 1\nend\nif n < 1 then\n    goto again\nend\nreturn f()";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("f()"), "{output}");
+        crate::Parser::default()
+            .lua52()
+            .parse_analyzed(&output)
+            .unwrap_or_else(|error| panic!("failed to re-analyze:\\n{error}\\n{output}"));
+    }
+
+    #[test]
+    fn keeps_a_call_when_a_backward_goto_merges_different_definitions() {
+        let code = "local f\nlocal n = 0\n::again::\nn = n + 1\nif n == 1 then\n    f = function()\n        return 1\n    end\nelse\n    f = function()\n        return 2\n    end\nend\nif n < 2 then\n    goto again\nend\nreturn f()";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_method_call_whose_receiver_is_a_call() {
+        let output = inlined_dialect(
+            "local function make()\n    return { m = print }\nend\nlocal function arg()\n    return 1\nend\nmake():m(arg())",
+            crate::Dialect::Lua53,
+        );
+        assert!(!output.contains("m(arg())"), "{output}");
+    }
+
+    #[test]
+    fn inlines_the_unconditional_while_condition_operand() {
+        let output = inlined_output(
+            "local function first()\n    return true\nend\nlocal function second()\n    return false\nend\nwhile first() and second() do\n    break\nend\nreturn 0",
+        );
+        assert!(!output.contains("while first"), "{output}");
+        assert!(output.contains("second()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_repeat_condition_calling_a_body_local_function() {
+        let output = inlined_output(
+            "local i = 0\nrepeat\n    i = i + 1\n    local function check(value)\n        return value >= 2\n    end\n    local current = i\nuntil check(current)\nreturn i",
+        );
+        assert!(!output.contains("until check"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_luau_repeat_condition_calling_a_body_local_function_across_continue() {
+        let output = inlined_dialect(
+            "local i = 0\nrepeat\n    i = i + 1\n    local function check(value)\n        return value >= 3\n    end\n    local current = i\n    if i == 2 then continue end\n    print(current)\nuntil check(current)\nreturn i",
+            crate::Dialect::Luau,
+        );
+        assert!(!output.contains("until check"), "{output}");
+        assert!(!output.contains("continue"), "{output}");
+    }
+
+    #[test]
     fn the_inlined_output_reparses() {
         for code in [
             "local function add(a, b)\n    local sum = a + b\n    return sum\nend\nreturn add(1, 2)",

@@ -1604,6 +1604,70 @@ return value
 "#,
     ),
     (
+        "a method call inlines its receiver and arguments",
+        r#"
+local function make()
+    return { m = function(self, value) return value end }
+end
+local function argument()
+    return 7
+end
+print(make():m(argument()))
+return 0
+"#,
+    ),
+    (
+        "a repeat condition calls a body-local function",
+        r#"
+local i = 0
+repeat
+    i = i + 1
+    local function check(value)
+        return value >= 2
+    end
+    local current = i
+until check(current)
+print(i)
+return i
+"#,
+    ),
+    (
+        "a luau repeat condition calls a body-local function across continue",
+        r#"
+local i = 0
+repeat
+    i = i + 1
+    local function check(value)
+        return value >= 3
+    end
+    local current = i
+    if i == 2 then continue end
+    print(current)
+until check(current)
+print(i)
+return i
+"#,
+    ),
+    (
+        "a luau repeat condition leaves a nested loop's continue alone",
+        r#"
+local outer = 0
+local function done(value)
+    return value >= 2
+end
+repeat
+    outer = outer + 1
+    for inner = 1, 2 do
+        if inner == 1 then continue end
+        print("inner", inner)
+    end
+    print("outer", outer)
+until done(outer)
+print(outer)
+return outer
+"#,
+    ),
+    (
         "an elseif condition is not hoisted",
         r#"
 local calls = 0
