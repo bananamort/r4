@@ -25,11 +25,6 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install Lua 5.4
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y lua5.4
-
       - name: Run cargo test
         run: cargo test --workspace --all-targets
 
@@ -98,11 +93,6 @@ jobs:
           rustup component add llvm-tools-preview
           command -v cargo-llvm-cov >/dev/null || cargo install cargo-llvm-cov --locked
 
-      - name: Install Lua 5.4
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y lua5.4
-
       - name: Measure coverage
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 94
 
@@ -111,6 +101,42 @@ jobs:
         with:
           name: lcov
           path: lcov.info
+
+  dialect-oracle:
+    name: Dialect oracle (${{ matrix.dialect }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dialect: [lua51, lua52, lua53, lua54, luajit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install ${{ matrix.dialect }}
+        run: |
+          sudo apt-get update -qq
+          case "${{ matrix.dialect }}" in
+            lua51) sudo apt-get install -y lua5.1 ;;
+            lua52) sudo apt-get install -y lua5.2 ;;
+            lua53) sudo apt-get install -y lua5.3 ;;
+            lua54) sudo apt-get install -y lua5.4 ;;
+            luajit) sudo apt-get install -y luajit ;;
+          esac
+
+      - name: Run the dialect oracle
+        env:
+          R4_LUA_DIALECTS: ${{ matrix.dialect }}
+        run: cargo test --test luau_execution_oracle_test lua_dialects
 
   code-style:
     name: Verify code format

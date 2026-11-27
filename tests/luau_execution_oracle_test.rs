@@ -1,4 +1,4 @@
-//! In-process Luau execution oracle with the Roblox runtime.
+//! Execution oracles for the optimizer and lowerer.
 //!
 //! Each program is run twice in an embedded [Lune](https://lune-org.github.io/)
 //! VM — which provides the Roblox runtime (`require("@lune/roblox")`: datatypes,
@@ -7,14 +7,15 @@
 //! byte-for-byte identical observable behavior: `print` output, returned values,
 //! and the state the program returns.
 //!
-//! The oracle is deterministic and self-contained: it needs no external Luau
-//! binary, no Roblox Studio install, and no textual comparison against another
-//! compiler.
+//! A separate dialect oracle reruns the optimized corpus and a seeded fuzz
+//! corpus under Lua 5.1, 5.2, 5.3, 5.4, and LuaJIT. It is enabled with
+//! `R4_LUA_DIALECTS`; CI runs each dialect in its own matrix job, so the
+//! embedded Luau oracle itself remains self-contained.
 
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use r4::generator::{LuaGenerator, ReadableLuaGenerator};
 use r4::rules::canonicalize;
@@ -95,7 +96,11 @@ print = function(...)
     __log[#__log + 1] = table.concat(parts, "\t")
 end
 
-{hook}local __packed = table.pack(pcall(function()
+local function __pack(...)
+    return {{ n = select("#", ...), ... }}
+end
+
+{hook}local __packed = __pack(pcall(function()
 {program}
 end))
 {unhook}print = __print
@@ -122,72 +127,168 @@ fn lua_harness(program: &str) -> String {
     harness_source(program, true)
 }
 
-/// Finds a Lua 5.4 interpreter. `LUA54` overrides the search; otherwise the
-/// usual binary names are checked and their version is confirmed.
-fn find_lua54() -> Option<PathBuf> {
+/// One external Lua implementation covered by the dialect oracle.
+struct LuaDialect {
+    /// Key used by `R4_LUA_DIALECTS` and the CI matrix.
+    key: &'static str,
+    /// Human-readable name for failure messages.
+    name: &'static str,
+    /// Text printed by the interpreter's `-v`.
+    marker: &'static str,
+    /// Environment variable that overrides the binary.
+    env: &'static str,
+    /// Binary names tried in order.
+    candidates: &'static [&'static str],
+    /// Parser and analyzer dialect for programs run by this implementation.
+    dialect: Dialect,
+}
+
+const LUA_DIALECTS: &[LuaDialect] = &[
+    LuaDialect {
+        key: "lua51",
+        name: "Lua 5.1",
+        marker: "Lua 5.1",
+        env: "LUA51",
+        candidates: &["lua5.1", "lua51"],
+        dialect: Dialect::Lua51,
+    },
+    LuaDialect {
+        key: "lua52",
+        name: "Lua 5.2",
+        marker: "Lua 5.2",
+        env: "LUA52",
+        candidates: &["lua5.2", "lua52"],
+        dialect: Dialect::Lua52,
+    },
+    LuaDialect {
+        key: "lua53",
+        name: "Lua 5.3",
+        marker: "Lua 5.3",
+        env: "LUA53",
+        candidates: &["lua5.3", "lua53"],
+        dialect: Dialect::Lua53,
+    },
+    LuaDialect {
+        key: "lua54",
+        name: "Lua 5.4",
+        marker: "Lua 5.4",
+        env: "LUA54",
+        candidates: &["lua5.4", "lua54", "lua"],
+        dialect: Dialect::Lua54,
+    },
+    LuaDialect {
+        key: "luajit",
+        name: "LuaJIT",
+        marker: "LuaJIT",
+        env: "LUAJIT",
+        candidates: &["luajit"],
+        dialect: Dialect::LuaJit,
+    },
+];
+
+/// Reads `R4_LUA_DIALECTS`, a comma-separated list of dialect keys. An empty
+/// result leaves the external dialect oracle disabled.
+fn selected_lua_dialects() -> Vec<&'static LuaDialect> {
+    let Ok(selection) = std::env::var("R4_LUA_DIALECTS") else {
+        return Vec::new();
+    };
+    let selected: Vec<&'static LuaDialect> = selection
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(|key| {
+            LUA_DIALECTS
+                .iter()
+                .find(|dialect| dialect.key == key)
+                .unwrap_or_else(|| {
+                    let keys: Vec<&str> = LUA_DIALECTS.iter().map(|dialect| dialect.key).collect();
+                    panic!(
+                        "unknown Lua dialect `{key}`; expected one of {}",
+                        keys.join(", ")
+                    )
+                })
+        })
+        .collect();
+    assert!(
+        !selected.is_empty(),
+        "R4_LUA_DIALECTS does not name a dialect"
+    );
+    selected
+}
+
+fn find_lua_dialect(dialect: &LuaDialect) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(path) = std::env::var_os("LUA54") {
+    if let Some(path) = std::env::var_os(dialect.env) {
         candidates.push(PathBuf::from(path));
     }
-    candidates.extend(["lua5.4", "lua54", "lua"].into_iter().map(PathBuf::from));
+    candidates.extend(
+        dialect
+            .candidates
+            .iter()
+            .map(|candidate| PathBuf::from(*candidate)),
+    );
     for candidate in candidates {
         let Ok(output) = Command::new(&candidate).arg("-v").output() else {
             continue;
         };
         let mut version = String::from_utf8_lossy(&output.stdout).into_owned();
         version.push_str(&String::from_utf8_lossy(&output.stderr));
-        if version.contains("Lua 5.4") {
+        if version.contains(dialect.marker) {
             return Some(candidate);
         }
     }
     None
 }
 
-fn lua54_binary() -> Option<&'static Path> {
-    static BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
-    BINARY.get_or_init(find_lua54).as_deref()
+fn required_lua_dialect(dialect: &LuaDialect) -> PathBuf {
+    find_lua_dialect(dialect).unwrap_or_else(|| {
+        panic!(
+            "the {} interpreter is required for R4_LUA_DIALECTS={}; install it or set {}",
+            dialect.name, dialect.key, dialect.env
+        )
+    })
 }
 
-/// Returns the Lua 5.4 interpreter, or `None` when it is unavailable outside CI.
-fn required_lua54() -> Option<&'static Path> {
-    let binary = lua54_binary();
-    if binary.is_none() {
-        if std::env::var_os("CI").is_some() {
-            panic!("Lua 5.4 is required in CI; install `lua5.4` or set `LUA54`");
-        }
-        eprintln!("skipping the Lua 5.4 oracle: no Lua 5.4 interpreter found");
+/// A temporary chunk file, removed when the run finishes.
+struct TempChunk {
+    path: PathBuf,
+}
+
+impl TempChunk {
+    fn new(source: &str) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "r4-lua-oracle-{}-{}.lua",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, source).expect("the oracle chunk must be written");
+        Self { path }
     }
-    binary
 }
 
-/// Runs `program` in an external Lua 5.4 process and returns its captured
-/// behavior. The harness turns errors into captured output, so this only fails
-/// when the interpreter itself could not run the chunk.
-fn observe_lua54(binary: &Path, program: &str) -> String {
-    let chunk = lua_harness(program);
-    let mut child = Command::new(binary)
-        .arg("-")
-        .stdin(Stdio::piped())
+impl Drop for TempChunk {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Runs `program` in an external interpreter and returns its captured behavior.
+fn observe_with(binary: &Path, program: &str) -> String {
+    let chunk = TempChunk::new(&lua_harness(program));
+    let output = Command::new(binary)
+        .arg(&chunk.path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .output()
         .unwrap_or_else(|error| panic!("failed to start `{}`: {error}", binary.display()));
-    child
-        .stdin
-        .as_mut()
-        .expect("the Lua process has piped stdin")
-        .write_all(chunk.as_bytes())
-        .expect("the harness must be written to Lua");
-    drop(child.stdin.take());
-    let output = child
-        .wait_with_output()
-        .expect("the Lua process must finish");
     assert!(
         output.status.success(),
-        "Lua 5.4 could not run the program:\n{}",
+        "{} could not run the program:\n{}",
+        binary.display(),
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout).expect("the Lua output is UTF-8")
+    String::from_utf8(output.stdout).expect("the interpreter output is UTF-8")
 }
 
 /// Runs `program` in a fresh embedded Luau VM and returns its captured behavior.
@@ -238,10 +339,10 @@ fn transform(program: &str) -> String {
     generator.into_string()
 }
 
-/// Analyzes `block` as Luau for an oracle transformation.
-fn analyze(block: &r4::nodes::Block) -> r4::semantic::SemanticModel {
+/// Analyzes `block` in `dialect` for an oracle transformation.
+fn analyze_with_dialect(block: &r4::nodes::Block, dialect: Dialect) -> r4::semantic::SemanticModel {
     SemanticAnalyzer::new()
-        .with_dialect(Dialect::Luau)
+        .with_dialect(dialect)
         .analyze(block)
         .expect("the oracle program must analyze")
 }
@@ -250,54 +351,63 @@ fn analyze(block: &r4::nodes::Block) -> r4::semantic::SemanticModel {
 /// the tree before each pass so every pass sees a matching model, and returns
 /// the generated Luau.
 fn optimize(program: &str) -> String {
-    let mut block = Parser::default()
-        .luau()
-        .parse(program)
-        .unwrap_or_else(|error| panic!("the oracle program must parse as Luau: {error}"));
+    optimize_with_dialect(program, Dialect::Luau)
+}
 
-    let model = analyze(&block);
+fn optimize_with_dialect(program: &str, dialect: Dialect) -> String {
+    let mut block = Parser::default()
+        .dialect(dialect)
+        .parse(program)
+        .unwrap_or_else(|error| {
+            panic!(
+                "the oracle program must parse as {}: {error}",
+                dialect.as_str()
+            )
+        });
+
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize(&mut block, &model);
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::inline_local_functions(&mut block, &model)
         .expect("inlining local functions must succeed");
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::propagate_constants(&mut block, &model)
         .expect("propagating constants must succeed");
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::compute_expression(&mut block, &model);
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::group_local(&mut block, &model);
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::remove_dead_table_stores(&mut block, &model);
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::remove_unused_variables(&mut block, &model)
         .expect("removing unused variables must succeed");
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::remove_dead_stores(&mut block, &model)
         .expect("removing dead stores must succeed");
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::remove_unreachable_code(&mut block, &model)
         .expect("removing unreachable code must succeed");
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::remove_unused_labels(&mut block, &model)
         .expect("removing unused labels must succeed");
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::remove_assertions(&mut block, &model);
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::convert_square_root_call(&mut block, &model);
 
-    let model = analyze(&block);
+    let model = analyze_with_dialect(&block, dialect);
     canonicalize::hoist_loop_invariants(&mut block, &model)
         .expect("hoisting loop invariants must succeed");
 
@@ -1465,44 +1575,63 @@ fn generate_fuzz_program(seed: u64) -> String {
 }
 
 #[test]
-fn optimized_programs_keep_identical_behavior_in_lua54() {
-    let Some(binary) = required_lua54() else {
+fn optimized_programs_keep_identical_behavior_in_lua_dialects() {
+    let dialects = selected_lua_dialects();
+    if dialects.is_empty() {
+        eprintln!("skipping the external Lua oracle: set R4_LUA_DIALECTS to run it");
         return;
-    };
-    let mut compared = 0;
-    for (name, program) in OPTIMIZED_PROGRAMS {
-        if Parser::default().lua54().parse(program).is_err() {
-            continue;
-        }
-        let optimized = optimize(program);
-        if Parser::default().lua54().parse(&optimized).is_err() {
-            continue;
-        }
-        let before = observe_lua54(binary, program);
-        let after = observe_lua54(binary, &optimized);
-        assert_eq!(
-            before, after,
-            "`{name}` changed behavior under Lua 5.4:\n{optimized}"
-        );
-        compared += 1;
     }
-    assert!(compared > 0, "no oracle program is valid Lua 5.4");
+    for dialect in dialects {
+        let binary = required_lua_dialect(dialect);
+        let mut compared = 0;
+        for (name, program) in OPTIMIZED_PROGRAMS {
+            if Parser::default()
+                .dialect(dialect.dialect)
+                .parse(program)
+                .is_err()
+            {
+                continue;
+            }
+            let optimized = optimize_with_dialect(program, dialect.dialect);
+            let before = observe_with(&binary, program);
+            let after = observe_with(&binary, &optimized);
+            assert_eq!(
+                before, after,
+                "`{name}` changed behavior under {}:\n{optimized}",
+                dialect.name
+            );
+            compared += 1;
+        }
+        assert!(compared > 0, "no oracle program is valid {}", dialect.name);
+    }
 }
 
 #[test]
-fn fuzzed_programs_keep_identical_behavior_in_lua54() {
-    let Some(binary) = required_lua54() else {
+fn fuzzed_programs_keep_identical_behavior_in_lua_dialects() {
+    let dialects = selected_lua_dialects();
+    if dialects.is_empty() {
+        eprintln!("skipping the external Lua oracle: set R4_LUA_DIALECTS to run it");
         return;
-    };
-    for seed in 0..FUZZ_PROGRAMS {
-        let program = generate_fuzz_program(seed);
-        let optimized = optimize(&program);
-        let before = observe_lua54(binary, &program);
-        let after = observe_lua54(binary, &optimized);
-        assert_eq!(
-            before, after,
-            "fuzzed program {seed} changed behavior:\n--- source ---\n{program}\n--- optimized ---\n{optimized}"
-        );
+    }
+    for dialect in dialects {
+        let binary = required_lua_dialect(dialect);
+        for seed in 0..FUZZ_PROGRAMS {
+            let program = generate_fuzz_program(seed);
+            Parser::default()
+                .dialect(dialect.dialect)
+                .parse(&program)
+                .unwrap_or_else(|error| {
+                    panic!("fuzz program {seed} is not valid {}: {error}", dialect.name)
+                });
+            let optimized = optimize_with_dialect(&program, dialect.dialect);
+            let before = observe_with(&binary, &program);
+            let after = observe_with(&binary, &optimized);
+            assert_eq!(
+                before, after,
+                "fuzzed program {seed} changed behavior under {}:\n--- source ---\n{program}\n--- optimized ---\n{optimized}",
+                dialect.name
+            );
+        }
     }
 }
 
