@@ -35,7 +35,7 @@ pub use error::{
 };
 pub use escape::{EscapeAnalysis, SymbolEscape};
 pub use index::{QualifiedLabel, QualifiedSymbol, QualifiedType, WholeProgramIndex};
-pub use label::{GotoBinding, GotoLabel, GotoSite, LabelId, VisibleScopes};
+pub use label::{GotoBinding, GotoLabel, GotoSite, LabelId, StatementPosition, VisibleScopes};
 pub use model::{Binding, SemanticModel};
 pub use module::{
     extract_interface, ExportValue, GlobalId, GlobalSymbol, ImportBinding, ModuleError, ModuleId,

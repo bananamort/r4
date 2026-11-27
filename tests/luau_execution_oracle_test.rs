@@ -1391,7 +1391,7 @@ return calls
 "#,
     ),
     (
-        "a while condition is not hoisted",
+        "a while condition is re-evaluated every iteration",
         r#"
 local calls = 0
 local function limit()
@@ -1410,7 +1410,7 @@ return calls
 "#,
     ),
     (
-        "a repeat condition is not hoisted",
+        "a repeat condition is re-evaluated every iteration",
         r#"
 local calls = 0
 local function stop()
@@ -1424,6 +1424,247 @@ repeat
 until stop() or iterations > 5
 print(calls, iterations)
 return calls
+"#,
+    ),
+    (
+        "method arguments preserve the dialect's lookup order",
+        r#"
+local log = {}
+local function note(value)
+    log[#log + 1] = value
+end
+local function argument(value)
+    note(value)
+    return value
+end
+local target = setmetatable({}, {
+    __index = function(_, key)
+        note("lookup:" .. key)
+        return function(self, value)
+            note("call:" .. tostring(value))
+        end
+    end,
+})
+target:method(argument("first"), argument("second"))
+print(table.concat(log, ","))
+return #log
+"#,
+    ),
+    (
+        "a while condition sees the outer binding, not the body's shadow",
+        r#"
+local calls = 0
+local function limit(x)
+    calls = calls + 1
+    return calls < 3 and x
+end
+local body = 0
+while limit(true) do
+    body = body + 1
+    local calls = 100
+    print(body, calls)
+end
+print(calls)
+return calls, body
+"#,
+    ),
+    (
+        "a repeat condition sees a body local",
+        r#"
+local iterations = 0
+local function done(value)
+    return value >= 3
+end
+repeat
+    iterations = iterations + 1
+    local current = iterations
+    print("iteration", current)
+until done(current)
+print("after", iterations)
+return iterations
+"#,
+    ),
+    (
+        "a luau repeat condition runs after continue",
+        r#"
+local value = 0
+local function done()
+    return value >= 4
+end
+repeat
+    value = value + 1
+    if value == 2 then continue end
+    print(value)
+until done()
+print("done", value)
+return value
+"#,
+    ),
+    (
+        "a luau repeat condition reads a local before continue",
+        r#"
+local value = 0
+local function done(step)
+    return step >= 3
+end
+repeat
+    value = value + 1
+    local step = value
+    if value == 2 then continue end
+    print(step)
+until done(step)
+print("done", value)
+return value
+"#,
+    ),
+    (
+        "conditional assignments with the same body inline",
+        r#"
+local choose = 1
+local f
+if choose == 1 then
+    f = function(x)
+        return x + 10
+    end
+else
+    f = function(x)
+        return x + 10
+    end
+end
+local g = function()
+    return f(2)
+end
+print(f(1), g())
+return f(3), g()
+"#,
+    ),
+    (
+        "an alias keeps the value it captured",
+        r#"
+local f = function(x)
+    return x + 1
+end
+local g = f
+f = function(x)
+    return x + 2
+end
+print(f(1), g(1))
+return f(2), g(2)
+"#,
+    ),
+    (
+        "an unreachable repeat condition stays in place",
+        r#"
+local function done()
+    return true
+end
+local function run()
+    repeat
+        return 1
+    until done()
+end
+print(run())
+return 0
+"#,
+    ),
+    (
+        "a luau repeat condition handles multiple continues",
+        r#"
+local value = 0
+local function done(step)
+    return step >= 5
+end
+repeat
+    value = value + 1
+    local step = value
+    if step == 2 then continue end
+    do
+        if step == 3 then continue end
+    end
+    print(step)
+until done(step)
+print("done", value)
+return value
+"#,
+    ),
+    (
+        "a luau while condition runs after continue",
+        r#"
+local value = 0
+local function keep()
+    return value < 4
+end
+while keep() do
+    value = value + 1
+    if value == 2 then continue end
+    print(value)
+end
+print(value)
+return value
+"#,
+    ),
+    (
+        "a method call inlines its receiver and arguments",
+        r#"
+local function make()
+    return { m = function(self, value) return value end }
+end
+local function argument()
+    return 7
+end
+print(make():m(argument()))
+return 0
+"#,
+    ),
+    (
+        "a repeat condition calls a body-local function",
+        r#"
+local i = 0
+repeat
+    i = i + 1
+    local function check(value)
+        return value >= 2
+    end
+    local current = i
+until check(current)
+print(i)
+return i
+"#,
+    ),
+    (
+        "a luau repeat condition calls a body-local function across continue",
+        r#"
+local i = 0
+repeat
+    i = i + 1
+    local function check(value)
+        return value >= 3
+    end
+    local current = i
+    if i == 2 then continue end
+    print(current)
+until check(current)
+print(i)
+return i
+"#,
+    ),
+    (
+        "a luau repeat condition leaves a nested loop's continue alone",
+        r#"
+local outer = 0
+local function done(value)
+    return value >= 2
+end
+repeat
+    outer = outer + 1
+    for inner = 1, 2 do
+        if inner == 1 then continue end
+        print("inner", inner)
+    end
+    print("outer", outer)
+until done(outer)
+print(outer)
+return outer
 "#,
     ),
     (
@@ -1441,6 +1682,106 @@ elseif check() then
 end
 print(calls)
 return calls
+"#,
+    ),
+];
+
+/// Programs that exercise Lua 5.2+ syntax in the external dialect oracle.
+/// They are not part of the embedded Luau run because Luau has no `goto`.
+const EXTERNAL_ONLY_PROGRAMS: &[(&str, &str)] = &[
+    (
+        "inlining hoists results around goto",
+        r#"
+local function bump(value)
+    return value + 1
+end
+goto done
+print(bump(1))
+::done::
+print(bump(41))
+return bump(0)
+"#,
+    ),
+    (
+        "a callee label does not collide with a caller label",
+        r#"
+local function value()
+    goto done
+    ::done::
+    return 1
+end
+::done::
+print(value())
+return 0
+"#,
+    ),
+    (
+        "a reachable call hoists its result around a later goto",
+        r#"
+local function value(x)
+    return x
+end
+local first = value(1)
+goto done
+print(first)
+::done::
+print(first)
+return first
+"#,
+    ),
+    (
+        "a repeat condition after a nested block-end label is inlined",
+        r#"
+local function done()
+    return true
+end
+local count = 0
+repeat
+    count = count + 1
+    do
+        goto continue
+        local skipped = 1
+        ::continue::
+    end
+until done()
+print(count)
+return count
+"#,
+    ),
+    (
+        "a callee with goto and labels is inlined",
+        r#"
+local function pick(value)
+    if value > 0 then
+        goto positive
+    end
+    do
+        return -1
+    end
+    ::positive::
+    return 1
+end
+print(pick(1), pick(-1))
+return pick(2)
+"#,
+    ),
+    (
+        "a while condition is re-evaluated around a goto label",
+        r#"
+local function keep(n)
+    return n < 3
+end
+local n = 0
+while keep(n) do
+    n = n + 1
+    if n == 2 then
+        goto continue
+    end
+    print(n)
+    ::continue::
+end
+print(n)
+return n
 "#,
     ),
 ];
@@ -1528,13 +1869,36 @@ fn generate_fuzz_program(seed: u64) -> String {
         ),
         "local alias".to_string(),
         "alias = combine".to_string(),
+        "local captured = combine".to_string(),
+        "combine = function(a, b)".to_string(),
+        "    return a * b".to_string(),
+        "end".to_string(),
+        "local switch".to_string(),
+        "if value % 2 == 0 then".to_string(),
+        "    switch = function(x) return x + base end".to_string(),
+        "else".to_string(),
+        "    switch = function(x) return x + base end".to_string(),
+        "end".to_string(),
+        "local method_log = {}".to_string(),
+        "local target = setmetatable({}, {".to_string(),
+        "    __index = function(_, key)".to_string(),
+        "        method_log[#method_log + 1] = tostring(counter)".to_string(),
+        "        return function(self, x) return x end".to_string(),
+        "    end,".to_string(),
+        "})".to_string(),
+        "local function keep_going(n)".to_string(),
+        "    return n < 3".to_string(),
+        "end".to_string(),
+        "local function finished(step)".to_string(),
+        "    return step >= 3".to_string(),
+        "end".to_string(),
     ];
 
     let statements = rng.random_range(4..=8);
     let mut next = 0usize;
     for _ in 0..statements {
         let step = rng.random_range(1..=5);
-        match rng.random_range(0..10) {
+        match rng.random_range(0..15) {
             0 => lines.push(format!("print(counter, bump({step}))")),
             1 => lines.push(format!("print(value + bump({step}))")),
             2 => lines.push(format!("print(tag .. bump({step}))")),
@@ -1559,12 +1923,48 @@ fn generate_fuzz_program(seed: u64) -> String {
             8 => lines.push(format!(
                 "do local value = {step}; print(value, read_value(), bump({step})) end"
             )),
-            _ => {
+            9 => {
                 lines.push(format!(
                     "for i = 1, {} do counter = counter + i end",
                     rng.random_range(1..=4)
                 ));
                 lines.push("print(counter)".to_string());
+            }
+            10 => {
+                lines.push(format!(
+                    "print(target:method(bump({step})), table.concat(method_log, \",\"))"
+                ));
+            }
+            11 => {
+                lines.push("local n = 0".to_string());
+                lines.push("while keep_going(n) do".to_string());
+                lines.push("    n = n + 1".to_string());
+                lines.push("    counter = counter + n".to_string());
+                lines.push("    local n = 0".to_string());
+                lines.push("    print(n)".to_string());
+                lines.push("end".to_string());
+                lines.push("print(counter, n)".to_string());
+            }
+            12 => {
+                lines.push("local r = 0".to_string());
+                lines.push("repeat".to_string());
+                lines.push("    r = r + 1".to_string());
+                lines.push("    local step = r".to_string());
+                lines.push("    counter = counter + step".to_string());
+                lines.push("    print(step)".to_string());
+                lines.push("until finished(step)".to_string());
+                lines.push("print(counter, r)".to_string());
+            }
+            13 => {
+                lines.push(format!(
+                    "print(switch({step}), captured({step}, {step}), combine({step}, {step}))"
+                ));
+            }
+            _ => {
+                lines.push("local closure = function()".to_string());
+                lines.push(format!("    return switch({step})"));
+                lines.push("end".to_string());
+                lines.push("print(closure())".to_string());
             }
         }
     }
@@ -1584,7 +1984,10 @@ fn optimized_programs_keep_identical_behavior_in_lua_dialects() {
     for dialect in dialects {
         let binary = required_lua_dialect(dialect);
         let mut compared = 0;
-        for (name, program) in OPTIMIZED_PROGRAMS {
+        for (name, program) in OPTIMIZED_PROGRAMS
+            .iter()
+            .chain(EXTERNAL_ONLY_PROGRAMS.iter())
+        {
             if Parser::default()
                 .dialect(dialect.dialect)
                 .parse(program)

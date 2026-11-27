@@ -297,7 +297,11 @@ impl<'a> CfgBuilder<'a> {
             self.lower_statement(statement, origin)?;
         }
         if let Some(last_statement) = block.get_last_statement() {
-            self.lower_last_statement(last_statement)?;
+            let position = StatementOrigin {
+                block: identity,
+                index: block.statements_len() as u32,
+            };
+            self.lower_last_statement(last_statement, position)?;
         }
         Ok(())
     }
@@ -375,7 +379,11 @@ impl<'a> CfgBuilder<'a> {
             .collect()
     }
 
-    fn lower_last_statement(&mut self, statement: &LastStatement) -> Result<(), CfgError> {
+    fn lower_last_statement(
+        &mut self,
+        statement: &LastStatement,
+        position: StatementOrigin,
+    ) -> Result<(), CfgError> {
         match statement {
             LastStatement::Break(token) => {
                 let context = self.loops.last().copied().ok_or_else(|| CfgError {
@@ -387,7 +395,9 @@ impl<'a> CfgBuilder<'a> {
                 // loop check above still runs so an invalid `break` is
                 // reported, but no second terminator is installed.
                 if self.current.is_some() {
+                    let block = self.current_block();
                     self.terminate(Terminator::Break(context.break_target));
+                    self.blocks[block.index()].terminator_origin = Some(position);
                 }
                 Ok(())
             }
@@ -397,13 +407,17 @@ impl<'a> CfgBuilder<'a> {
                     line: token.as_ref().and_then(|token| token.get_line_number()),
                 })?;
                 if self.current.is_some() {
+                    let block = self.current_block();
                     self.terminate(Terminator::Continue(context.continue_target));
+                    self.blocks[block.index()].terminator_origin = Some(position);
                 }
                 Ok(())
             }
             LastStatement::Return(_) => {
                 if self.current.is_some() {
+                    let block = self.current_block();
                     self.terminate(Terminator::Return(Some(statement.clone())));
+                    self.blocks[block.index()].terminator_origin = Some(position);
                 }
                 Ok(())
             }

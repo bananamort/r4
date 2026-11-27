@@ -13,7 +13,7 @@ use crate::nodes::{Block, GotoStatement, LabelStatement, Statement};
 
 use super::analyzer::{line_of, span_of, token_key, AnalyzerState};
 use super::error::{SemanticError, SemanticResult};
-use super::label::{GotoBinding, GotoLabel, GotoSite, LabelId, VisibleScopes};
+use super::label::{GotoBinding, GotoLabel, GotoSite, LabelId, StatementPosition, VisibleScopes};
 use super::symbol::SymbolId;
 
 /// Returns whether the statement at `index` is a label at the end of its block.
@@ -35,12 +35,13 @@ pub(super) fn is_block_end_label(block: &Block, index: usize) -> bool {
 impl AnalyzerState {
     /// Records a goto occurrence together with the locals visible at its
     /// position, for later resolution.
-    pub(super) fn record_goto(&mut self, statement: &GotoStatement) {
+    pub(super) fn record_goto(&mut self, statement: &GotoStatement, position: StatementPosition) {
         let token = token_key(statement.get_label());
         let site = GotoSite {
             name: statement.get_label_name().to_string(),
             scope: self.current_scope(),
             function_scope: self.current_function(),
+            position,
             token,
             span: span_of(statement.get_label()),
             visible_symbols: self.visible_scopes(),
@@ -58,6 +59,7 @@ impl AnalyzerState {
         &mut self,
         label: &LabelStatement,
         is_block_end: bool,
+        position: StatementPosition,
     ) -> SemanticResult<()> {
         let name = label.get_label_name().to_string();
         let line = line_of(label.get_label());
@@ -84,6 +86,7 @@ impl AnalyzerState {
             name: name.clone(),
             scope,
             function_scope: self.current_function(),
+            position,
             is_block_end,
             token,
             span: span_of(label.get_label()),

@@ -20,30 +20,66 @@
 //! end
 //! ```
 //!
-//! The arguments bind to the parameters exactly as the call did, so each is
-//! evaluated once, in order, with the same multi-value adjustment; extra
-//! arguments are evaluated into fresh unused locals. The parameters keep their
-//! names inside the `do`, so the body's references resolve to the arguments
-//! exactly as they resolved to the parameters, and the body's own locals stay
-//! scoped to the inline.
+//! Arguments bind to parameters exactly as the call did, so each is evaluated
+//! once, in order, with the same multi-value adjustment. Earlier list values,
+//! table entries, and eagerly-read operands are stored in fresh locals in their
+//! original order when a later argument can inline. A bare local of the current
+//! function is read by the binary operator, index, or method call itself after
+//! the other operand runs, so it is left in place; concatenation operands and
+//! globals, upvalues, and compound expressions are read eagerly and are stored.
 //!
-//! The preamble runs at the start of the statement, so a call is inlined only
-//! when everything evaluated before it in that statement is inert or can be
-//! stored first. Earlier list values, table entries, and eagerly-read operands
-//! are stored in fresh locals in their original order, and a call's callee is
-//! stored before an inlined argument. An inlined call's own arguments are
-//! rewritten first, so nested calls are inlined too.
+//! # Which binding a call sees
 //!
-//! A bare local of the current function is read by the binary operator, index,
-//! or method call itself, after the other operand runs, so it is left in place
-//! instead of being stored early. Concatenation operands and globals, upvalues,
-//! and compound expressions are read eagerly and are stored first.
+//! The callee is resolved through the reaching definitions of its function
+//! region, so conditional assignments, loops, `goto` paths, and aliases are
+//! handled exactly:
 //!
-//! A short-circuit operand, an `if` expression branch, an `elseif` condition, a
-//! `while`/`repeat` condition, and a method receiver still stop further
-//! inlining. A function that contains a `goto` or label refuses inlining
-//! entirely, because the preamble declares locals that a forward jump could
-//! enter.
+//! * every reaching definition must denote a function whose parameters and
+//!   body are identical; otherwise a later call could observe a different
+//!   value and the call is left alone;
+//! * an alias resolves at the statement where the alias captured its value,
+//!   not at the call;
+//! * a call inside a nested function reads an upvalue. An immutable upvalue is
+//!   fixed. A mutable one is usable when no write to it can run after the
+//!   creation of the outermost closure in the chain that captures it. A write
+//!   after that creation could reach a later call, so that shape is refused.
+//!
+//! # Method calls
+//!
+//! When an argument may inline, the receiver is stored before the argument
+//! bodies. PUC Lua and LuaJIT perform the method lookup before the arguments,
+//! so the lookup value is stored there too and the call becomes a normal call
+//! with the receiver as its first argument. Luau evaluates the arguments before
+//! `NAMECALL`, so it keeps the method syntax with the stored receiver and the
+//! lookup stays at the call. An undetermined dialect only reorders when the
+//! receiver is a fresh table literal, whose lookup cannot run code.
+//!
+//! # Loop conditions
+//!
+//! A `while` condition that inlines becomes `while true do <preamble>;
+//! if not <condition> then break end; <body> end`, so the condition still runs
+//! before every iteration. `continue` already jumps to the loop condition.
+//!
+//! A `repeat` condition stays at the end of the body, where the body's
+//! top-level locals are visible. The inline preamble is appended there and the
+//! loop becomes `until <result>`. Because `continue` skips the rest of the body
+//! but not the condition, each `continue` is lowered to a flag assignment and
+//! the statements after it are guarded with `if not <flag> then ... end`; the
+//! condition section sits after those guards and always runs. If a guard would
+//! move a condition-visible local into a nested scope, its declaration is moved
+//! to the top of the loop body under a fresh name and every bound reference is
+//! renamed, preserving the per-iteration cell for closures. A repeat condition
+//! that is unreachable after a final `return`/`break`, or whose `continue`
+//! lowering would move a `<close>` local's closing point, is left alone.
+//!
+//! # `goto` and labels
+//!
+//! Labels and gotos in the callee body are renamed with fresh names. In a
+//! function that contains a `goto` or label, locals that escape the preamble
+//! are declared at the start of the function instead of before the call, so a
+//! forward jump never enters their scope. The inline body itself is wrapped in
+//! a `do` block, whose locals never escape. Label names are reserved by the
+//! name generator, so two inlined copies and the caller cannot collide.
 //!
 //! The `repeat ... until true` runs the body once and gives every `return` a
 //! `break` to leave through; the `if __done then break end` after each loop
@@ -55,37 +91,45 @@
 //! single-value position it is `__r1` (or `nil` when the body yields none). A
 //! body that can fall through yields no values, so its arity is zero.
 //!
-//! Conditions that make an inline impossible are not worked around:
-//!
-//! * a body that reads `...` cannot be reproduced, because `...` is lexical to
-//!   a function and no expression denotes a foreign vararg list;
-//! * a call is left alone when its callee cannot be resolved to a local
-//!   function that is bound before the call.
-//!
-//! A function may also be bound by a declaration and a later assignment
-//! (`local f` followed by `f = function() ... end`). Such a call is inlined
-//! only when the assignment provably runs before it: the assignment's block
-//! must contain the call, or contain the statement that leads to it, with the
-//! call after the assignment. A `goto` or label in the same function defeats
-//! that proof, because a backward jump can reach a call before the assignment.
-//!
-//! Everything else — statements, `if`, loops, `return` inside loops,
-//! fall-through, any number of results, upvalue reads, immutable aliases, and
-//! `goto`/labels in bodies — is handled.
+//! Language limits remain: a body that reads `...` cannot be reproduced
+//! because `...` is lexical to a function; a body whose value count depends on
+//! a call is not usable in a value-consuming slot; and a name that is shadowed
+//! at the call site cannot be reproduced. These are refused rather than
+//! rewritten into different behavior.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::cfg::{validate_block_identities, StatementOrigin, UnidentifiedBlock};
+use crate::cfg::{
+    build_chunk, build_function, validate_block_identities, CfgError, ConditionKind,
+    ConditionOrigin, StatementOrigin, UnidentifiedBlock,
+};
 use crate::nodes::{
     Arguments, AssignStatement, BinaryOperator, Block, BlockIdentity, ChildVisitor, DoStatement,
     Expression, Identifier, LastStatement, Prefix, ReadOnlyChildren, RepeatStatement, Statement,
-    TableExpression, TypedIdentifier, Variable, VariableAssignment,
+    TableExpression, TypedIdentifier, UnaryExpression, UnaryOperator, Variable, VariableAssignment,
+    WhileStatement,
 };
+use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::rules::NameGenerator;
-use crate::semantic::{LabelId, ScopeId, SemanticModel, SymbolId, SymbolKind};
+use crate::semantic::{
+    LabelId, ScopeId, SemanticModel, SemanticQueryError, StatementPosition, SymbolId, SymbolKind,
+};
+
+mod reaching;
+
+use reaching::{DefinitionValue, FunctionRegion, ReachingError};
+
+/// Identifies one function literal by the statement that assigns it and the
+/// variable slot it occupies in that statement.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+struct FunctionKey {
+    origin: StatementOrigin,
+    slot: u32,
+}
 
 /// A local function that can be inlined at its call sites.
+#[derive(Clone, Debug)]
 struct InlinableFunction {
     /// The parameter names, in declaration order.
     parameters: Vec<String>,
@@ -100,10 +144,17 @@ struct InlinableFunction {
     uniform: bool,
     /// The symbols the body reads from outside the function.
     upvalues: Vec<SymbolId>,
-    /// The `f = function ...` statement that binds the function, when the
-    /// declaration and the assignment are separate. Calls are inlined only
-    /// where this assignment provably runs first.
-    assignment: Option<StatementOrigin>,
+}
+
+impl InlinableFunction {
+    /// Returns whether two definitions denote behaviorally identical functions.
+    fn same_function(&self, other: &Self) -> bool {
+        self.parameters == other.parameters
+            && self.body == other.body
+            && self.arity == other.arity
+            && self.uniform == other.uniform
+            && self.upvalues == other.upvalues
+    }
 }
 
 /// An error produced while inlining local functions.
@@ -112,12 +163,19 @@ pub enum InlineError {
     /// A block has no structural identity, so statement positions cannot be
     /// trusted.
     Provenance(UnidentifiedBlock),
+    /// The semantic model and the tree disagree on a statement or identifier,
+    /// or a function's control flow could not be built.
+    Reaching(ReachingError),
+    /// A block could not be mapped to the analyzed scope it belongs to.
+    Scope(SemanticQueryError),
 }
 
 impl fmt::Display for InlineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Provenance(error) => write!(f, "cannot inline local functions: {error}"),
+            Self::Reaching(error) => write!(f, "cannot inline local functions: {error}"),
+            Self::Scope(error) => write!(f, "cannot inline local functions: {error}"),
         }
     }
 }
@@ -126,6 +184,8 @@ impl std::error::Error for InlineError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Provenance(error) => Some(error),
+            Self::Reaching(error) => Some(error),
+            Self::Scope(error) => Some(error),
         }
     }
 }
@@ -133,6 +193,24 @@ impl std::error::Error for InlineError {
 impl From<UnidentifiedBlock> for InlineError {
     fn from(error: UnidentifiedBlock) -> Self {
         Self::Provenance(error)
+    }
+}
+
+impl From<ReachingError> for InlineError {
+    fn from(error: ReachingError) -> Self {
+        Self::Reaching(error)
+    }
+}
+
+impl From<CfgError> for InlineError {
+    fn from(error: CfgError) -> Self {
+        Self::Reaching(ReachingError::ControlFlow(error))
+    }
+}
+
+impl From<SemanticQueryError> for InlineError {
+    fn from(error: SemanticQueryError) -> Self {
+        Self::Scope(error)
     }
 }
 
@@ -151,8 +229,7 @@ pub fn inline_local_functions(
 ) -> Result<usize, InlineError> {
     validate_block_identities(block)?;
 
-    let mut collector = FunctionCollector::new(model);
-    collector.walk(block);
+    let collector = FunctionCollector::collect(block, model)?;
 
     if collector.functions.is_empty() {
         return Ok(0);
@@ -163,16 +240,23 @@ pub fn inline_local_functions(
     let mut inliner = Inliner {
         model,
         functions: &collector.functions,
-        parents: &collector.parents,
-        declarations: &collector.declarations,
+        literal_symbols: &collector.literal_symbols,
         aliases: &collector.aliases,
+        parents: &collector.parents,
+        function_roots: &collector.function_roots,
         labelled: &collector.labelled,
         block_functions: &collector.block_functions,
-        unconditional: &collector.unconditional,
+        regions: &collector.regions,
+        definition_locations: &collector.definition_locations,
+        nested_writes: &collector.nested_writes,
         names: &mut names,
         current_scope: None,
         current_position: None,
+        current_condition: None,
         clean: false,
+        allow_inline: true,
+        hoist_locals: true,
+        hoisted: HashMap::new(),
         inlined: &mut inlined,
     };
     inliner.rewrite_block(block);
@@ -189,22 +273,10 @@ fn inlinable(
     symbol: SymbolId,
     body: &Block,
     parameters: &[&TypedIdentifier],
-    assignment: Option<StatementOrigin>,
 ) -> Option<InlinableFunction> {
     let info = model.symbol(symbol);
     if info.kind != SymbolKind::Local {
         return None;
-    }
-    match assignment {
-        // The declaration plus this one assignment is the whole history of the
-        // symbol. The call-site check proves the assignment has already run; a
-        // second write could have replaced the function before the call.
-        Some(_) if info.write_count == 2 => {}
-        Some(_) => return None,
-        // A declaration binds the function before the symbol is in scope, so
-        // every call already sees it.
-        None if model.is_immutable(symbol) => {}
-        None => return None,
     }
 
     let mut check = BodyCheck {
@@ -236,7 +308,6 @@ fn inlinable(
         arity,
         uniform,
         upvalues: check.upvalues,
-        assignment,
     })
 }
 
@@ -508,44 +579,86 @@ impl BodyCheck<'_> {
 // ----------------------------------------------------------------------
 
 /// Gathers the functions that can be inlined, the position of every function
-/// assignment, the enclosing statement of every block, and the function scopes
-/// that contain a `goto` or label.
+/// assignment, the enclosing statement of every block, the reaching
+/// definitions of every function region, and the function scopes that contain a
+/// `goto` or label.
 struct FunctionCollector<'m> {
     model: &'m SemanticModel,
-    functions: HashMap<SymbolId, InlinableFunction>,
-    /// The statement that evaluates each local's initializer.
-    declarations: HashMap<SymbolId, StatementOrigin>,
-    /// A local whose only non-declaration write is `alias = target`.
-    aliases: HashMap<SymbolId, (SymbolId, StatementOrigin)>,
+    /// Every function literal assigned to a local, keyed by its structural
+    /// position. `None` records a literal that the inliner cannot reproduce.
+    functions: HashMap<FunctionKey, Option<InlinableFunction>>,
+    /// Local symbols that receive at least one function literal. This is an
+    /// over-approximation used only to decide when an earlier value must be
+    /// stored.
+    literal_symbols: HashSet<SymbolId>,
+    /// Direct `alias = target` assignments, for the same over-approximation.
+    aliases: HashMap<SymbolId, HashSet<SymbolId>>,
     /// The statement that contains each AST block.
     parents: HashMap<BlockIdentity, (BlockIdentity, u32)>,
+    /// The body block of each function region.
+    function_roots: HashMap<ScopeId, BlockIdentity>,
     /// Function scopes whose bodies contain a `goto` or label.
     labelled: HashSet<ScopeId>,
     /// The function scope that owns each block.
     block_functions: HashMap<BlockIdentity, ScopeId>,
-    /// Blocks that are the body of a `do` statement. Such a body always runs to
-    /// completion, so an assignment at its top level completes with the `do`.
-    unconditional: HashSet<BlockIdentity>,
+    /// Reaching definitions for each function region.
+    regions: HashMap<ScopeId, FunctionRegion>,
+    /// Where each symbol is defined.
+    definition_locations: HashMap<SymbolId, Vec<(ScopeId, reaching::DefinitionId)>>,
+    /// Captured locals written by a nested function. Such a local can change
+    /// whenever that function runs, so only its single immutable definition is
+    /// usable.
+    nested_writes: HashSet<SymbolId>,
+    /// The first structural inconsistency, if any.
+    error: Option<InlineError>,
 }
 
 impl<'m> FunctionCollector<'m> {
-    fn new(model: &'m SemanticModel) -> Self {
-        Self {
+    fn collect(root: &Block, model: &'m SemanticModel) -> Result<Self, InlineError> {
+        let mut collector = Self {
             model,
             functions: HashMap::new(),
-            declarations: HashMap::new(),
+            literal_symbols: HashSet::new(),
             aliases: HashMap::new(),
             parents: HashMap::new(),
+            function_roots: HashMap::new(),
             labelled: HashSet::new(),
             block_functions: HashMap::new(),
-            unconditional: HashSet::new(),
+            regions: HashMap::new(),
+            definition_locations: HashMap::new(),
+            nested_writes: nested_writes(model),
+            error: None,
+        };
+        collector.walk(root);
+        if let Some(error) = collector.error {
+            return Err(error);
         }
+
+        let mut locations: HashMap<SymbolId, Vec<(ScopeId, reaching::DefinitionId)>> =
+            HashMap::new();
+        for (scope, region) in &collector.regions {
+            for (id, definition) in region.definitions.iter().enumerate() {
+                locations
+                    .entry(definition.symbol)
+                    .or_default()
+                    .push((*scope, id));
+            }
+        }
+        collector.definition_locations = locations;
+        Ok(collector)
     }
 
     fn walk(&mut self, block: &Block) {
+        if self.error.is_some() {
+            return;
+        }
         let Some(identity) = block.get_identity() else {
             return;
         };
+        self.ensure_region(block);
+        if self.error.is_some() {
+            return;
+        }
         let function = self.function_scope(block);
         if let Some(function) = function {
             self.block_functions.insert(identity, function);
@@ -557,14 +670,12 @@ impl<'m> FunctionCollector<'m> {
                 index: index as u32,
             };
             self.record_statement(statement, origin);
+            if self.error.is_some() {
+                return;
+            }
             if matches!(statement, Statement::Goto(_) | Statement::Label(_)) {
                 if let Some(function) = function {
                     self.labelled.insert(function);
-                }
-            }
-            if let Statement::Do(statement) = statement {
-                if let Some(identity) = statement.get_block().get_identity() {
-                    self.unconditional.insert(identity);
                 }
             }
             statement.for_each_child(&mut ChildWalker {
@@ -584,88 +695,157 @@ impl<'m> FunctionCollector<'m> {
         }
     }
 
+    /// Builds the control-flow graph and reaching definitions of the function
+    /// region that owns `block`, the first time the block is visited.
+    fn ensure_region(&mut self, block: &Block) {
+        let Some(identity) = block.get_identity() else {
+            return;
+        };
+        let Ok(scope) = self.model.try_scope_of(block) else {
+            let error = self
+                .model
+                .try_scope_of(block)
+                .expect_err("the scope query just failed");
+            self.error = Some(InlineError::Scope(error));
+            return;
+        };
+        if !self.model.scope(scope).kind.is_function_boundary() || self.regions.contains_key(&scope)
+        {
+            return;
+        }
+        let cfg = if scope == self.model.chunk_scope() {
+            build_chunk(block, self.model)
+        } else {
+            build_function(block, self.model, scope)
+        };
+        match cfg {
+            Ok(cfg) => match FunctionRegion::analyze(cfg, self.model) {
+                Ok(region) => {
+                    self.regions.insert(scope, region);
+                    self.function_roots.insert(scope, identity);
+                }
+                Err(error) => self.error = Some(error.into()),
+            },
+            Err(error) => self.error = Some(error.into()),
+        }
+    }
+
     fn record_statement(&mut self, statement: &Statement, origin: StatementOrigin) {
         match statement {
             Statement::LocalFunction(function) => {
                 let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
-                self.record(
+                self.record_literal(
+                    FunctionKey { origin, slot: 0 },
                     function.get_identifier(),
                     function.get_block(),
                     &parameters,
-                    None,
+                );
+            }
+            Statement::Function(function) => {
+                let name = function.get_name();
+                if !name.get_field_names().is_empty() || name.get_method().is_some() {
+                    return;
+                }
+                let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
+                self.record_literal(
+                    FunctionKey { origin, slot: 0 },
+                    name.get_name(),
+                    function.get_block(),
+                    &parameters,
                 );
             }
             Statement::LocalAssign(assignment) => {
-                if assignment.variables_len() == 1 && assignment.values_len() == 1 {
-                    if let (Some(variable), Some(Expression::Function(function))) = (
-                        assignment.iter_variables().next(),
-                        assignment.iter_values().next(),
-                    ) {
-                        let parameters: Vec<&TypedIdentifier> =
-                            function.iter_parameters().collect();
-                        self.record(
-                            variable.get_identifier(),
-                            function.get_block(),
-                            &parameters,
-                            None,
-                        );
-                    }
-                }
-                for (variable, value) in assignment.iter_variables().zip(assignment.iter_values()) {
-                    if !matches!(value, Expression::Identifier(_)) {
+                let values: Vec<&Expression> = assignment.iter_values().collect();
+                for (index, variable) in assignment.iter_variables().enumerate() {
+                    let Some(value) = values.get(index) else {
                         continue;
-                    }
-                    if let Some(symbol) = self.model.resolve_identifier(variable.get_identifier()) {
-                        self.declarations.entry(symbol).or_insert(origin);
-                    }
+                    };
+                    self.record_initializer(variable.get_identifier(), value, origin, index);
                 }
             }
             Statement::Assign(assignment) => {
-                if assignment.variables_len() != 1 || assignment.values_len() != 1 {
-                    return;
-                }
-                let Some(Variable::Identifier(identifier)) = assignment.iter_variables().next()
-                else {
-                    return;
-                };
-                match assignment.iter_values().next() {
-                    Some(Expression::Function(function)) => {
-                        let parameters: Vec<&TypedIdentifier> =
-                            function.iter_parameters().collect();
-                        self.record(identifier, function.get_block(), &parameters, Some(origin));
-                    }
-                    Some(Expression::Identifier(target)) => {
-                        let Some(symbol) = self.model.resolve_identifier(identifier) else {
-                            return;
-                        };
-                        let Some(target) = self.model.resolve_identifier(target) else {
-                            return;
-                        };
-                        let info = self.model.symbol(symbol);
-                        if info.kind == SymbolKind::Local && info.write_count == 2 {
-                            self.aliases.insert(symbol, (target, origin));
-                        }
-                    }
-                    _ => {}
+                let values: Vec<&Expression> = assignment.iter_values().collect();
+                for (index, variable) in assignment.iter_variables().enumerate() {
+                    let Variable::Identifier(identifier) = variable else {
+                        continue;
+                    };
+                    let Some(value) = values.get(index) else {
+                        continue;
+                    };
+                    self.record_initializer(identifier, value, origin, index);
                 }
             }
             _ => {}
         }
     }
 
-    fn record(
+    fn record_initializer(
         &mut self,
+        identifier: &Identifier,
+        value: &Expression,
+        origin: StatementOrigin,
+        slot: usize,
+    ) {
+        if let Some(function) = reaching::function_expression(value) {
+            let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
+            self.record_literal(
+                FunctionKey {
+                    origin,
+                    slot: slot as u32,
+                },
+                identifier,
+                function.get_block(),
+                &parameters,
+            );
+            return;
+        }
+        let Some(target) = identifier_expression(value) else {
+            return;
+        };
+        let (Some(symbol), Some(target)) = (
+            self.model.resolve_identifier(identifier),
+            self.model.resolve_identifier(target),
+        ) else {
+            let unresolved = if self.model.resolve_identifier(identifier).is_none() {
+                identifier
+            } else {
+                target
+            };
+            self.error = Some(InlineError::Reaching(ReachingError::UnresolvedIdentifier {
+                name: unresolved.get_name().clone(),
+                line: unresolved
+                    .get_token()
+                    .and_then(|token| token.get_line_number()),
+            }));
+            return;
+        };
+        if self.model.symbol(symbol).kind == SymbolKind::Local {
+            self.aliases.entry(symbol).or_default().insert(target);
+        }
+    }
+
+    fn record_literal(
+        &mut self,
+        key: FunctionKey,
         identifier: &Identifier,
         body: &Block,
         parameters: &[&TypedIdentifier],
-        assignment: Option<StatementOrigin>,
     ) {
         let Some(symbol) = self.model.resolve_identifier(identifier) else {
+            self.error = Some(InlineError::Reaching(ReachingError::UnresolvedIdentifier {
+                name: identifier.get_name().clone(),
+                line: identifier
+                    .get_token()
+                    .and_then(|token| token.get_line_number()),
+            }));
             return;
         };
-        if let Some(function) = inlinable(self.model, symbol, body, parameters, assignment) {
-            self.functions.insert(symbol, function);
+        if self.model.symbol(symbol).kind != SymbolKind::Local {
+            return;
         }
+        self.literal_symbols.insert(symbol);
+        let function = inlinable(self.model, symbol, body, parameters);
+        self.functions.insert(key, function);
     }
 
     fn walk_child(&mut self, child: &Block, parent: StatementOrigin) {
@@ -689,6 +869,35 @@ impl<'m> FunctionCollector<'m> {
             scope = current.parent?;
         }
     }
+}
+
+fn identifier_expression(expression: &Expression) -> Option<&Identifier> {
+    match expression {
+        Expression::Identifier(identifier) => Some(identifier),
+        Expression::Parenthese(parenthese) => identifier_expression(parenthese.inner_expression()),
+        Expression::TypeCast(type_cast) => identifier_expression(type_cast.get_expression()),
+        _ => None,
+    }
+}
+
+/// Returns the captured local symbols that a nested function can write.
+fn nested_writes(model: &SemanticModel) -> HashSet<SymbolId> {
+    let mut result = HashSet::new();
+    for symbol in &model.symbols {
+        if symbol.kind != SymbolKind::Local || symbol.capturing_scopes.is_empty() {
+            continue;
+        }
+        let declaring_function = model.function_scope_of(symbol.declaring_scope);
+        if let Some(uses) = model.try_uses_of(symbol.id) {
+            if uses.iter().any(|r#use| {
+                r#use.kind == crate::semantic::AccessKind::Write
+                    && model.function_scope_of(r#use.scope) != declaring_function
+            }) {
+                result.insert(symbol.id);
+            }
+        }
+    }
+    result
 }
 
 /// Finds every block nested in a statement's expressions, recording the
@@ -734,28 +943,47 @@ impl ChildVisitor for ChildWalker<'_, '_> {
 /// so an inserted preamble is never visited again.
 struct Inliner<'m, 'n, 'i> {
     model: &'m SemanticModel,
-    functions: &'m HashMap<SymbolId, InlinableFunction>,
-    /// The statement that contains each nested block.
+    functions: &'m HashMap<FunctionKey, Option<InlinableFunction>>,
+    /// Local symbols that receive at least one function literal.
+    literal_symbols: &'m HashSet<SymbolId>,
+    /// Direct alias assignments.
+    aliases: &'m HashMap<SymbolId, HashSet<SymbolId>>,
+    /// The statement that contains each AST block.
     parents: &'m HashMap<BlockIdentity, (BlockIdentity, u32)>,
-    /// The statement that evaluates each local's initializer.
-    declarations: &'m HashMap<SymbolId, StatementOrigin>,
-    /// A local whose only non-declaration write is `alias = target`.
-    aliases: &'m HashMap<SymbolId, (SymbolId, StatementOrigin)>,
+    /// The body block of each function region.
+    function_roots: &'m HashMap<ScopeId, BlockIdentity>,
+    /// The statement that contains each nested block.
     /// Function scopes whose bodies contain a `goto` or label.
     labelled: &'m HashSet<ScopeId>,
     /// The function scope that owns each block.
     block_functions: &'m HashMap<BlockIdentity, ScopeId>,
-    /// Blocks that are the body of a `do` statement.
-    unconditional: &'m HashSet<BlockIdentity>,
+    /// Reaching definitions for each function region.
+    regions: &'m HashMap<ScopeId, FunctionRegion>,
+    /// Where each tracked symbol is defined.
+    definition_locations: &'m HashMap<SymbolId, Vec<(ScopeId, reaching::DefinitionId)>>,
+    /// Captured locals written by a nested function.
+    nested_writes: &'m HashSet<SymbolId>,
     names: &'n mut NameGenerator,
     /// The scope of the block currently being rewritten.
     current_scope: Option<ScopeId>,
     /// The statement being rewritten, or the position after the block's last
     /// statement when rewriting its last statement.
     current_position: Option<StatementOrigin>,
+    /// The branch condition whose expression is being rewritten, when the
+    /// current call sits in an `if`, `while` or `repeat` condition.
+    current_condition: Option<ConditionOrigin>,
     /// Whether the statement has not evaluated anything observable yet, so a
     /// call can be moved to the statement's start without reordering.
     clean: bool,
+    /// Whether a call at the current expression position may be inlined. A
+    /// repeat condition that cannot be rewritten falls back to this.
+    allow_inline: bool,
+    /// Whether escaping locals may be hoisted to the function start. Condition
+    /// preambles disable this because they run inside the loop.
+    hoist_locals: bool,
+    /// Escaping locals that must be declared at the start of a function whose
+    /// body contains `goto` or labels, keyed by the function scope.
+    hoisted: HashMap<ScopeId, Vec<TypedIdentifier>>,
     inlined: &'i mut usize,
 }
 
@@ -763,9 +991,15 @@ impl Inliner<'_, '_, '_> {
     fn rewrite_block(&mut self, block: &mut Block) {
         let previous_scope = self.current_scope;
         let previous_position = self.current_position;
+        let previous_condition = self.current_condition;
         let previous_clean = self.clean;
+        let previous_allow_inline = self.allow_inline;
+        let previous_hoist = self.hoist_locals;
         let scope = self.model.try_scope_of(block).ok();
         self.current_scope = scope;
+        self.current_condition = None;
+        self.allow_inline = true;
+        self.hoist_locals = true;
         let identity = block.get_identity();
         let statements = block.take_statements();
         let count = statements.len();
@@ -798,9 +1032,26 @@ impl Inliner<'_, '_, '_> {
             }
             block.set_last_statement(last);
         }
+
+        if let Some(scope) = scope {
+            if self.model.scope(scope).kind.is_function_boundary() {
+                if let Some(declarations) = self.hoisted.remove(&scope) {
+                    let mut statements = block.take_statements();
+                    statements.insert(
+                        0,
+                        Statement::from(VariableAssignment::new(declarations, Vec::new())),
+                    );
+                    block.set_statements(statements);
+                }
+            }
+        }
+
         self.current_scope = previous_scope;
         self.current_position = previous_position;
+        self.current_condition = previous_condition;
         self.clean = previous_clean;
+        self.allow_inline = previous_allow_inline;
+        self.hoist_locals = previous_hoist;
     }
 
     fn rewrite_statement(&mut self, statement: &mut Statement, preambles: &mut Vec<Statement>) {
@@ -858,8 +1109,13 @@ impl Inliner<'_, '_, '_> {
                         // conditions were false.
                         self.clean = false;
                     }
+                    let saved_condition = self.current_condition;
+                    self.current_condition = self.current_position.map(|position| {
+                        ConditionOrigin::new(position, ConditionKind::IfBranch(index as u32))
+                    });
                     let mut condition = branch.get_condition().clone();
                     self.rewrite_single(&mut condition, preambles);
+                    self.current_condition = saved_condition;
                     *branch.mutate_condition() = condition;
                     self.rewrite_block(branch.mutate_block());
                 }
@@ -868,22 +1124,10 @@ impl Inliner<'_, '_, '_> {
                 }
             }
             Statement::While(statement) => {
-                // The condition runs before every iteration, so its evaluation
-                // cannot be hoisted to the statement.
-                self.clean = false;
-                let mut condition = statement.get_condition().clone();
-                self.rewrite_single(&mut condition, preambles);
-                statement.mutate_condition().clone_from(&condition);
-                self.rewrite_block(statement.mutate_block());
+                self.rewrite_while(statement, preambles);
             }
-            Statement::Repeat(statement) => {
-                self.rewrite_block(statement.mutate_block());
-                // The condition runs after every iteration, so its evaluation
-                // cannot be hoisted to the statement.
-                self.clean = false;
-                let mut condition = statement.get_condition().clone();
-                self.rewrite_single(&mut condition, preambles);
-                statement.mutate_condition().clone_from(&condition);
+            Statement::Repeat(_) => {
+                self.rewrite_repeat_statement(statement, preambles);
             }
             Statement::NumericFor(statement) => {
                 let mut start = statement.get_start().clone();
@@ -913,6 +1157,396 @@ impl Inliner<'_, '_, '_> {
             Statement::TypeFunction(statement) => self.rewrite_block(statement.mutate_block()),
             _ => {}
         }
+    }
+
+    /// Rewrites a loop or branch condition with reaching definitions taken from
+    /// the condition's CFG entry.
+    fn rewrite_condition(
+        &mut self,
+        condition: &Expression,
+        kind: ConditionKind,
+        scope: Option<ScopeId>,
+        allow_inline: bool,
+    ) -> (Expression, Vec<Statement>) {
+        let saved_condition = self.current_condition;
+        let saved_hoist = self.hoist_locals;
+        let saved_scope = self.current_scope;
+        let saved_clean = self.clean;
+        let saved_allow_inline = self.allow_inline;
+
+        self.current_condition = self
+            .current_position
+            .map(|position| ConditionOrigin::new(position, kind));
+        self.hoist_locals = false;
+        self.allow_inline = allow_inline;
+        if let Some(scope) = scope {
+            self.current_scope = Some(scope);
+        }
+        self.clean = true;
+
+        let mut rewritten = condition.clone();
+        let mut preambles = Vec::new();
+        self.rewrite_single(&mut rewritten, &mut preambles);
+
+        self.current_condition = saved_condition;
+        self.hoist_locals = saved_hoist;
+        self.current_scope = saved_scope;
+        self.clean = saved_clean;
+        self.allow_inline = saved_allow_inline;
+        (rewritten, preambles)
+    }
+
+    /// Rewrites a `while` condition. The condition is evaluated before every
+    /// iteration, so an inline preamble is placed at the top of a `while true`
+    /// body followed by a break when the condition is false.
+    fn rewrite_while(&mut self, statement: &mut WhileStatement, _preambles: &mut Vec<Statement>) {
+        let (condition, condition_preambles) =
+            self.rewrite_condition(statement.get_condition(), ConditionKind::While, None, true);
+
+        self.rewrite_block(statement.mutate_block());
+
+        if condition_preambles.is_empty() {
+            *statement.mutate_condition() = condition;
+            return;
+        }
+
+        let mut body = statement.get_block().clone();
+        let mut statements = condition_preambles;
+        statements.push(break_unless(condition));
+        let original = body.take_statements();
+        statements.extend(original);
+        body.set_statements(statements);
+        *statement = WhileStatement::new(body, Expression::from(true));
+    }
+
+    /// Rewrites a `repeat` condition. The condition is evaluated in the body's
+    /// scope after every iteration. The inline preamble is appended at the end
+    /// of the body and the condition becomes `until <result>`.
+    ///
+    /// A `continue` jumps to the condition, skipping the rest of the body but
+    /// not the condition. Those statements are lowered structurally: each
+    /// `continue` sets a flag, and the statements after it run only when the
+    /// flag is clear. The condition section sits outside those guards, so it
+    /// always runs. Body locals the condition reads stay in the body's scope;
+    /// when a guard would otherwise move their declaration into a nested `if`,
+    /// they are declared at the top of the body under fresh names and every
+    /// reference bound to them is renamed.
+    fn rewrite_repeat_statement(
+        &mut self,
+        statement: &mut Statement,
+        _preambles: &mut Vec<Statement>,
+    ) {
+        let Statement::Repeat(repeat) = statement else {
+            return;
+        };
+        let body_scope = self.model.try_scope_of(repeat.get_block()).ok();
+        let original_condition = repeat.get_condition().clone();
+        let before_condition = *self.inlined;
+        let (mut condition, mut condition_preambles) =
+            self.rewrite_condition(&original_condition, ConditionKind::Repeat, body_scope, true);
+        let condition_inlined = *self.inlined - before_condition;
+
+        let mut body = repeat.get_block().clone();
+        self.rewrite_block(&mut body);
+
+        if condition_preambles.is_empty() {
+            *repeat.mutate_condition() = condition;
+            repeat.mutate_block().clone_from(&body);
+            return;
+        }
+
+        let Some(body_scope) = body_scope else {
+            self.repeat_fallback(
+                repeat,
+                &mut body,
+                &original_condition,
+                condition_inlined,
+                None,
+            );
+            return;
+        };
+
+        // The condition is unreachable when the body always returns or breaks
+        // as its last statement. Appending after a trailing label would also
+        // remove the label's block-end scope relaxation for a goto that relies
+        // on it. Refuse those shapes rather than emit invalid or unreachable
+        // code.
+        if matches!(
+            body.get_last_statement(),
+            Some(LastStatement::Return(_)) | Some(LastStatement::Break(_))
+        ) {
+            self.repeat_fallback(
+                repeat,
+                &mut body,
+                &original_condition,
+                condition_inlined,
+                Some(body_scope),
+            );
+            return;
+        }
+
+        let has_continue = block_contains_continue(&body);
+        if has_continue
+            && (body_has_close_local(&body)
+                || body_contains_goto_or_label(&body)
+                || body_declares_environment_local(&body, body_scope, self.model)
+                || !self.hoist_repeat_condition_locals(
+                    &mut body,
+                    body_scope,
+                    &mut condition,
+                    &mut condition_preambles,
+                ))
+        {
+            self.repeat_fallback(
+                repeat,
+                &mut body,
+                &original_condition,
+                condition_inlined,
+                Some(body_scope),
+            );
+            return;
+        }
+
+        if has_continue {
+            let flag = self.names.generate();
+            let mut statements = body.take_statements();
+            statements.insert(
+                0,
+                Statement::from(VariableAssignment::new(
+                    vec![TypedIdentifier::new(flag.clone())],
+                    vec![Expression::from(false)],
+                )),
+            );
+            body.set_statements(statements);
+            lower_repeat_continues(&mut body, &flag);
+        }
+
+        let result = self.names.generate();
+        let mut statements = body.take_statements();
+        statements.extend(condition_preambles);
+        statements.push(Statement::from(VariableAssignment::new(
+            vec![TypedIdentifier::new(result.clone())],
+            vec![condition],
+        )));
+        body.set_statements(statements);
+        *repeat.mutate_condition() = Expression::identifier(result);
+        repeat.mutate_block().clone_from(&body);
+    }
+
+    /// Restores a repeat condition that could not be rewritten, rewriting the
+    /// original expression without inlining. The body is already rewritten.
+    fn repeat_fallback(
+        &mut self,
+        repeat: &mut RepeatStatement,
+        body: &mut Block,
+        original_condition: &Expression,
+        condition_inlined: usize,
+        body_scope: Option<ScopeId>,
+    ) {
+        *self.inlined -= condition_inlined;
+        let (fallback, fallback_preambles) =
+            self.rewrite_condition(original_condition, ConditionKind::Repeat, body_scope, false);
+        debug_assert!(
+            fallback_preambles.is_empty(),
+            "a non-inlining condition rewrite must not produce a preamble"
+        );
+        *repeat.mutate_condition() = fallback;
+        repeat.mutate_block().clone_from(body);
+    }
+
+    /// Moves the body locals read by a repeat condition to the top of the loop
+    /// body under fresh names and renames every bound reference. Returns false
+    /// when a declaration cannot be moved safely.
+    fn hoist_repeat_condition_locals(
+        &mut self,
+        body: &mut Block,
+        body_scope: ScopeId,
+        condition: &mut Expression,
+        condition_preambles: &mut Vec<Statement>,
+    ) -> bool {
+        let mut reads = BodyScopedReads {
+            model: self.model,
+            scope: body_scope,
+            symbols: HashSet::new(),
+        };
+        DefaultVisitor::visit_expression(condition, &mut reads);
+        let mut preamble_block = Block::new(std::mem::take(condition_preambles), None);
+        DefaultVisitor::visit_block(&mut preamble_block, &mut reads);
+        *condition_preambles = preamble_block.take_statements();
+
+        let visible = reads.symbols;
+        if visible.is_empty() {
+            return true;
+        }
+
+        // Find the declaration of every visible symbol. A visible symbol is a
+        // top-level local of the repeat body, so its declaration is either a
+        // `local` assignment or a `local function`.
+        let statements = body.take_statements();
+        let mut hoisted_symbols: HashSet<SymbolId> = HashSet::new();
+        let mut renames: HashMap<SymbolId, String> = HashMap::new();
+        let mut safe = true;
+
+        for statement in &statements {
+            match statement {
+                Statement::LocalAssign(assignment) => {
+                    let identifiers: Vec<&Identifier> = assignment
+                        .iter_variables()
+                        .map(|v| v.get_identifier())
+                        .collect();
+                    let symbols: Vec<Option<SymbolId>> = identifiers
+                        .iter()
+                        .map(|identifier| self.model.resolve_identifier(identifier))
+                        .collect();
+                    let group_visible = symbols
+                        .iter()
+                        .any(|symbol| symbol.is_some_and(|symbol| visible.contains(&symbol)));
+                    if !group_visible {
+                        continue;
+                    }
+                    for (variable, symbol) in assignment.iter_variables().zip(&symbols) {
+                        let Some(symbol) = *symbol else {
+                            safe = false;
+                            break;
+                        };
+                        if variable.get_attribute() == Some("close") {
+                            safe = false;
+                            break;
+                        }
+                        hoisted_symbols.insert(symbol);
+                        renames
+                            .entry(symbol)
+                            .or_insert_with(|| self.names.generate());
+                    }
+                    if !safe {
+                        break;
+                    }
+                }
+                Statement::LocalFunction(function) => {
+                    let Some(symbol) = self.model.resolve_identifier(function.get_identifier())
+                    else {
+                        safe = false;
+                        break;
+                    };
+                    if !visible.contains(&symbol) {
+                        continue;
+                    }
+                    hoisted_symbols.insert(symbol);
+                    renames
+                        .entry(symbol)
+                        .or_insert_with(|| self.names.generate());
+                }
+                _ => {}
+            }
+        }
+
+        if !safe {
+            body.set_statements(statements);
+            return false;
+        }
+
+        if visible.iter().any(|symbol| !renames.contains_key(symbol)) {
+            body.set_statements(statements);
+            return false;
+        }
+
+        let mut transformed = Vec::with_capacity(statements.len());
+        for statement in statements {
+            match statement {
+                Statement::LocalAssign(assignment) => {
+                    let hoisted = assignment.iter_variables().any(|variable| {
+                        self.model
+                            .resolve_identifier(variable.get_identifier())
+                            .is_some_and(|symbol| hoisted_symbols.contains(&symbol))
+                    });
+                    if !hoisted {
+                        transformed.push(Statement::LocalAssign(assignment));
+                        continue;
+                    }
+                    let values: Vec<Expression> = assignment.iter_values().cloned().collect();
+                    if values.is_empty() {
+                        continue;
+                    }
+                    let variables: Vec<Variable> = assignment
+                        .iter_variables()
+                        .map(|variable| {
+                            let symbol = self
+                                .model
+                                .resolve_identifier(variable.get_identifier())
+                                .expect("hoisted declarations resolve");
+                            Variable::Identifier(Identifier::new(
+                                renames
+                                    .get(&symbol)
+                                    .expect("every hoisted variable has a name")
+                                    .clone(),
+                            ))
+                        })
+                        .collect();
+                    transformed.push(Statement::from(AssignStatement::new(variables, values)));
+                }
+                Statement::LocalFunction(function) => {
+                    let symbol = self
+                        .model
+                        .resolve_identifier(function.get_identifier())
+                        .expect("the declaration scan resolved every local function");
+                    if !hoisted_symbols.contains(&symbol) {
+                        transformed.push(Statement::LocalFunction(function));
+                        continue;
+                    }
+                    let name = renames
+                        .get(&symbol)
+                        .expect("every hoisted function has a name")
+                        .clone();
+                    let mut expression = crate::nodes::FunctionExpression::new(
+                        function.get_block().clone(),
+                        function.iter_parameters().cloned().collect(),
+                        function.is_variadic(),
+                    );
+                    *expression.mutate_attributes() = function.attributes().clone();
+                    if let Some(generic) = function.get_generic_parameters() {
+                        expression.set_generic_parameters(generic.clone());
+                    }
+                    if let Some(variadic) = function.get_variadic_type() {
+                        expression.set_variadic_type(variadic.clone());
+                    }
+                    if let Some(return_type) = function.get_return_type() {
+                        expression.set_return_type(return_type.clone());
+                    }
+                    transformed.push(Statement::from(AssignStatement::new(
+                        vec![Variable::Identifier(Identifier::new(name))],
+                        vec![Expression::Function(Box::new(expression))],
+                    )));
+                }
+                other => transformed.push(other),
+            }
+        }
+
+        body.set_statements(transformed);
+
+        let mut names: Vec<&String> = renames.values().collect();
+        names.sort();
+        let declarations: Vec<TypedIdentifier> = names
+            .into_iter()
+            .map(|name| TypedIdentifier::new(name.clone()))
+            .collect();
+        let mut statements = body.take_statements();
+        statements.insert(
+            0,
+            Statement::from(VariableAssignment::new(declarations, Vec::new())),
+        );
+        body.set_statements(statements);
+
+        let mut renamer = BindingRenamer {
+            model: self.model,
+            renames: &renames,
+        };
+        DefaultVisitor::visit_block(body, &mut renamer);
+        DefaultVisitor::visit_expression(condition, &mut renamer);
+        let mut preamble_block = Block::new(std::mem::take(condition_preambles), None);
+        DefaultVisitor::visit_block(&mut preamble_block, &mut renamer);
+        *condition_preambles = preamble_block.take_statements();
+
+        true
     }
 
     fn rewrite_last_statement(
@@ -961,7 +1595,7 @@ impl Inliner<'_, '_, '_> {
             let clean = self.clean;
             let tail = multi_tail && index + 1 == length;
             let results = self.rewrite(value.clone(), tail, preambles);
-            if later_may_inline && clean && self.position_allows_insertion() {
+            if later_may_inline && clean && self.allow_inline && self.position_allows_insertion() {
                 // Store this value before the later body runs; the stored value
                 // keeps the original evaluation order.
                 for result in results {
@@ -978,21 +1612,101 @@ impl Inliner<'_, '_, '_> {
     /// Rewrites a call's callee and arguments. Earlier arguments are stored in
     /// fresh locals when a later argument can be inlined, so the inline body
     /// still runs after them.
+    ///
+    /// A method call needs one more step. PUC Lua evaluates the receiver and
+    /// performs the method lookup before the arguments; Luau evaluates the
+    /// receiver, then the arguments, and only then performs the lookup. When an
+    /// argument may inline, the receiver is stored before the body, and for PUC
+    /// Lua the lookup is stored there too. The call is then a normal call to the
+    /// stored method with the stored receiver as its first argument. Luau keeps
+    /// the method syntax with the stored receiver, so the lookup stays at the
+    /// call. An undetermined dialect only permits this when the receiver is a
+    /// fresh table literal, whose lookup cannot run code.
     fn rewrite_call_contents(
         &mut self,
         call: &mut crate::nodes::FunctionCall,
         preambles: &mut Vec<Statement>,
     ) {
         let arguments: Vec<Expression> = call.get_arguments().clone().to_expressions();
-        let method = call.get_method().is_some();
-        let spill = !method
-            && arguments
-                .iter()
-                .any(|argument| self.expression_may_inline(argument));
+        let method = call.get_method().cloned();
+        let argument_may_inline = arguments
+            .iter()
+            .any(|argument| self.expression_may_inline(argument));
+
+        if let Some(method) = method {
+            if argument_may_inline
+                && self.clean
+                && self.allow_inline
+                && self.position_allows_insertion()
+            {
+                if let Some(lookup_before_arguments) = self.method_lookup_order() {
+                    let mut prefix = call.get_prefix().clone();
+                    self.rewrite_prefix(&mut prefix, preambles);
+                    let receiver = self.materialize_prefix(prefix, preambles);
+                    self.clean = true;
+                    if lookup_before_arguments {
+                        let field = crate::nodes::FieldExpression::new(
+                            receiver.clone(),
+                            Identifier::new(method.get_name().clone()),
+                        );
+                        let method_value =
+                            self.materialize(Expression::Field(Box::new(field)), preambles);
+                        let mut values = arguments;
+                        self.rewrite_values(&mut values, true, preambles);
+                        let mut call_values = Vec::with_capacity(values.len() + 1);
+                        call_values.push(prefix_into_expression(receiver));
+                        call_values.extend(values);
+                        *call = crate::nodes::FunctionCall::new(
+                            prefix_from_expression(method_value),
+                            crate::nodes::Arguments::Tuple(
+                                crate::nodes::TupleArguments::from_iter(call_values),
+                            ),
+                            None,
+                        );
+                    } else {
+                        let mut values = arguments;
+                        self.rewrite_values(&mut values, true, preambles);
+                        *call.mutate_prefix() = receiver;
+                        *call.mutate_arguments() = crate::nodes::Arguments::Tuple(
+                            crate::nodes::TupleArguments::from_iter(values),
+                        );
+                    }
+                    return;
+                }
+
+                if !receiver_lookup_is_inert(call.get_prefix()) {
+                    // `Dialect::Default` has no fixed method lookup order.
+                    return;
+                }
+                let mut prefix = call.get_prefix().clone();
+                self.rewrite_prefix(&mut prefix, preambles);
+                let receiver = self.materialize_prefix(prefix, preambles);
+                self.clean = true;
+                let mut values = arguments;
+                self.rewrite_values(&mut values, true, preambles);
+                *call.mutate_prefix() = receiver;
+                *call.mutate_arguments() =
+                    crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
+                return;
+            }
+
+            let mut prefix = call.get_prefix().clone();
+            self.rewrite_prefix(&mut prefix, preambles);
+            *call.mutate_prefix() = prefix;
+            let mut values = arguments;
+            self.rewrite_values(&mut values, true, preambles);
+            *call.mutate_arguments() =
+                crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
+            return;
+        }
+
+        let spill = arguments
+            .iter()
+            .any(|argument| self.expression_may_inline(argument));
         let prefix_clean = self.clean;
         let mut prefix = call.get_prefix().clone();
         self.rewrite_prefix(&mut prefix, preambles);
-        if spill && prefix_clean && self.position_allows_insertion() {
+        if spill && self.allow_inline && prefix_clean && self.position_allows_insertion() {
             prefix = self.materialize_prefix(prefix, preambles);
             self.clean = true;
         }
@@ -1001,6 +1715,23 @@ impl Inliner<'_, '_, '_> {
         self.rewrite_values(&mut values, true, preambles);
         *call.mutate_arguments() =
             crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
+    }
+
+    /// Returns whether the method lookup precedes the argument evaluation.
+    ///
+    /// PUC Lua and LuaJIT perform `SELF` (receiver and lookup) before the
+    /// arguments. Luau emits `NAMECALL` after the arguments, so its lookup runs
+    /// last. `Dialect::Default` is undetermined and returns `None`.
+    fn method_lookup_order(&self) -> Option<bool> {
+        match self.model.dialect() {
+            crate::Dialect::Lua51
+            | crate::Dialect::Lua52
+            | crate::Dialect::Lua53
+            | crate::Dialect::Lua54
+            | crate::Dialect::LuaJit => Some(true),
+            crate::Dialect::Luau => Some(false),
+            crate::Dialect::Default => None,
+        }
     }
 
     /// Stores `expression` in a fresh local, preserving when it is evaluated.
@@ -1013,11 +1744,36 @@ impl Inliner<'_, '_, '_> {
             return expression;
         }
         let name = self.names.generate();
-        preambles.push(Statement::from(VariableAssignment::new(
-            vec![TypedIdentifier::new(name.clone())],
-            vec![expression],
-        )));
+        if let Some(scope) = self.hoist_target() {
+            // A label in the same function could be jumped over; keep the
+            // declaration at the function start so the jump never enters its
+            // scope. The value is still computed here.
+            self.hoisted
+                .entry(scope)
+                .or_default()
+                .push(TypedIdentifier::new(name.clone()));
+            preambles.push(Statement::from(AssignStatement::new(
+                vec![Variable::Identifier(Identifier::new(name.clone()))],
+                vec![expression],
+            )));
+        } else {
+            preambles.push(Statement::from(VariableAssignment::new(
+                vec![TypedIdentifier::new(name.clone())],
+                vec![expression],
+            )));
+        }
         Expression::identifier(name)
+    }
+
+    /// Returns the function scope whose start must receive escaping locals,
+    /// when the current function contains a `goto` or label.
+    fn hoist_target(&self) -> Option<ScopeId> {
+        if !self.hoist_locals {
+            return None;
+        }
+        let position = self.current_position?;
+        let function = *self.block_functions.get(&position.block)?;
+        self.labelled.contains(&function).then_some(function)
     }
 
     fn materialize_prefix(&mut self, prefix: Prefix, preambles: &mut Vec<Statement>) -> Prefix {
@@ -1030,16 +1786,16 @@ impl Inliner<'_, '_, '_> {
         }
     }
 
-    /// Returns whether a new local can be declared at the current position
-    /// without disturbing a `goto`.
+    /// Returns whether a new local can be declared at the current position.
+    ///
+    /// Locals that escape the preamble are hoisted to the start of functions
+    /// containing labels, so inserting at the statement itself is always safe
+    /// for the statements this pass rewrites.
     fn position_allows_insertion(&self) -> bool {
         let Some(position) = self.current_position else {
             return false;
         };
-        let Some(function) = self.block_functions.get(&position.block) else {
-            return false;
-        };
-        !self.labelled.contains(function)
+        self.block_functions.contains_key(&position.block)
     }
 
     fn rewrite_single(&mut self, expression: &mut Expression, preambles: &mut Vec<Statement>) {
@@ -1079,7 +1835,12 @@ impl Inliner<'_, '_, '_> {
                 let clean = self.clean;
                 let mut left = binary.left().clone();
                 self.rewrite_single(&mut left, preambles);
-                if !conditional && right_may_inline && clean && self.position_allows_insertion() {
+                if !conditional
+                    && right_may_inline
+                    && clean
+                    && self.allow_inline
+                    && self.position_allows_insertion()
+                {
                     // A current-function local is read by the operator after the
                     // other operand runs, so it must not be copied early.
                     if concat || !self.is_delayed_operand(&left) {
@@ -1112,7 +1873,8 @@ impl Inliner<'_, '_, '_> {
                 let clean = self.clean;
                 let mut prefix = index.get_prefix().clone();
                 self.rewrite_prefix(&mut prefix, preambles);
-                if key_may_inline && clean && self.position_allows_insertion() {
+                if key_may_inline && clean && self.allow_inline && self.position_allows_insertion()
+                {
                     // A current-function local is read by the index operation
                     // after the key runs, so it must not be copied early.
                     if !self.prefix_is_delayed(&prefix) {
@@ -1179,7 +1941,11 @@ impl Inliner<'_, '_, '_> {
                         crate::nodes::TableEntry::Field(mut field) => {
                             let mut value = field.get_value().clone();
                             self.rewrite_single(&mut value, preambles);
-                            if later_may_inline && clean && self.position_allows_insertion() {
+                            if later_may_inline
+                                && clean
+                                && self.allow_inline
+                                && self.position_allows_insertion()
+                            {
                                 value = self.materialize(value, preambles);
                                 self.clean = true;
                             }
@@ -1190,6 +1956,7 @@ impl Inliner<'_, '_, '_> {
                             let mut key = index.get_key().clone();
                             self.rewrite_single(&mut key, preambles);
                             if spillable
+                                && self.allow_inline
                                 && later_may_inline
                                 && clean
                                 && self.position_allows_insertion()
@@ -1201,6 +1968,7 @@ impl Inliner<'_, '_, '_> {
                             let mut value = index.get_value().clone();
                             self.rewrite_single(&mut value, preambles);
                             if spillable
+                                && self.allow_inline
                                 && later_may_inline
                                 && clean
                                 && self.position_allows_insertion()
@@ -1218,6 +1986,7 @@ impl Inliner<'_, '_, '_> {
                             for result in results {
                                 let result = if later_may_inline
                                     && clean
+                                    && self.allow_inline
                                     && self.position_allows_insertion()
                                 {
                                     self.clean = true;
@@ -1310,36 +2079,17 @@ impl Inliner<'_, '_, '_> {
         tail: bool,
         preambles: &mut Vec<Statement>,
     ) -> Option<Vec<Expression>> {
-        if !self.clean || call.get_method().is_some() {
+        if !self.clean || !self.allow_inline || call.get_method().is_some() {
             return None;
         }
-        // Inserting the preamble declares locals before the call's statement. A
-        // label in the same function could be the target of a goto that jumps
-        // over them, which would be invalid once the locals exist.
-        let position = self.current_position?;
         if !self.position_allows_insertion() {
             return None;
         }
         let callee = self.model.resolve_identifier(callee(call.get_prefix())?)?;
-        let (symbol, hops) = self.resolve_function(callee)?;
-        let function = self.functions.get(&symbol)?;
+        let key = self.resolve_call_function(callee)?;
+        let function = self.functions.get(&key)?.as_ref()?.clone();
         if tail && !function.uniform {
             return None;
-        }
-
-        // Each hop captures the value it reads, so the hop must run after that
-        // value is bound and before the position that reads the hop.
-        let mut reader = position;
-        for hop in hops {
-            if !self.assignment_reaches(hop, reader) {
-                return None;
-            }
-            reader = hop;
-        }
-        if let Some(assignment) = function.assignment {
-            if !self.assignment_reaches(assignment, reader) {
-                return None;
-            }
         }
 
         let scope = self.current_scope?;
@@ -1377,7 +2127,9 @@ impl Inliner<'_, '_, '_> {
         }
 
         let mut body = function.body.clone();
-        rename_labels(&mut body, self.model, self.names);
+        if !rename_labels(&mut body, self.model, self.names) {
+            return None;
+        }
         lower_returns(&mut body, &results, &done, 0);
         guard_loops(&mut body, &done, 0);
 
@@ -1398,10 +2150,14 @@ impl Inliner<'_, '_, '_> {
                 .iter()
                 .map(|name| TypedIdentifier::new(name.clone()))
                 .collect();
-            preambles.push(Statement::from(VariableAssignment::new(
-                declarations,
-                Vec::new(),
-            )));
+            if let Some(scope) = self.hoist_target() {
+                self.hoisted.entry(scope).or_default().extend(declarations);
+            } else {
+                preambles.push(Statement::from(VariableAssignment::new(
+                    declarations,
+                    Vec::new(),
+                )));
+            }
         }
         preambles.push(Statement::from(DoStatement::new(inner)));
         *self.inlined += 1;
@@ -1416,90 +2172,216 @@ impl Inliner<'_, '_, '_> {
         }
     }
 
-    /// Resolves a call target through immutable local aliases to a recorded
-    /// function.
+    /// Resolves the function key that `symbol` holds at the current position.
     ///
-    /// Returns the function's symbol and the declaration positions of the
-    /// aliases on the way, so an assignment-bound function can prove it was
-    /// the value each alias captured.
-    fn resolve_function(&self, mut symbol: SymbolId) -> Option<(SymbolId, Vec<StatementOrigin>)> {
-        let mut hops = Vec::new();
-        for _ in 0..self.model.symbols.len() {
-            if self.functions.contains_key(&symbol) {
-                return Some((symbol, hops));
-            }
-            let next = if let Some((target, position)) = self.aliases.get(&symbol) {
-                hops.push(*position);
-                *target
-            } else if self.model.is_immutable(symbol) {
-                let next = self.model.symbol(symbol).initializer?;
-                hops.push(*self.declarations.get(&symbol)?);
-                next
-            } else {
-                return None;
-            };
-            if next == symbol {
-                return None;
-            }
-            symbol = next;
+    /// Direct calls use the reaching definitions of the enclosing function.
+    /// A call inside a nested function reads an upvalue; only an immutable
+    /// symbol has one fixed value, so a mutable upvalue is refused. The alias
+    /// chain is followed at the position each alias captured its value, not at
+    /// the call site.
+    fn resolve_call_function(&self, symbol: SymbolId) -> Option<FunctionKey> {
+        // A captured local written by a nested function can change whenever
+        // that function runs, and the enclosing CFG does not model those calls.
+        if self.model.symbol(symbol).write_count > 1 && self.nested_writes.contains(&symbol) {
+            return None;
         }
-        None
+        let position = self.current_position?;
+        let region_scope = *self.block_functions.get(&position.block)?;
+        let declaring_scope = self.model.symbol(symbol).declaring_scope;
+        let declaring_function = self.model.function_scope_of(declaring_scope)?;
+
+        if declaring_function == region_scope {
+            let definitions = self.definitions_at(region_scope, position)?;
+            self.resolve_definitions(symbol, definitions, region_scope, &mut HashSet::new())
+        } else if self.model.is_immutable(symbol) {
+            let locations = self.definition_locations.get(&symbol)?;
+            if locations.len() != 1 {
+                return None;
+            }
+            let (scope, id) = locations[0];
+            self.resolve_definition(scope, id, symbol, &mut HashSet::new())
+        } else {
+            self.resolve_captured_function(symbol, region_scope)
+        }
     }
 
-    /// Returns whether the assignment at `origin` runs before `position` on
-    /// every path, reasoning only about structured control flow.
+    /// Resolves a mutable upvalue read by a nested function.
     ///
-    /// The position's enclosing blocks form a chain. The assignment must be on
-    /// that chain with the statement leading toward the position after it. An
-    /// assignment deeper than the position is lifted out of each enclosing `do`
-    /// body, because a `do` body always runs to completion before its statement
-    /// finishes.
-    ///
-    /// A call inside a nested function is accepted when the assignment precedes
-    /// the function's definition, because the body cannot run before the
-    /// definition completes.
-    fn assignment_reaches(&self, assignment: StatementOrigin, position: StatementOrigin) -> bool {
-        let Some(function) = self.block_functions.get(&position.block) else {
-            return false;
-        };
-        if self.labelled.contains(function) {
-            return false;
+    /// The upvalue cell is captured when the nested function is created. If no
+    /// write to it can run after that creation, every later call observes the
+    /// value that reached the creation statement. Only a function created
+    /// directly inside the declaring function is considered; an intermediate
+    /// function could be called before or after later writes, so that shape is
+    /// refused.
+    fn resolve_captured_function(
+        &self,
+        symbol: SymbolId,
+        call_region: ScopeId,
+    ) -> Option<FunctionKey> {
+        let declaring_scope = self.model.symbol(symbol).declaring_scope;
+        let declaring_function = self.model.function_scope_of(declaring_scope)?;
+
+        // Walk out through every enclosing function until reaching the
+        // function that declares the symbol. The creation of the outermost
+        // closure in that chain is the first point at which later writes in
+        // the declaring function can affect the value the call sees.
+        let mut region = call_region;
+        let mut creation = None;
+        for _ in 0..self.model.scopes.len() {
+            let root = *self.function_roots.get(&region)?;
+            let (block, index) = *self.parents.get(&root)?;
+            let candidate = StatementOrigin { block, index };
+            let parent = *self.block_functions.get(&candidate.block)?;
+            if parent == declaring_function {
+                creation = Some(candidate);
+                break;
+            }
+            if parent == region {
+                return None;
+            }
+            region = parent;
+        }
+        let creation = creation?;
+
+        let region = self.regions.get(&declaring_function)?;
+        if region.has_write_after(symbol, creation)? {
+            return None;
+        }
+        let definitions = region.at_statement(creation)?;
+        self.resolve_definitions(symbol, definitions, declaring_function, &mut HashSet::new())
+    }
+
+    /// Returns the reaching definitions at the current position within
+    /// `region_scope`.
+    fn definitions_at(
+        &self,
+        region_scope: ScopeId,
+        position: StatementOrigin,
+    ) -> Option<&[reaching::DefinitionId]> {
+        let region = self.regions.get(&region_scope)?;
+        if let Some(condition) = self.current_condition {
+            if let Some(definitions) = region.at_condition(condition) {
+                return Some(definitions);
+            }
+        }
+        if let Some(definitions) = region.at_statement(position) {
+            return Some(definitions);
+        }
+        if let Some(definitions) = region.at_loop_initial(position) {
+            return Some(definitions);
+        }
+        region.at_terminator(position)
+    }
+
+    fn resolve_definition(
+        &self,
+        region_scope: ScopeId,
+        id: reaching::DefinitionId,
+        symbol: SymbolId,
+        visited: &mut HashSet<(SymbolId, StatementOrigin)>,
+    ) -> Option<FunctionKey> {
+        self.resolve_definitions(symbol, &[id], region_scope, visited)
+    }
+
+    /// Resolves a reaching set to one function that every reaching definition
+    /// agrees on.
+    fn resolve_definitions(
+        &self,
+        symbol: SymbolId,
+        definitions: &[reaching::DefinitionId],
+        region_scope: ScopeId,
+        visited: &mut HashSet<(SymbolId, StatementOrigin)>,
+    ) -> Option<FunctionKey> {
+        let region = self.regions.get(&region_scope)?;
+        let relevant = region.definitions_of(definitions, symbol);
+        if relevant.is_empty() {
+            return None;
         }
 
-        let mut chain = vec![position];
-        let mut current = position;
-        let mut remaining = self.parents.len() + 1;
-        while let Some(&(parent, index)) = self.parents.get(&current.block) {
-            if parent == current.block || remaining == 0 {
-                return false;
-            }
-            current = StatementOrigin {
-                block: parent,
-                index,
+        let mut chosen: Option<(FunctionKey, InlinableFunction)> = None;
+        for id in relevant {
+            let definition = region.definition(id);
+            let key = match &definition.value {
+                DefinitionValue::Function(key) => *key,
+                DefinitionValue::Alias(target) => {
+                    self.resolve_alias(*target, definition.origin, region_scope, visited)?
+                }
+                DefinitionValue::Other => return None,
             };
-            chain.push(current);
-            remaining -= 1;
+            let function = self.functions.get(&key)?.as_ref()?.clone();
+            match &chosen {
+                Some((_, previous)) if !previous.same_function(&function) => return None,
+                Some(_) => {}
+                None => chosen = Some((key, function)),
+            }
         }
+        chosen.map(|(key, _)| key)
+    }
 
-        let mut current = assignment;
-        loop {
-            if let Some(entry) = chain.iter().find(|entry| entry.block == current.block) {
-                return current.index < entry.index;
-            }
-            if !self.unconditional.contains(&current.block) {
-                return false;
-            }
-            let Some(&(parent, index)) = self.parents.get(&current.block) else {
-                return false;
-            };
-            if parent == current.block {
-                return false;
-            }
-            current = StatementOrigin {
-                block: parent,
-                index,
-            };
+    /// Resolves the value captured by `target` at the alias statement.
+    fn resolve_alias(
+        &self,
+        target: SymbolId,
+        origin: StatementOrigin,
+        region_scope: ScopeId,
+        visited: &mut HashSet<(SymbolId, StatementOrigin)>,
+    ) -> Option<FunctionKey> {
+        if !visited.insert((target, origin)) {
+            return None;
         }
+        let target_scope = self.model.symbol(target).declaring_scope;
+        let target_function = self.model.function_scope_of(target_scope)?;
+        if target_function == region_scope {
+            let region = self.regions.get(&region_scope)?;
+            let definitions = region.at_statement(origin)?;
+            self.resolve_definitions(target, definitions, region_scope, visited)
+        } else if self.model.is_immutable(target) {
+            let locations = self.definition_locations.get(&target)?;
+            if locations.len() != 1 {
+                return None;
+            }
+            let (scope, id) = locations[0];
+            self.resolve_definition(scope, id, target, visited)
+        } else {
+            self.resolve_captured_function(target, region_scope)
+        }
+    }
+
+    /// Returns whether `symbol` can ever denote one of the recorded functions.
+    fn may_resolve_function(&self, symbol: SymbolId) -> bool {
+        let mut visited = HashSet::new();
+        self.may_resolve_function_inner(symbol, &mut visited)
+    }
+
+    fn may_resolve_function_inner(
+        &self,
+        symbol: SymbolId,
+        visited: &mut HashSet<SymbolId>,
+    ) -> bool {
+        if !visited.insert(symbol) {
+            return false;
+        }
+        if self.literal_symbols.contains(&symbol) {
+            return true;
+        }
+        self.aliases.get(&symbol).is_some_and(|targets| {
+            targets
+                .iter()
+                .any(|target| self.may_resolve_function_inner(*target, visited))
+        })
+    }
+
+    /// Returns whether reading `symbol` as a callee is stable: it resolves to a
+    /// local function value that a later inline body in the same expression
+    /// cannot change.
+    fn callee_binding_is_stable(&self, symbol: SymbolId) -> bool {
+        if !self.may_resolve_function(symbol) {
+            return false;
+        }
+        let info = self.model.symbol(symbol);
+        info.write_count <= 1
+            || info.capturing_scopes.is_empty()
+            || !self.nested_writes.contains(&symbol)
     }
 
     fn table_entry_may_inline(&self, entry: &crate::nodes::TableEntry) -> bool {
@@ -1650,16 +2532,16 @@ impl Inliner<'_, '_, '_> {
         let Some(symbol) = self.model.resolve_identifier(identifier) else {
             return false;
         };
-        self.resolve_function(symbol).is_some()
+        self.may_resolve_function(symbol)
     }
 
     /// Returns whether reading `identifier` as a callee is stable: it resolves
-    /// to a recorded local function whose binding is never replaced.
+    /// to a local function value that a later inline body cannot replace.
     fn callee_is_inlinable(&self, identifier: &Identifier) -> bool {
         let Some(symbol) = self.model.resolve_identifier(identifier) else {
             return false;
         };
-        self.resolve_function(symbol).is_some()
+        self.callee_binding_is_stable(symbol)
     }
 
     /// Returns whether no scope between `scope` and the global scope declares an
@@ -1705,86 +2587,393 @@ impl Inliner<'_, '_, '_> {
     }
 }
 
-/// Gives every label in a body a fresh name, with its `goto`s.
-fn rename_labels(block: &mut Block, model: &SemanticModel, names: &mut NameGenerator) {
+/// Returns whether a block contains a `continue` that targets this loop.
+///
+/// Continues inside a nested loop or a nested function target another loop and
+/// do not count.
+fn block_contains_continue(block: &Block) -> bool {
+    block.iter_statements().any(statement_contains_continue)
+        || matches!(block.get_last_statement(), Some(LastStatement::Continue(_)))
+}
+
+fn statement_contains_continue(statement: &Statement) -> bool {
+    match statement {
+        Statement::Do(statement) => block_contains_continue(statement.get_block()),
+        Statement::If(statement) => {
+            statement
+                .iter_branches()
+                .any(|branch| block_contains_continue(branch.get_block()))
+                || statement
+                    .get_else_block()
+                    .is_some_and(block_contains_continue)
+        }
+        _ => false,
+    }
+}
+
+/// Returns whether a body contains a `goto` or label outside nested functions.
+///
+/// A `continue` only exists in Luau, which has no labels, but an undetermined
+/// dialect can parse both. Guarding statements after a `continue` would move
+/// labels into nested blocks, so that combination is refused.
+fn body_contains_goto_or_label(block: &Block) -> bool {
+    block
+        .iter_statements()
+        .any(statement_contains_goto_or_label)
+}
+
+fn statement_contains_goto_or_label(statement: &Statement) -> bool {
+    match statement {
+        Statement::Goto(_) | Statement::Label(_) => true,
+        Statement::Do(statement) => body_contains_goto_or_label(statement.get_block()),
+        Statement::If(statement) => {
+            statement
+                .iter_branches()
+                .any(|branch| body_contains_goto_or_label(branch.get_block()))
+                || statement
+                    .get_else_block()
+                    .is_some_and(body_contains_goto_or_label)
+        }
+        Statement::While(statement) => body_contains_goto_or_label(statement.get_block()),
+        Statement::Repeat(statement) => body_contains_goto_or_label(statement.get_block()),
+        Statement::NumericFor(statement) => body_contains_goto_or_label(statement.get_block()),
+        Statement::GenericFor(statement) => body_contains_goto_or_label(statement.get_block()),
+        _ => false,
+    }
+}
+
+/// Returns whether a repeat body declares a top-level local named `_ENV`.
+///
+/// Guarding statements after a `continue` can shrink that local's scope, which
+/// would change the environment the appended condition uses. Only a directly
+/// declared body-scope `_ENV` is affected; nested blocks already ended before
+/// the condition.
+fn body_declares_environment_local(
+    block: &Block,
+    body_scope: ScopeId,
+    model: &SemanticModel,
+) -> bool {
+    block.iter_statements().any(|statement| match statement {
+        Statement::LocalAssign(assignment) => assignment.iter_variables().any(|variable| {
+            model
+                .resolve_identifier(variable.get_identifier())
+                .is_some_and(|symbol| {
+                    model.symbol(symbol).declaring_scope == body_scope
+                        && model.symbol(symbol).name == "_ENV"
+                })
+        }),
+        Statement::LocalFunction(function) => model
+            .resolve_identifier(function.get_identifier())
+            .is_some_and(|symbol| {
+                model.symbol(symbol).declaring_scope == body_scope
+                    && model.symbol(symbol).name == "_ENV"
+            }),
+        _ => false,
+    })
+}
+
+/// Returns whether a block owns a `<close>` local whose closing point the
+/// structural `continue` lowering could move. Nested loops and functions keep
+/// their own scope and are not inspected.
+fn body_has_close_local(block: &Block) -> bool {
+    let mut found = false;
+    for statement in block.iter_statements() {
+        match statement {
+            Statement::LocalAssign(assignment) => {
+                if assignment
+                    .iter_variables()
+                    .any(|variable| variable.get_attribute() == Some("close"))
+                {
+                    found = true;
+                }
+            }
+            Statement::Do(statement) => found |= body_has_close_local(statement.get_block()),
+            Statement::If(statement) => {
+                found |= statement
+                    .iter_branches()
+                    .any(|branch| body_has_close_local(branch.get_block()));
+                if let Some(else_block) = statement.get_else_block() {
+                    found |= body_has_close_local(else_block);
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// Replaces every `continue` targeting this loop with a flag assignment and
+/// guards the statements that follow it with `if not flag then ... end`.
+fn lower_repeat_continues(block: &mut Block, flag: &str) {
+    let mut statements = block.take_statements();
+    if let Some(last) = block.take_last_statement() {
+        if matches!(last, LastStatement::Continue(_)) {
+            statements.push(continue_assignment(flag));
+        } else {
+            block.set_last_statement(last);
+        }
+    }
+    for statement in &mut statements {
+        lower_repeat_continue_statement(statement, flag);
+    }
+    block.set_statements(guard_statements(statements, flag));
+}
+
+fn lower_repeat_continue_statement(statement: &mut Statement, flag: &str) {
+    match statement {
+        Statement::Do(statement) => lower_repeat_continues(statement.mutate_block(), flag),
+        Statement::If(statement) => {
+            for branch in statement.mutate_branches() {
+                lower_repeat_continues(branch.mutate_block(), flag);
+            }
+            if let Some(else_block) = statement.mutate_else_block() {
+                lower_repeat_continues(else_block, flag);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn continue_assignment(flag: &str) -> Statement {
+    Statement::from(AssignStatement::new(
+        vec![Variable::Identifier(Identifier::new(flag.to_owned()))],
+        vec![Expression::from(true)],
+    ))
+}
+
+/// Builds the guarded statement sequence for one block. After the first
+/// statement that may continue, all following statements run only while the
+/// flag is clear.
+fn guard_statements(statements: Vec<Statement>, flag: &str) -> Vec<Statement> {
+    let mut result = Vec::with_capacity(statements.len());
+    let mut iterator = statements.into_iter();
+    while let Some(statement) = iterator.next() {
+        let may_continue = statement_may_continue(&statement, flag);
+        result.push(statement);
+        if may_continue {
+            let rest: Vec<Statement> = iterator.collect();
+            if !rest.is_empty() {
+                let guarded = guard_statements(rest, flag);
+                result.push(guard_block(guarded, flag));
+            }
+            break;
+        }
+    }
+    result
+}
+
+fn guard_block(statements: Vec<Statement>, flag: &str) -> Statement {
+    Statement::from(crate::nodes::IfStatement::new(
+        vec![crate::nodes::IfBranch::new(
+            Expression::from(UnaryExpression::new(
+                UnaryOperator::Not,
+                Expression::identifier(flag.to_owned()),
+            )),
+            Block::new(statements, None),
+        )],
+        None,
+    ))
+}
+
+fn statement_may_continue(statement: &Statement, flag: &str) -> bool {
+    match statement {
+        Statement::Assign(assignment) => assignment.iter_variables().any(|variable| {
+            matches!(variable, Variable::Identifier(identifier) if identifier.get_name() == flag)
+        }),
+        Statement::Do(statement) => block_may_continue(statement.get_block(), flag),
+        Statement::If(statement) => {
+            statement
+                .iter_branches()
+                .any(|branch| block_may_continue(branch.get_block(), flag))
+                || statement
+                    .get_else_block()
+                    .is_some_and(|block| block_may_continue(block, flag))
+        }
+        _ => false,
+    }
+}
+
+fn block_may_continue(block: &Block, flag: &str) -> bool {
+    block
+        .iter_statements()
+        .any(|statement| statement_may_continue(statement, flag))
+        || matches!(block.get_last_statement(), Some(LastStatement::Continue(_)))
+}
+
+/// Builds `if not condition then break end`.
+fn break_unless(condition: Expression) -> Statement {
+    Statement::from(crate::nodes::IfStatement::new(
+        vec![crate::nodes::IfBranch::new(
+            Expression::from(UnaryExpression::new(UnaryOperator::Not, condition)),
+            Block::new(vec![], Some(LastStatement::Break(None))),
+        )],
+        None,
+    ))
+}
+
+/// Collects the symbols declared directly in one block scope that an
+/// expression reads. These are the body locals a repeat condition can see.
+struct BodyScopedReads<'m> {
+    model: &'m SemanticModel,
+    scope: ScopeId,
+    symbols: HashSet<SymbolId>,
+}
+
+impl NodeProcessor for BodyScopedReads<'_> {
+    fn process_identifier(&mut self, identifier: &mut Identifier) {
+        if let Some(symbol) = self.model.resolve_identifier(identifier) {
+            if self.model.symbol(symbol).declaring_scope == self.scope {
+                self.symbols.insert(symbol);
+            }
+        }
+    }
+}
+
+/// Renames every identifier occurrence bound to one of `renames`.
+struct BindingRenamer<'m, 'r> {
+    model: &'m SemanticModel,
+    renames: &'r HashMap<SymbolId, String>,
+}
+
+impl NodeProcessor for BindingRenamer<'_, '_> {
+    fn process_identifier(&mut self, identifier: &mut Identifier) {
+        if let Some(symbol) = self.model.resolve_identifier(identifier) {
+            if let Some(name) = self.renames.get(&symbol) {
+                identifier.set_name(name.clone());
+            }
+        }
+    }
+}
+
+/// Gives every label in a function body a fresh name, with its `goto`s.
+///
+/// Labels and goto sites are keyed by their structural statement positions from
+/// the semantic model, so a cloned body cannot pair a goto with the wrong
+/// target. Names are checked through the model and a position that is missing
+/// or mismatched refuses the inline instead of guessing.
+fn rename_labels(block: &mut Block, model: &SemanticModel, names: &mut NameGenerator) -> bool {
+    let Ok(scope) = model.try_scope_of(block) else {
+        return false;
+    };
+    let Some(function) = model.function_scope_of(scope) else {
+        return false;
+    };
+
     let mut renames: HashMap<LabelId, String> = HashMap::new();
+    let mut labels: HashMap<StatementPosition, LabelId> = HashMap::new();
+    let mut targets: HashMap<StatementPosition, (String, LabelId)> = HashMap::new();
+    for label in model.labels_in_function(function) {
+        renames.insert(label.id, names.generate());
+        labels.insert(label.position, label.id);
+    }
+    for binding in model.goto_bindings_in_function(function) {
+        targets.insert(
+            binding.site.position,
+            (binding.site.name.clone(), binding.label),
+        );
+    }
 
-    fn collect(
-        block: &Block,
-        model: &SemanticModel,
-        renames: &mut HashMap<LabelId, String>,
-        names: &mut NameGenerator,
-    ) {
-        for statement in block.iter_statements() {
-            match statement {
-                Statement::Label(label) => {
-                    if let Some(id) = model.resolve_label(label.get_label()) {
-                        renames.entry(id).or_insert_with(|| names.generate());
+    struct Renamer<'a, 'm> {
+        model: &'m SemanticModel,
+        renames: &'a HashMap<LabelId, String>,
+        labels: &'a HashMap<StatementPosition, LabelId>,
+        targets: &'a HashMap<StatementPosition, (String, LabelId)>,
+        label_count: usize,
+        goto_count: usize,
+    }
+
+    impl Renamer<'_, '_> {
+        fn apply(&mut self, block: &mut Block) -> bool {
+            let Some(identity) = block.get_identity() else {
+                return false;
+            };
+            for (index, statement) in block.iter_mut_statements().enumerate() {
+                let position = StatementPosition {
+                    block: identity,
+                    index: index as u32,
+                };
+                match statement {
+                    Statement::Label(label) => {
+                        let Some(&id) = self.labels.get(&position) else {
+                            return false;
+                        };
+                        if self.model.label(id).name.as_str() != label.get_label_name() {
+                            return false;
+                        }
+                        let Some(name) = self.renames.get(&id) else {
+                            return false;
+                        };
+                        label.mutate_label().set_name(name.clone());
+                        self.label_count += 1;
                     }
-                }
-                Statement::Do(statement) => collect(statement.get_block(), model, renames, names),
-                Statement::While(statement) => {
-                    collect(statement.get_block(), model, renames, names)
-                }
-                Statement::Repeat(statement) => {
-                    collect(statement.get_block(), model, renames, names)
-                }
-                Statement::NumericFor(statement) => {
-                    collect(statement.get_block(), model, renames, names)
-                }
-                Statement::GenericFor(statement) => {
-                    collect(statement.get_block(), model, renames, names)
-                }
-                Statement::If(statement) => {
-                    for branch in statement.iter_branches() {
-                        collect(branch.get_block(), model, renames, names);
+                    Statement::Goto(goto) => {
+                        let Some((name, target)) = self.targets.get(&position) else {
+                            return false;
+                        };
+                        if name.as_str() != goto.get_label_name() {
+                            return false;
+                        }
+                        let Some(new_name) = self.renames.get(target) else {
+                            return false;
+                        };
+                        goto.mutate_label().set_name(new_name.clone());
+                        self.goto_count += 1;
                     }
-                    if let Some(else_block) = statement.get_else_block() {
-                        collect(else_block, model, renames, names);
+                    Statement::Do(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
                     }
+                    Statement::While(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
+                    }
+                    Statement::Repeat(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
+                    }
+                    Statement::NumericFor(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
+                    }
+                    Statement::GenericFor(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
+                    }
+                    Statement::If(statement) => {
+                        for branch in statement.mutate_branches() {
+                            if !self.apply(branch.mutate_block()) {
+                                return false;
+                            }
+                        }
+                        if let Some(else_block) = statement.mutate_else_block() {
+                            if !self.apply(else_block) {
+                                return false;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            true
         }
     }
 
-    fn apply(block: &mut Block, model: &SemanticModel, renames: &HashMap<LabelId, String>) {
-        for statement in block.iter_mut_statements() {
-            match statement {
-                Statement::Label(label) => {
-                    if let Some(id) = model.resolve_label(label.get_label()) {
-                        if let Some(name) = renames.get(&id) {
-                            label.mutate_label().set_name(name.clone());
-                        }
-                    }
-                }
-                Statement::Goto(goto) => {
-                    if let Some(id) = model.resolve_label(goto.get_label()) {
-                        if let Some(name) = renames.get(&id) {
-                            goto.mutate_label().set_name(name.clone());
-                        }
-                    }
-                }
-                Statement::Do(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::While(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::Repeat(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::NumericFor(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::GenericFor(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::If(statement) => {
-                    for branch in statement.mutate_branches() {
-                        apply(branch.mutate_block(), model, renames);
-                    }
-                    if let Some(else_block) = statement.mutate_else_block() {
-                        apply(else_block, model, renames);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    collect(block, model, &mut renames, names);
-    apply(block, model, &renames);
+    let mut renamer = Renamer {
+        model,
+        renames: &renames,
+        labels: &labels,
+        targets: &targets,
+        label_count: 0,
+        goto_count: 0,
+    };
+    renamer.apply(block)
+        && renamer.label_count == labels.len()
+        && renamer.goto_count == targets.len()
 }
 
 /// Lowers every `return` to a result assignment and a `break`.
@@ -1897,6 +3086,48 @@ fn prefix_into_expression(prefix: Prefix) -> Expression {
     }
 }
 
+fn prefix_from_expression(expression: Expression) -> Prefix {
+    match expression {
+        Expression::Call(call) => Prefix::Call(call),
+        Expression::Field(field) => Prefix::Field(field),
+        Expression::Identifier(identifier) => Prefix::Identifier(identifier),
+        Expression::Index(index) => Prefix::Index(index),
+        Expression::Parenthese(parenthese) => Prefix::Parenthese(parenthese),
+        Expression::TypeInstantiation(instantiation) => Prefix::TypeInstantiation(instantiation),
+        expression => Prefix::Parenthese(Box::new(crate::nodes::ParentheseExpression::new(
+            expression,
+        ))),
+    }
+}
+
+/// Returns whether looking up a method on `prefix` cannot run user code or
+/// raise. Only a fresh table literal has no metatable and no string/library
+/// fallback.
+fn receiver_lookup_is_inert(prefix: &Prefix) -> bool {
+    match prefix {
+        Prefix::Parenthese(parenthese) => {
+            receiver_lookup_expression_is_inert(parenthese.inner_expression())
+        }
+        Prefix::TypeInstantiation(instantiation) => {
+            receiver_lookup_is_inert(instantiation.get_prefix())
+        }
+        _ => false,
+    }
+}
+
+fn receiver_lookup_expression_is_inert(expression: &Expression) -> bool {
+    match expression {
+        Expression::Table(_) => true,
+        Expression::Parenthese(parenthese) => {
+            receiver_lookup_expression_is_inert(parenthese.inner_expression())
+        }
+        Expression::TypeCast(type_cast) => {
+            receiver_lookup_expression_is_inert(type_cast.get_expression())
+        }
+        _ => false,
+    }
+}
+
 fn callee(prefix: &Prefix) -> Option<&Identifier> {
     match prefix {
         Prefix::Identifier(identifier) => Some(identifier),
@@ -1969,7 +3200,7 @@ fn guard(done: &str) -> Statement {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::rules::test_support::{analyze, generate, parse};
+    use crate::rules::test_support::{analyze, generate, parse, parse_lua52};
 
     fn inlined_output(code: &str) -> String {
         let (mut block, model) = analyze(code);
@@ -2167,11 +3398,11 @@ mod test {
     }
 
     #[test]
-    fn keeps_an_assignment_inside_a_repeat_body() {
+    fn inlines_an_assignment_inside_a_repeat_body_that_runs_once() {
         let output = inlined_output(
             "local f\nrepeat\n    f = function()\n        return 1\n    end\nuntil true\nreturn f()",
         );
-        assert!(output.contains("f()"), "{output}");
+        assert!(!output.contains("f()"), "{output}");
     }
 
     #[test]
@@ -2413,11 +3644,12 @@ mod test {
     }
 
     #[test]
-    fn keeps_a_call_in_a_while_condition() {
+    fn inlines_a_call_in_a_while_condition() {
         let output = inlined_output(
             "local function check(x)\n    return x\nend\nwhile check(true) do\n    break\nend\nreturn 0",
         );
-        assert!(output.contains("check(true)"), "{output}");
+        assert!(!output.contains("check(true)"), "{output}");
+        assert!(output.contains("while true"), "{output}");
     }
 
     #[test]
@@ -2460,11 +3692,364 @@ mod test {
     }
 
     #[test]
-    fn keeps_an_assignment_bound_call_after_a_goto() {
+    fn inlines_an_assignment_bound_call_after_a_goto() {
         let output = inlined_output(
             "local f\nf = function()\n    return 1\nend\ngoto done\n::done::\nreturn f()",
         );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    fn inlined_dialect(code: &str, dialect: crate::Dialect) -> String {
+        let (mut block, model) = crate::Parser::default()
+            .dialect(dialect)
+            .parse_analyzed(code)
+            .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"));
+        inline_local_functions(&mut block, &model).expect("the analyzed tree has block identities");
+        generate(&block)
+    }
+
+    #[test]
+    fn inlines_a_method_argument_after_the_puc_lookup() {
+        let output = inlined_dialect(
+            "local function arg()\n    return 1\nend\nlocal obj = { m = print }\nobj:m(arg())",
+            crate::Dialect::Lua53,
+        );
+        assert!(!output.contains("m(arg())"), "{output}");
+        assert!(output.contains("obj"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_method_argument_before_the_luau_lookup() {
+        let output = inlined_dialect(
+            "local function arg()\n    return 1\nend\nlocal obj = { m = print }\nobj:m(arg())",
+            crate::Dialect::Luau,
+        );
+        assert!(!output.contains("m(arg())"), "{output}");
+        assert!(output.contains(":m"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_method_argument_with_an_unknown_lookup_order() {
+        let output = inlined_output(
+            "local function arg()\n    return 1\nend\nlocal obj = { m = print }\nobj:m(arg())",
+        );
+        assert!(output.contains("m(arg())"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_method_argument_on_a_fresh_table_in_an_unknown_dialect() {
+        let output =
+            inlined_output("local function arg()\n    return 1\nend\n({ m = print }):m(arg())");
+        assert!(!output.contains("m(arg())"), "{output}");
+    }
+
+    #[test]
+    fn inlines_when_every_reaching_definition_has_the_same_body() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function(x)\n        return x + 1\n    end\nelse\n    f = function(x)\n        return x + 1\n    end\nend\nreturn f(1)",
+        );
+        assert!(!output.contains("f(1)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_reaching_definitions_have_different_bodies() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function()\n        return 1\n    end\nelse\n    f = function()\n        return 2\n    end\nend\nreturn f()",
+        );
         assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_one_path_leaves_the_local_nil() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function()\n        return 1\n    end\nend\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_the_last_of_several_assignments() {
+        let output = inlined_output(
+            "local f\nf = function()\n    return 1\nend\nf = function()\n    return 2\nend\nreturn f()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_an_alias_that_captured_the_value_before_a_reassignment() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nlocal g = f\nf = function()\n    return 2\nend\nreturn g()",
+        );
+        assert!(!output.contains("g()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_call_after_an_assignment_in_the_same_loop_iteration() {
+        let output = inlined_output(
+            "for i = 1, 3 do\n    local f\n    f = function()\n        return i\n    end\n    print(f())\nend\nreturn 0",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_a_nested_function_can_rewrite_the_local() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nlocal function reset()\n    f = function()\n        return 2\n    end\nend\nreset()\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_a_goto_can_skip_the_assignment() {
+        let output = inlined_dialect(
+            "local f\nif flag then goto after end\nf = function()\n    return 1\nend\n::after::\nreturn f()",
+            crate::Dialect::Lua52,
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_closure_call_created_after_the_assignment() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function(x)\n        return x + 1\n    end\nelse\n    f = function(x)\n        return x + 1\n    end\nend\nlocal g = function()\n    return f(1)\nend\nreturn g()",
+        );
+        assert!(!output.contains("f(1)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_closure_call_when_a_later_write_can_run() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nlocal g = function()\n    return f()\nend\nf = function()\n    return 2\nend\nreturn g()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_closure_call_when_a_loop_can_rewrite_the_upvalue() {
+        let output = inlined_output(
+            "local f\nfor i = 1, 2 do\n    f = function()\n        return i\n    end\n    local g = function()\n        return f()\n    end\n    print(g())\nend\nreturn 0",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_while_condition_without_capturing_a_body_local() {
+        let output = inlined_output(
+            "local value = 0\nlocal function check()\n    value = value + 1\n    return value < 2\nend\nwhile check() do\n    local value = 10\n    print(value)\nend\nreturn value",
+        );
+        assert!(!output.contains("while check"), "{output}");
+        assert!(output.contains("while true"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_conditional_while_condition_operand() {
+        let output = inlined_output(
+            "local function check()\n    return true\nend\nwhile false and check() do\n    break\nend\nreturn 0",
+        );
+        assert!(output.contains("check()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_repeat_condition_with_a_body_local() {
+        let output = inlined_output(
+            "local i = 0\nlocal function check(value)\n    return value >= 2\nend\nrepeat\n    i = i + 1\n    local done = i\nuntil check(done)\nreturn i",
+        );
+        assert!(!output.contains("until check"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_luau_repeat_condition_across_continue() {
+        let output = inlined_dialect(
+            "local i = 0\nlocal function check()\n    return i >= 3\nend\nrepeat\n    i = i + 1\n    if i == 2 then continue end\n    print(i)\nuntil check()\nreturn i",
+            crate::Dialect::Luau,
+        );
+        assert!(!output.contains("until check"), "{output}");
+        assert!(!output.contains("continue"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_luau_repeat_condition_that_reads_a_local_before_continue() {
+        let output = inlined_dialect(
+            "local i = 0\nlocal function check(value)\n    return value >= 3\nend\nrepeat\n    i = i + 1\n    local value = i\n    if i == 2 then continue end\n    print(value)\nuntil check(value)\nreturn i",
+            crate::Dialect::Luau,
+        );
+        assert!(!output.contains("until check"), "{output}");
+        assert!(!output.contains("continue"), "{output}");
+        assert!(output.contains("local"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_repeat_condition_after_a_nested_block_end_label() {
+        let code = "local function check()\n    return true\nend\nrepeat\n    do\n        goto continue\n        local skipped = 1\n        ::continue::\n    end\nuntil check()\nreturn 0";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("until check"), "{output}");
+        parse_lua52(&output);
+    }
+
+    #[test]
+    fn inlines_a_repeat_condition_before_a_body_level_continue_label() {
+        let code = "local function check()\n    return true\nend\nrepeat\n    goto continue\n    ::continue::\nuntil check()\nreturn 0";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("until check"), "{output}");
+        parse_lua52(&output);
+    }
+
+    #[test]
+    fn keeps_an_unreachable_repeat_condition_after_return() {
+        let output = inlined_output(
+            "local function check()\n    return true\nend\nrepeat\n    return 1\nuntil check()",
+        );
+        assert!(output.contains("check()"), "{output}");
+    }
+
+    #[test]
+    fn inlining_between_a_goto_and_its_label_still_reparses() {
+        let code = "local function value(x)\n    return x\nend\ngoto done\nprint(value(1))\n::done::\nprint(0)\nreturn 0";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        parse_lua52(&output);
+    }
+
+    #[test]
+    fn inlining_a_reachable_call_hoists_its_result_in_a_labelled_function() {
+        let code = "local function value(x)\n    return x\nend\nlocal first = value(1)\ngoto done\nprint(first)\n::done::\nprint(first)\nreturn first";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("value(1)"), "{output}");
+        parse_lua52(&output);
+    }
+
+    #[test]
+    fn renames_a_callee_label_that_collides_with_a_caller_label() {
+        let code = "local function value()\n    goto done\n    ::done::\n    return 1\nend\n::done::\nprint(value())\nreturn 0";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("print(value())"), "{output}");
+        parse_lua52(&output);
+    }
+
+    #[test]
+    fn inlines_a_call_in_a_closure_nested_through_another_function() {
+        let output = inlined_output(
+            "local f\nf = function()\n    return 1\nend\nlocal outer = function()\n    local inner = function()\n        return f()\n    end\n    return inner()\nend\nreturn outer()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlining_a_callee_with_a_forward_goto_reanalyzes() {
+        let code = "local function pick(value)\n    if value > 0 then\n        goto positive\n    end\n    do\n        return -1\n    end\n    ::positive::\n    return 1\nend\nprint(pick(1), pick(-1))\nreturn pick(2)";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        crate::Parser::default()
+            .lua52()
+            .parse_analyzed(&output)
+            .unwrap_or_else(|error| panic!("failed to re-analyze:\\n{error}\\n{output}"));
+    }
+
+    #[test]
+    fn inlines_after_a_later_assignment_overrides_conditional_definitions() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function()\n        return 1\n    end\nelse\n    f = function()\n        return 2\n    end\nend\nf = function()\n    return 3\nend\nreturn f()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_when_a_conditional_keeps_an_identical_previous_value() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nif math.random() > 0.5 then\n    f = function()\n        return 1\n    end\nend\nreturn f()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_a_conditional_keeps_a_different_previous_value() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nif math.random() > 0.5 then\n    f = function()\n        return 2\n    end\nend\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_function_statement_assignment() {
+        let output = inlined_output("local f\nfunction f()\n    return 1\nend\nreturn f()");
+        assert!(!output.contains("return f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_multiple_function_literals_from_one_declaration() {
+        let output = inlined_output(
+            "local f, g = function()\n    return 1\nend, function()\n    return 2\nend\nreturn f(), g()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+        assert!(!output.contains("g()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_conditional_alias_that_always_names_the_same_function() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nlocal g\nif math.random() > 0.5 then\n    g = f\nelse\n    g = f\nend\nreturn g()",
+        );
+        assert!(!output.contains("g()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_after_a_backward_goto_that_keeps_the_same_assignment() {
+        let code = "local f\nlocal n = 0\n::again::\nn = n + 1\nf = function()\n    return 1\nend\nif n < 1 then\n    goto again\nend\nreturn f()";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("f()"), "{output}");
+        crate::Parser::default()
+            .lua52()
+            .parse_analyzed(&output)
+            .unwrap_or_else(|error| panic!("failed to re-analyze:\\n{error}\\n{output}"));
+    }
+
+    #[test]
+    fn keeps_a_call_when_a_backward_goto_merges_different_definitions() {
+        let code = "local f\nlocal n = 0\n::again::\nn = n + 1\nif n == 1 then\n    f = function()\n        return 1\n    end\nelse\n    f = function()\n        return 2\n    end\nend\nif n < 2 then\n    goto again\nend\nreturn f()";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_method_call_whose_receiver_is_a_call() {
+        let output = inlined_dialect(
+            "local function make()\n    return { m = print }\nend\nlocal function arg()\n    return 1\nend\nmake():m(arg())",
+            crate::Dialect::Lua53,
+        );
+        assert!(!output.contains("m(arg())"), "{output}");
+    }
+
+    #[test]
+    fn inlines_the_unconditional_while_condition_operand() {
+        let output = inlined_output(
+            "local function first()\n    return true\nend\nlocal function second()\n    return false\nend\nwhile first() and second() do\n    break\nend\nreturn 0",
+        );
+        assert!(!output.contains("while first"), "{output}");
+        assert!(output.contains("second()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_repeat_condition_calling_a_body_local_function() {
+        let output = inlined_output(
+            "local i = 0\nrepeat\n    i = i + 1\n    local function check(value)\n        return value >= 2\n    end\n    local current = i\nuntil check(current)\nreturn i",
+        );
+        assert!(!output.contains("until check"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_luau_repeat_condition_calling_a_body_local_function_across_continue() {
+        let output = inlined_dialect(
+            "local i = 0\nrepeat\n    i = i + 1\n    local function check(value)\n        return value >= 3\n    end\n    local current = i\n    if i == 2 then continue end\n    print(current)\nuntil check(current)\nreturn i",
+            crate::Dialect::Luau,
+        );
+        assert!(!output.contains("until check"), "{output}");
+        assert!(!output.contains("continue"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_repeat_condition_that_mixes_continue_and_labels() {
+        let output = inlined_output(
+            "local function check()\n    return true\nend\nrepeat\n    local x = 1\n    if x == 1 then continue end\n    goto done\n    ::done::\nuntil check()\nreturn 0",
+        );
+        assert!(output.contains("until check()"), "{output}");
     }
 
     #[test]

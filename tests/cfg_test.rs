@@ -1684,6 +1684,7 @@ fn liveness_reads_lowered_statement_shapes() {
         statement_origins: Vec::new(),
         expressions: Vec::new(),
         branch_origin: None,
+        terminator_origin: None,
         predecessors,
         successors,
         terminator: Terminator::Return(None),

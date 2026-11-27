@@ -94,6 +94,7 @@ impl ControlFlowGraph {
 
         let targets = terminator.targets(self.exit);
         self.blocks[block.index()].branch_origin = None;
+        self.blocks[block.index()].terminator_origin = None;
         self.blocks[block.index()].terminator = terminator;
 
         for target in targets {

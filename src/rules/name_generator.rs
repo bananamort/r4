@@ -67,6 +67,7 @@ impl NameGenerator {
             .map(|symbol| symbol.name.clone())
             .collect();
         reserved.extend(model.types.iter().map(|symbol| symbol.name.clone()));
+        reserved.extend(model.labels.iter().map(|label| label.name.clone()));
         reserved.extend(DEFAULT_GLOBALS.iter().map(|name| (*name).to_owned()));
         reserved.extend(ROBLOX_GLOBALS.iter().map(|name| (*name).to_owned()));
 

@@ -1,8 +1,21 @@
 use crate::diagnostic::TextSpan;
-use crate::nodes::BindingId;
+use crate::nodes::{BindingId, BlockIdentity};
 
 use super::scope::ScopeId;
 use super::symbol::TokenKey;
+
+/// The structural position of a standalone statement in the analyzed AST.
+///
+/// Label and goto sites use this position instead of source spans, so passes
+/// that reason about control flow keep working when the tree was parsed without
+/// token data.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StatementPosition {
+    /// The block that contains the statement.
+    pub block: BlockIdentity,
+    /// The index of the statement inside that block.
+    pub index: u32,
+}
 /// A compact snapshot of the lexical symbols visible at a program point.
 ///
 /// Instead of listing every visible symbol (which is `O(gotos × locals)` for a
@@ -78,6 +91,8 @@ pub struct GotoLabel {
     pub scope: ScopeId,
     /// The function (or chunk) scope containing the label.
     pub function_scope: ScopeId,
+    /// The structural position of the label statement.
+    pub position: StatementPosition,
     /// Whether the label is the last non-void statement of its block. Such labels
     /// are considered outside the scope of the local variables declared in the
     /// block (Lua 5.2+ rule), which allows `goto continue` idioms.
@@ -107,6 +122,8 @@ pub struct GotoSite {
     pub scope: ScopeId,
     /// The function (or chunk) scope containing the goto.
     pub function_scope: ScopeId,
+    /// The structural position of the goto statement.
+    pub position: StatementPosition,
     /// The source position of the goto label name, when token data is available.
     pub token: Option<TokenKey>,
     /// The byte range of the goto label name, when token data is available.
