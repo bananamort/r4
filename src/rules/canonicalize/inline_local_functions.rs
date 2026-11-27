@@ -1248,8 +1248,7 @@ impl Inliner<'_, '_, '_> {
         if matches!(
             body.get_last_statement(),
             Some(LastStatement::Return(_)) | Some(LastStatement::Break(_))
-        ) || self.trailing_label_is_targeted(&body)
-        {
+        ) {
             self.repeat_fallback(
                 repeat,
                 &mut body,
@@ -1327,30 +1326,6 @@ impl Inliner<'_, '_, '_> {
         repeat.mutate_block().clone_from(body);
     }
 
-    /// Returns whether a trailing label of `body` is the target of a goto.
-    ///
-    /// Such a label relies on the block-end relaxation: appending statements
-    /// after it would put the label inside the scope of earlier locals and
-    /// invalidate the jump in the generated code.
-    fn trailing_label_is_targeted(&self, body: &Block) -> bool {
-        let statements: Vec<&Statement> = body.iter_statements().collect();
-        let trailing: Vec<LabelId> = statements
-            .iter()
-            .rev()
-            .take_while(|statement| matches!(statement, Statement::Label(_)))
-            .filter_map(|statement| match statement {
-                Statement::Label(label) => self.model.resolve_label(label.get_label()),
-                _ => None,
-            })
-            .collect();
-        trailing.iter().any(|label| {
-            self.model
-                .goto_bindings
-                .iter()
-                .any(|binding| binding.label == *label)
-        })
-    }
-
     /// Moves the body locals read by a repeat condition to the top of the loop
     /// body under fresh names and renames every bound reference. Returns false
     /// when a declaration cannot be moved safely.
@@ -1411,9 +1386,9 @@ impl Inliner<'_, '_, '_> {
                             break;
                         }
                         hoisted_symbols.insert(symbol);
-                        if !renames.contains_key(&symbol) {
-                            renames.insert(symbol, self.names.generate());
-                        }
+                        renames
+                            .entry(symbol)
+                            .or_insert_with(|| self.names.generate());
                     }
                     if !safe {
                         break;
@@ -3747,10 +3722,18 @@ mod test {
     }
 
     #[test]
-    fn keeps_a_repeat_condition_after_a_targeted_block_end_label() {
-        let code = "local function check()\n    return true\nend\nrepeat\n    goto continue\n    local skipped = 1\n    ::continue::\nuntil check()\nreturn 0";
+    fn inlines_a_repeat_condition_after_a_nested_block_end_label() {
+        let code = "local function check()\n    return true\nend\nrepeat\n    do\n        goto continue\n        local skipped = 1\n        ::continue::\n    end\nuntil check()\nreturn 0";
         let output = inlined_dialect(code, crate::Dialect::Lua52);
-        assert!(output.contains("until check()"), "{output}");
+        assert!(!output.contains("until check"), "{output}");
+        parse_lua52(&output);
+    }
+
+    #[test]
+    fn inlines_a_repeat_condition_before_a_body_level_continue_label() {
+        let code = "local function check()\n    return true\nend\nrepeat\n    goto continue\n    ::continue::\nuntil check()\nreturn 0";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("until check"), "{output}");
         parse_lua52(&output);
     }
 
@@ -3763,16 +3746,25 @@ mod test {
     }
 
     #[test]
-    fn inlining_after_a_goto_hoists_the_result_local() {
+    fn inlining_between_a_goto_and_its_label_still_reparses() {
         let code = "local function value(x)\n    return x\nend\ngoto done\nprint(value(1))\n::done::\nprint(0)\nreturn 0";
         let output = inlined_dialect(code, crate::Dialect::Lua52);
         parse_lua52(&output);
     }
 
     #[test]
-    fn renames_a_callee_label_that_collides_with_a_caller_label() {
-        let code = "local function value()\n    goto done\n    ::done::\n    return 1\nend\n::done::\ngoto finish\nprint(value())\n::finish::\nreturn 0";
+    fn inlining_a_reachable_call_hoists_its_result_in_a_labelled_function() {
+        let code = "local function value(x)\n    return x\nend\nlocal first = value(1)\ngoto done\nprint(first)\n::done::\nprint(first)\nreturn first";
         let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("value(1)"), "{output}");
+        parse_lua52(&output);
+    }
+
+    #[test]
+    fn renames_a_callee_label_that_collides_with_a_caller_label() {
+        let code = "local function value()\n    goto done\n    ::done::\n    return 1\nend\n::done::\nprint(value())\nreturn 0";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("print(value())"), "{output}");
         parse_lua52(&output);
     }
 

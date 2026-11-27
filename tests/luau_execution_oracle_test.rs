@@ -1618,17 +1618,22 @@ return 0
 "#,
     ),
     (
-        "a repeat condition after a targeted block-end label stays in place",
+        "a repeat condition after a nested block-end label is inlined",
         r#"
 local function done()
     return true
 end
+local count = 0
 repeat
-    goto continue
-    local skipped = 1
-    ::continue::
+    count = count + 1
+    do
+        goto continue
+        local skipped = 1
+        ::continue::
+    end
 until done()
-return 0
+print(count)
+return count
 "#,
     ),
 ];

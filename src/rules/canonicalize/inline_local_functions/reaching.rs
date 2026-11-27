@@ -28,6 +28,9 @@ use super::FunctionKey;
 /// Identifies a definition inside one function region.
 pub(crate) type DefinitionId = usize;
 
+/// The reaching sets immediately before each statement of each block.
+type StatementDefinitions = Vec<Vec<Vec<DefinitionId>>>;
+
 /// The value a definition stores, as far as the inliner can prove.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DefinitionValue {
@@ -125,7 +128,7 @@ pub(crate) struct FunctionRegion {
     pub definitions: Vec<Definition>,
     /// The reaching set immediately before each CFG statement, indexed by
     /// block and then by statement position inside that block.
-    statement_definitions: Vec<Vec<Vec<DefinitionId>>>,
+    statement_definitions: StatementDefinitions,
     /// The reaching set after the last statement of each block, before the
     /// terminator.
     terminator_definitions: Vec<Vec<DefinitionId>>,
@@ -345,9 +348,9 @@ fn ids_from_bits(bits: &BitVec) -> Vec<DefinitionId> {
 fn collect_definitions(
     cfg: &ControlFlowGraph,
     model: &SemanticModel,
-) -> Result<(Vec<Definition>, Vec<Vec<Vec<DefinitionId>>>), ReachingError> {
+) -> Result<(Vec<Definition>, StatementDefinitions), ReachingError> {
     let mut definitions = Vec::new();
-    let mut blocks: Vec<Vec<Vec<DefinitionId>>> = Vec::with_capacity(cfg.blocks.len());
+    let mut blocks: StatementDefinitions = Vec::with_capacity(cfg.blocks.len());
 
     for block in &cfg.blocks {
         let mut per_statement = Vec::with_capacity(block.statements.len());
