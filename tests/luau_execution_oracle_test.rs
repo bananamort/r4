@@ -973,7 +973,7 @@ return result
 "#,
     ),
     (
-        "an inlined operand keeps its place",
+        "a binary operand is not reordered",
         r#"
 local value = 1
 local function set()
@@ -981,6 +981,34 @@ local function set()
     return 0
 end
 print(value + set())
+return value
+"#,
+    ),
+    (
+        "an inlined assignment value keeps its place",
+        r#"
+local value = 1
+local function set()
+    value = 5
+    return 0
+end
+local first, second = value, set()
+print(first, second)
+return value
+"#,
+    ),
+    (
+        "an inlined return value keeps its place",
+        r#"
+local value = 1
+local function set()
+    value = 5
+    return 0
+end
+local function pair()
+    return value, set()
+end
+print(pair())
 return value
 "#,
     ),

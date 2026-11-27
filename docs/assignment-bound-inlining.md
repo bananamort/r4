@@ -79,6 +79,8 @@ Conservative design limits:
 
 - calls in `while`/`repeat` conditions (evaluated once per iteration);
 - calls in method arguments (the method lookup must stay in place);
+- calls in a binary operand after a read, or an index key after the table
+  (Luau may read the local's register after the other operand);
 - table-entry sequences;
 - functions containing `goto`/labels (needs label-scope analysis);
 - mutable alias chains;

@@ -29,16 +29,16 @@
 //!
 //! The preamble runs at the start of the statement, so a call is inlined only
 //! when everything evaluated before it in that statement is inert or can be
-//! stored first. When a later expression can be inlined, earlier argument
-//! values, return values, binary operands, and index keys are stored in fresh
-//! locals in their original order, and the callee is stored before an inlined
-//! argument. An inlined call's own arguments are rewritten first, so nested
-//! calls are inlined too. A short-circuit operand, an `if` expression branch,
-//! an `elseif`
-//! condition, or a `while`/`repeat` condition cannot be reordered this way and
-//! stops further inlining. A function that contains a `goto` or label refuses
-//! inlining entirely, because the preamble declares locals that a forward jump
-//! could enter.
+//! stored first. When a later value in a list can be inlined, earlier argument
+//! values and return values are stored in fresh locals in their original order,
+//! and a call's callee is stored before an inlined argument. An inlined call's
+//! own arguments are rewritten first, so nested calls are inlined too.
+//!
+//! A short-circuit operand, an `if` expression branch, an `elseif` condition, a
+//! `while`/`repeat` condition, a binary operand after a read, and an index key
+//! after the table cannot be reordered this way and stop further inlining. A
+//! function that contains a `goto` or label refuses inlining entirely, because
+//! the preamble declares locals that a forward jump could enter.
 //!
 //! The `repeat ... until true` runs the body once and gives every `return` a
 //! `break` to leave through; the `if __done then break end` after each loop
@@ -1042,14 +1042,8 @@ impl Inliner<'_, '_, '_> {
             Expression::Binary(binary) => {
                 let conditional =
                     matches!(binary.operator(), BinaryOperator::And | BinaryOperator::Or);
-                let right_may_inline = self.expression_may_inline(binary.right());
-                let clean = self.clean;
                 let mut left = binary.left().clone();
                 self.rewrite_single(&mut left, preambles);
-                if !conditional && right_may_inline && clean && self.position_allows_insertion() {
-                    left = self.materialize(left, preambles);
-                    self.clean = true;
-                }
                 *binary.mutate_left() = left;
                 if conditional {
                     // The right operand only runs when the left one does not
@@ -1071,14 +1065,8 @@ impl Inliner<'_, '_, '_> {
                 *parenthese.mutate_inner_expression() = inner;
             }
             Expression::Index(index) => {
-                let key_may_inline = self.expression_may_inline(index.get_index());
-                let clean = self.clean;
                 let mut prefix = index.get_prefix().clone();
                 self.rewrite_prefix(&mut prefix, preambles);
-                if key_may_inline && clean && self.position_allows_insertion() {
-                    prefix = self.materialize_prefix(prefix, preambles);
-                    self.clean = true;
-                }
                 *index.mutate_prefix() = prefix;
                 let mut key = index.get_index().clone();
                 self.rewrite_single(&mut key, preambles);
@@ -2135,11 +2123,11 @@ mod test {
     }
 
     #[test]
-    fn inlines_a_call_in_a_binary_operand() {
+    fn keeps_a_call_after_a_read_operand() {
         let output = inlined_output(
             "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first + value(2)",
         );
-        assert!(!output.contains("value(2)"), "{output}");
+        assert!(output.contains("value(2)"), "{output}");
     }
 
     #[test]
@@ -2152,11 +2140,11 @@ mod test {
     }
 
     #[test]
-    fn inlines_a_call_in_an_index_key() {
+    fn keeps_a_call_in_an_index_key_after_the_table() {
         let output = inlined_output(
             "local function value(x)\n    return x\nend\nlocal t = { 1, 2 }\nreturn t[value(2)]",
         );
-        assert!(!output.contains("value(2)"), "{output}");
+        assert!(output.contains("value(2)"), "{output}");
     }
 
     #[test]
@@ -2283,6 +2271,7 @@ mod test {
             "local function add(a, b)\n    return a + b\nend\nlocal first = 1\nprint(first, add(1, 2))\nreturn 0",
             "local function add(a, b)\n    return a + b\nend\nlocal first = 1\nreturn first, add(1, 2)",
             "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first + value(2)",
+            "local function value(x)\n    return x\nend\nlocal t = { 1, 2 }\nreturn t[value(2)]",
             "local function value(x)\n    return x\nend\nlocal function wrap(x)\n    return x\nend\nreturn wrap(value(2))",
             "local value = 0\nlocal function set(x)\n    value = x\nend\nset(5)\nreturn value",
             "local value = 0\nlocal function set()\n    value = 5\nend\ndo\n    local value = 100\n    set()\nend\nreturn value",
