@@ -160,6 +160,7 @@ pub fn inline_local_functions(
         functions: &collector.functions,
         parents: &collector.parents,
         declarations: &collector.declarations,
+        aliases: &collector.aliases,
         labelled: &collector.labelled,
         block_functions: &collector.block_functions,
         unconditional: &collector.unconditional,
@@ -509,6 +510,8 @@ struct FunctionCollector<'m> {
     functions: HashMap<SymbolId, InlinableFunction>,
     /// The statement that evaluates each local's initializer.
     declarations: HashMap<SymbolId, StatementOrigin>,
+    /// A local whose only non-declaration write is `alias = target`.
+    aliases: HashMap<SymbolId, (SymbolId, StatementOrigin)>,
     /// The statement that contains each AST block.
     parents: HashMap<BlockIdentity, (BlockIdentity, u32)>,
     /// Function scopes whose bodies contain a `goto` or label.
@@ -526,6 +529,7 @@ impl<'m> FunctionCollector<'m> {
             model,
             functions: HashMap::new(),
             declarations: HashMap::new(),
+            aliases: HashMap::new(),
             parents: HashMap::new(),
             labelled: HashSet::new(),
             block_functions: HashMap::new(),
@@ -619,11 +623,26 @@ impl<'m> FunctionCollector<'m> {
                 else {
                     return;
                 };
-                let Some(Expression::Function(function)) = assignment.iter_values().next() else {
-                    return;
-                };
-                let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
-                self.record(identifier, function.get_block(), &parameters, Some(origin));
+                match assignment.iter_values().next() {
+                    Some(Expression::Function(function)) => {
+                        let parameters: Vec<&TypedIdentifier> =
+                            function.iter_parameters().collect();
+                        self.record(identifier, function.get_block(), &parameters, Some(origin));
+                    }
+                    Some(Expression::Identifier(target)) => {
+                        let Some(symbol) = self.model.resolve_identifier(identifier) else {
+                            return;
+                        };
+                        let Some(target) = self.model.resolve_identifier(target) else {
+                            return;
+                        };
+                        let info = self.model.symbol(symbol);
+                        if info.kind == SymbolKind::Local && info.write_count == 2 {
+                            self.aliases.insert(symbol, (target, origin));
+                        }
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -715,6 +734,8 @@ struct Inliner<'m, 'n, 'i> {
     parents: &'m HashMap<BlockIdentity, (BlockIdentity, u32)>,
     /// The statement that evaluates each local's initializer.
     declarations: &'m HashMap<SymbolId, StatementOrigin>,
+    /// A local whose only non-declaration write is `alias = target`.
+    aliases: &'m HashMap<SymbolId, (SymbolId, StatementOrigin)>,
     /// Function scopes whose bodies contain a `goto` or label.
     labelled: &'m HashSet<ScopeId>,
     /// The function scope that owns each block.
@@ -1224,16 +1245,18 @@ impl Inliner<'_, '_, '_> {
             return None;
         }
 
-        if let Some(assignment) = function.assignment {
-            if !self.assignment_reaches(assignment, position) {
+        // Each hop captures the value it reads, so the hop must run after that
+        // value is bound and before the position that reads the hop.
+        let mut reader = position;
+        for hop in hops {
+            if !self.assignment_reaches(hop, reader) {
                 return None;
             }
-            // An alias captures the function where the alias is declared, so
-            // the assignment must run before every hop on the chain as well.
-            for hop in hops {
-                if !self.assignment_reaches(assignment, hop) {
-                    return None;
-                }
+            reader = hop;
+        }
+        if let Some(assignment) = function.assignment {
+            if !self.assignment_reaches(assignment, reader) {
+                return None;
             }
         }
 
@@ -1323,14 +1346,19 @@ impl Inliner<'_, '_, '_> {
             if self.functions.contains_key(&symbol) {
                 return Some((symbol, hops));
             }
-            if !self.model.is_immutable(symbol) {
+            let next = if let Some((target, position)) = self.aliases.get(&symbol) {
+                hops.push(*position);
+                *target
+            } else if self.model.is_immutable(symbol) {
+                let next = self.model.symbol(symbol).initializer?;
+                hops.push(*self.declarations.get(&symbol)?);
+                next
+            } else {
                 return None;
-            }
-            let next = self.model.symbol(symbol).initializer?;
+            };
             if next == symbol {
                 return None;
             }
-            hops.push(*self.declarations.get(&symbol)?);
             symbol = next;
         }
         None
@@ -2019,6 +2047,38 @@ mod test {
     }
 
     #[test]
+    fn inlines_through_an_assigned_alias() {
+        let output = inlined_output(
+            "local function add(a, b)\n    return a + b\nend\nlocal sum\nsum = add\nreturn sum(1, 2)",
+        );
+        assert!(!output.contains("sum(1, 2)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_an_assigned_alias_under_a_conditional() {
+        let output = inlined_output(
+            "local function add(a, b)\n    return a + b\nend\nlocal sum\nif true then\n    sum = add\nend\nreturn sum(1, 2)",
+        );
+        assert!(output.contains("sum(1, 2)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_an_assigned_alias_read_before_the_assignment() {
+        let output = inlined_output(
+            "local function add(a, b)\n    return a + b\nend\nlocal sum\nlocal function call()\n    return sum(1, 2)\nend\nsum = add\nreturn call()",
+        );
+        assert!(output.contains("sum(1, 2)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_an_alias_chain_in_the_wrong_order() {
+        let output = inlined_output(
+            "local function add(a, b)\n    return a + b\nend\nlocal first\nlocal second\nfirst = second\nsecond = add\nreturn first(1, 2)",
+        );
+        assert!(output.contains("first(1, 2)"), "{output}");
+    }
+
+    #[test]
     fn keeps_an_alias_declared_before_the_assignment() {
         let output =
             inlined_output("local f\nlocal g = f\nf = function()\n    return 1\nend\nreturn g()");
@@ -2273,6 +2333,8 @@ mod test {
             "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first + value(2)",
             "local function value(x)\n    return x\nend\nlocal t = { 1, 2 }\nreturn t[value(2)]",
             "local function value(x)\n    return x\nend\nlocal function wrap(x)\n    return x\nend\nreturn wrap(value(2))",
+            "local function add(a, b)\n    return a + b\nend\nlocal sum\nsum = add\nreturn sum(1, 2)",
+            "local function add(a, b)\n    return a + b\nend\nlocal first\nlocal second\nfirst = second\nsecond = add\nreturn first(1, 2)",
             "local value = 0\nlocal function set(x)\n    value = x\nend\nset(5)\nreturn value",
             "local value = 0\nlocal function set()\n    value = 5\nend\ndo\n    local value = 100\n    set()\nend\nreturn value",
         ] {

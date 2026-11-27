@@ -884,6 +884,18 @@ return result
 "#,
     ),
     (
+        "assigned local alias is inlined",
+        r#"
+local function add(a, b)
+    return a + b
+end
+local sum
+sum = add
+print(sum(1, 2))
+return sum(3, 4)
+"#,
+    ),
+    (
         "assignment-bound helper alias declared after the assignment",
         r#"
 local f

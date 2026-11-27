@@ -36,9 +36,10 @@ A symbol bound this way is accepted only with exactly two writes: its
 declaration and the one function assignment. A second write could replace the
 function before the call, so it disables the inline.
 
-Immutable aliases (`local g = f`) are followed only when the assignment dominates
-the alias's declaration as well, because the alias captures the value where it is
-declared.
+Aliases are followed when they are immutable (`local g = f`) or when their only
+non-declaration write assigns the alias (`local g; g = f`). Each capture must
+run before the value it reads: the function's assignment dominates every capture
+on the chain, and each capture dominates the next one and the call.
 
 ## Goto and labels
 
@@ -83,7 +84,6 @@ Conservative design limits:
   (Luau may read the local's register after the other operand);
 - table-entry sequences;
 - functions containing `goto`/labels (needs label-scope analysis);
-- mutable alias chains;
 - multiple or conditional assignments to the same local (needs
   reaching-definition matching).
 
