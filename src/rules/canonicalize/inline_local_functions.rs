@@ -1169,6 +1169,13 @@ impl Inliner<'_, '_, '_> {
             if !self.upvalue_is_reachable(*upvalue, scope) {
                 return None;
             }
+            // A global access resolves through `_ENV`; if the call site
+            // shadows it, the inlined access would use a different environment.
+            if self.model.symbol(*upvalue).kind == SymbolKind::Global
+                && !self.environment_is_reachable(scope)
+            {
+                return None;
+            }
         }
 
         let results: Vec<String> = (0..function.arity).map(|_| self.names.generate()).collect();
@@ -1315,6 +1322,26 @@ impl Inliner<'_, '_, '_> {
             return false;
         };
         self.resolve_function(symbol).is_some()
+    }
+
+    /// Returns whether no scope between `scope` and the global scope declares an
+    /// explicit `_ENV`.
+    fn environment_is_reachable(&self, mut scope: ScopeId) -> bool {
+        loop {
+            if self
+                .model
+                .scope(scope)
+                .symbols
+                .iter()
+                .any(|symbol| self.model.symbol(*symbol).name == "_ENV")
+            {
+                return false;
+            }
+            let Some(parent) = self.model.scope(scope).parent else {
+                return true;
+            };
+            scope = parent;
+        }
     }
 
     fn upvalue_is_reachable(&self, symbol: SymbolId, scope: ScopeId) -> bool {
@@ -1858,6 +1885,14 @@ mod test {
             "local box = { value = 1 }\nlocal function read()\n    return box.value\nend\ndo\n    local box = { value = 2 }\n    return read()\nend",
         );
         assert!(output.contains("read()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_global_read_when_the_environment_is_shadowed() {
+        let output = inlined_output(
+            "local function show()\n    return tostring(1)\nend\ndo\n    local _ENV = {}\n    return show()\nend",
+        );
+        assert!(output.contains("show()"), "{output}");
     }
 
     #[test]
