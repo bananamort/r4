@@ -1065,12 +1065,6 @@ impl Inliner<'_, '_, '_> {
             });
             return;
         };
-        if !self.block_functions.contains_key(&identity) {
-            self.error = Some(InlineError::Invariant {
-                detail: "a rewritten block has no function scope mapping",
-            });
-            return;
-        }
         let statements = block.take_statements();
         let count = statements.len();
         let mut rewritten = Vec::with_capacity(count);
@@ -1376,7 +1370,7 @@ impl Inliner<'_, '_, '_> {
         // remove the label's block-end scope relaxation for a goto that relies
         // on it. Refuse those shapes rather than emit invalid or unreachable
         // code.
-        let trailing_targeted = match self.trailing_label_is_targeted(&body) {
+        let trailing_targeted = match trailing_label_is_targeted(&body, self.model) {
             Ok(targeted) => targeted,
             Err(error) => {
                 self.error = Some(error);
@@ -1510,41 +1504,6 @@ impl Inliner<'_, '_, '_> {
         );
         *repeat.mutate_condition() = fallback;
         repeat.mutate_block().clone_from(body);
-    }
-
-    /// Returns whether a label at the end of the repeat body is the target of
-    /// a goto. Appending the condition there would remove the label's
-    /// block-end scope relaxation in dialects that apply it, so such a body is
-    /// left alone.
-    fn trailing_label_is_targeted(&self, body: &Block) -> Result<bool, InlineError> {
-        let identity = body.get_identity().ok_or(InlineError::Invariant {
-            detail: "a repeat body has no structural identity",
-        })?;
-        let statements: Vec<&Statement> = body.iter_statements().collect();
-        for index in (0..statements.len()).rev() {
-            let Statement::Label(label) = statements[index] else {
-                return Ok(false);
-            };
-            let Some(id) = self.model.resolve_label(label.get_label()) else {
-                return Err(InlineError::LabelMismatch {
-                    kind: "label",
-                    name: label.get_label_name().to_owned(),
-                    position: StatementPosition {
-                        block: identity,
-                        index: index as u32,
-                    },
-                });
-            };
-            if self
-                .model
-                .goto_bindings
-                .iter()
-                .any(|binding| binding.label == id)
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     /// Moves the body locals read by a repeat condition to the top of the loop
@@ -3197,6 +3156,39 @@ fn unresolved_identifier(identifier: &Identifier) -> InlineError {
     })
 }
 
+/// Returns whether a label at the end of a repeat body is the target of a goto.
+/// Appending the condition there would remove the label's block-end scope
+/// relaxation in dialects that apply it, so such a body is left alone.
+fn trailing_label_is_targeted(body: &Block, model: &SemanticModel) -> Result<bool, InlineError> {
+    let identity = body.get_identity().ok_or(InlineError::Invariant {
+        detail: "a repeat body has no structural identity",
+    })?;
+    let statements: Vec<&Statement> = body.iter_statements().collect();
+    for index in (0..statements.len()).rev() {
+        let Statement::Label(label) = statements[index] else {
+            return Ok(false);
+        };
+        let Some(id) = model.resolve_label(label.get_label()) else {
+            return Err(InlineError::LabelMismatch {
+                kind: "label",
+                name: label.get_label_name().to_owned(),
+                position: StatementPosition {
+                    block: identity,
+                    index: index as u32,
+                },
+            });
+        };
+        if model
+            .goto_bindings
+            .iter()
+            .any(|binding| binding.label == id)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Renames every identifier occurrence bound to one of `renames`.
 struct BindingRenamer<'m, 'r> {
     model: &'m SemanticModel,
@@ -4569,6 +4561,37 @@ mod test {
             matches!(error, InlineError::LabelMismatch { kind: "label", .. }),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn trailing_label_detection_is_typed() {
+        let (mut block, model) = analyze("repeat\n    goto done\n    ::done::\nuntil true");
+        let mut statements = block.take_statements();
+        let Statement::Repeat(repeat) = &mut statements[0] else {
+            panic!("expected a repeat");
+        };
+        assert!(trailing_label_is_targeted(repeat.get_block(), &model)
+            .expect("the analyzed body has a target"));
+
+        let mut invalid = repeat.get_block().clone();
+        let mut body_statements = invalid.take_statements();
+        let Statement::Label(label) = &mut body_statements[1] else {
+            panic!("expected the trailing label");
+        };
+        label.mutate_label().set_name("other".to_owned());
+        invalid.set_statements(body_statements);
+        let error = trailing_label_is_targeted(&invalid, &model)
+            .expect_err("a renamed label must not resolve");
+        assert!(
+            matches!(error, InlineError::LabelMismatch { kind: "label", .. }),
+            "{error:?}"
+        );
+
+        let unidentified = Block::new(vec![], None);
+        assert!(matches!(
+            trailing_label_is_targeted(&unidentified, &model),
+            Err(InlineError::Invariant { .. })
+        ));
     }
 
     #[test]
