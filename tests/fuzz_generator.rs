@@ -127,14 +127,26 @@ macro_rules! fuzz_test_block {
     };
 }
 
-fn run_for_minimum_time<F: Fn()>(func: F) {
+fn run_for_minimum_time<F>(func: F)
+where
+    F: Fn() + Send + 'static,
+{
     let millis = option_env!("FUZZ_DURATION_MILLISECONDS")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(1500);
 
     let duration = Duration::from_millis(millis);
 
-    utils::run_for_minimum_time(duration, func);
+    // The fuzzer builds and compares recursively shaped trees whose depth grows
+    // with the block budget. A dedicated stack keeps the large-block cases from
+    // overflowing the test harness's smaller default stack.
+    std::thread::Builder::new()
+        .name("fuzz-generator".to_owned())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || utils::run_for_minimum_time(duration, func))
+        .expect("the fuzz thread must start")
+        .join()
+        .expect("the fuzz thread must not panic");
 }
 
 fn fuzz_three_terms_binary_expressions<T: LuaGenerator + Clone>(generator: T) {
