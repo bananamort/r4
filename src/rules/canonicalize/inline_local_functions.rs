@@ -4430,8 +4430,9 @@ mod test {
         let output = inlined_output(
             "local f = function()\n    return 1\nend\nif true then\nend\nf = function()\n    return 2\nend\nif f() == 2 then\n    print(\"two\")\nelse\n    print(\"one\")\nend\nreturn 0",
         );
-        assert!(output.contains("if 2 == 2"), "{output}");
-        assert!(!output.contains("if 1 == 2"), "{output}");
+        assert!(output.contains("a = 2"), "{output}");
+        assert!(!output.contains("a = 1"), "{output}");
+        assert!(output.contains("if a == 2"), "{output}");
     }
 
     #[test]
@@ -4439,7 +4440,8 @@ mod test {
         let output = inlined_output(
             "local f = function()\n    return 2\nend\nif f() == 2 then\n    print(\"yes\")\nend\nreturn 0",
         );
-        assert!(output.contains("if 2 == 2"), "{output}");
+        assert!(output.contains("a = 2"), "{output}");
+        assert!(output.contains("if a == 2"), "{output}");
         assert!(!output.contains("if f() == 2"), "{output}");
     }
 

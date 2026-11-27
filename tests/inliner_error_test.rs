@@ -9,7 +9,7 @@ fn a_foreign_semantic_model_is_a_typed_scope_error() {
     let block = Parser::default()
         .parse("local function f()\n    return 1\nend\nreturn f()")
         .expect("parse");
-    let model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
+    let _model = SemanticAnalyzer::new().analyze(&block).expect("analyze");
 
     let other = Parser::default()
         .parse("return 0")
