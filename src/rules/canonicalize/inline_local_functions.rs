@@ -27,6 +27,15 @@
 //! exactly as they resolved to the parameters, and the body's own locals stay
 //! scoped to the inline.
 //!
+//! The preamble runs at the start of the statement, so a call is inlined only
+//! when nothing observable was evaluated before it in that statement. Literals
+//! and earlier inlined calls keep that property; a read, a field or index
+//! access, a non-inlined evaluation, a short-circuit operand, an `if`
+//! expression branch, an `elseif` condition, or a `while`/`repeat` condition
+//! stops further inlining for the statement. A function that contains a `goto`
+//! or label refuses inlining entirely, because the preamble declares locals
+//! that a forward jump could enter.
+//!
 //! The `repeat ... until true` runs the body once and gives every `return` a
 //! `break` to leave through; the `if __done then break end` after each loop
 //! carries the exit out of any loop the `return` sits in, and the `__done` flag

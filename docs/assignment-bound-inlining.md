@@ -47,6 +47,20 @@ backward jump can reach a call before the assignment (the name would be `nil`
 there and the call would raise instead of running the body). Function bodies
 nested in expressions are walked too, so their own gotos are accounted for.
 
+## Evaluation order
+
+The preamble runs at the start of the call's statement, so inlining also
+requires that nothing observable was evaluated before the call. The rewriter
+tracks that per statement: literals and earlier inlined calls keep the statement
+clean, while reads, field and index accesses, non-inlined evaluations,
+short-circuit operands, `if` expression branches, `elseif` conditions, and
+`while`/`repeat` conditions stop further hoisting. A function containing a
+`goto` or label refuses inlining because the preamble's locals would make a
+forward jump enter their scope.
+
+A body that reads a global also refuses when the call site shadows `_ENV`,
+because the inlined access would resolve through the caller's environment.
+
 ## Remaining refusals
 
 After this shape, the inliner refuses only:
