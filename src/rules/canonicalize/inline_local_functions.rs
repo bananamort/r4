@@ -1098,16 +1098,14 @@ impl Inliner<'_, '_, '_> {
             block.set_last_statement(last);
         }
 
-        if let Some(scope) = scope {
-            if self.model.scope(scope).kind.is_function_boundary() {
-                if let Some(declarations) = self.hoisted.remove(&scope) {
-                    let mut statements = block.take_statements();
-                    statements.insert(
-                        0,
-                        Statement::from(VariableAssignment::new(declarations, Vec::new())),
-                    );
-                    block.set_statements(statements);
-                }
+        if self.model.scope(scope).kind.is_function_boundary() {
+            if let Some(declarations) = self.hoisted.remove(&scope) {
+                let mut statements = block.take_statements();
+                statements.insert(
+                    0,
+                    Statement::from(VariableAssignment::new(declarations, Vec::new())),
+                );
+                block.set_statements(statements);
             }
         }
 
@@ -1454,8 +1452,12 @@ impl Inliner<'_, '_, '_> {
         body_scope: ScopeId,
     ) {
         *self.inlined -= condition_inlined;
-        let (fallback, fallback_preambles) =
-            self.rewrite_condition(original_condition, ConditionKind::Repeat, body_scope, false);
+        let (fallback, fallback_preambles) = self.rewrite_condition(
+            original_condition,
+            ConditionKind::Repeat,
+            Some(body_scope),
+            false,
+        );
         if self.error.is_some() {
             return;
         }
