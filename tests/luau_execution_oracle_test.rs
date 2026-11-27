@@ -997,6 +997,21 @@ return value
 "#,
     ),
     (
+        "nested argument calls keep their order",
+        r#"
+local calls = 0
+local function bump()
+    calls = calls + 1
+    return calls
+end
+local function wrap(x)
+    return x
+end
+print(wrap(bump()))
+return calls
+"#,
+    ),
+    (
         "an inlined body is not hoisted out of a short-circuit",
         r#"
 local calls = 0

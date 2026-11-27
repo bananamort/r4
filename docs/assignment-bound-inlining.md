@@ -53,8 +53,9 @@ The preamble runs at the start of the call's statement, so inlining also
 requires that everything evaluated before the call is inert or stored first.
 When a later expression can be inlined, earlier argument values, return values,
 binary operands, and index keys are stored in fresh locals in their original
-order, and a call's callee is stored before an inlined argument. This keeps
-`print(value, set(5))` and `value + set()` correct while still inlining.
+order, and a call's callee is stored before an inlined argument. An inlined
+call's own arguments are rewritten first, so nested calls are inlined too. This
+keeps `print(value, set(5))` and `value + set()` correct while still inlining.
 
 Short-circuit operands, `if` expression branches, `elseif` conditions, and
 `while`/`repeat` conditions cannot be reordered this way and stop further
@@ -78,7 +79,6 @@ Conservative design limits:
 
 - calls in `while`/`repeat` conditions (evaluated once per iteration);
 - calls in method arguments (the method lookup must stay in place);
-- calls nested in the arguments of an inlined call;
 - table-entry sequences;
 - functions containing `goto`/labels (needs label-scope analysis);
 - mutable alias chains;

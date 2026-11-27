@@ -32,7 +32,9 @@
 //! stored first. When a later expression can be inlined, earlier argument
 //! values, return values, binary operands, and index keys are stored in fresh
 //! locals in their original order, and the callee is stored before an inlined
-//! argument. A short-circuit operand, an `if` expression branch, an `elseif`
+//! argument. An inlined call's own arguments are rewritten first, so nested
+//! calls are inlined too. A short-circuit operand, an `if` expression branch,
+//! an `elseif`
 //! condition, or a `while`/`repeat` condition cannot be reordered this way and
 //! stops further inlining. A function that contains a `goto` or label refuses
 //! inlining entirely, because the preamble declares locals that a forward jump
@@ -1264,12 +1266,16 @@ impl Inliner<'_, '_, '_> {
         let results: Vec<String> = (0..function.arity).map(|_| self.names.generate()).collect();
         let done = self.names.generate();
 
+        // The arguments are part of the call being replaced, so their own calls
+        // can be inlined first; their preambles run before this body.
+        let mut values = call.get_arguments().clone().to_expressions();
+        self.rewrite_values(&mut values, true, preambles);
+
         let mut bindings: Vec<TypedIdentifier> = function
             .parameters
             .iter()
             .map(|name| TypedIdentifier::new(name.clone()))
             .collect();
-        let mut values = call.get_arguments().clone().to_expressions();
         while bindings.len() < values.len() {
             bindings.push(TypedIdentifier::new(self.names.generate()));
         }
@@ -2137,6 +2143,15 @@ mod test {
     }
 
     #[test]
+    fn inlines_a_nested_call_argument() {
+        let output = inlined_output(
+            "local function value(x)\n    return x\nend\nlocal function wrap(x)\n    return x\nend\nreturn wrap(value(2))",
+        );
+        assert!(!output.contains("wrap(value(2))"), "{output}");
+        assert!(!output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
     fn inlines_a_call_in_an_index_key() {
         let output = inlined_output(
             "local function value(x)\n    return x\nend\nlocal t = { 1, 2 }\nreturn t[value(2)]",
@@ -2268,6 +2283,7 @@ mod test {
             "local function add(a, b)\n    return a + b\nend\nlocal first = 1\nprint(first, add(1, 2))\nreturn 0",
             "local function add(a, b)\n    return a + b\nend\nlocal first = 1\nreturn first, add(1, 2)",
             "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first + value(2)",
+            "local function value(x)\n    return x\nend\nlocal function wrap(x)\n    return x\nend\nreturn wrap(value(2))",
             "local value = 0\nlocal function set(x)\n    value = x\nend\nset(5)\nreturn value",
             "local value = 0\nlocal function set()\n    value = 5\nend\ndo\n    local value = 100\n    set()\nend\nreturn value",
         ] {
