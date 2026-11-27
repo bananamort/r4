@@ -972,6 +972,83 @@ print(result)
 return result
 "#,
     ),
+    (
+        "an inlined body is not hoisted above an earlier read",
+        r#"
+local value = 1
+local function set()
+    value = 5
+    return 0
+end
+print(value + set())
+return value
+"#,
+    ),
+    (
+        "an inlined body is not hoisted out of a short-circuit",
+        r#"
+local calls = 0
+local function bump()
+    calls = calls + 1
+    return 1
+end
+print(false and bump())
+return calls
+"#,
+    ),
+    (
+        "a while condition is not hoisted",
+        r#"
+local calls = 0
+local function limit()
+    calls = calls + 1
+    return calls < 3
+end
+local iterations = 0
+while limit() do
+    iterations = iterations + 1
+    if iterations > 5 then
+        break
+    end
+end
+print(calls, iterations)
+return calls
+"#,
+    ),
+    (
+        "a repeat condition is not hoisted",
+        r#"
+local calls = 0
+local function stop()
+    calls = calls + 1
+    return calls >= 3
+end
+local iterations = 0
+repeat
+    calls = calls + 1
+    iterations = iterations + 1
+until stop() or iterations > 5
+print(calls, iterations)
+return calls
+"#,
+    ),
+    (
+        "an elseif condition is not hoisted",
+        r#"
+local calls = 0
+local function check()
+    calls = calls + 1
+    return true
+end
+if true then
+    print("taken")
+elseif check() then
+    print("elseif")
+end
+print(calls)
+return calls
+"#,
+    ),
 ];
 
 #[test]

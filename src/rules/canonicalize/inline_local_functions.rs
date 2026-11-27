@@ -60,8 +60,8 @@ use std::fmt;
 
 use crate::cfg::{validate_block_identities, StatementOrigin, UnidentifiedBlock};
 use crate::nodes::{
-    Arguments, AssignStatement, Block, BlockIdentity, ChildVisitor, DoStatement, Expression,
-    Identifier, LastStatement, Prefix, ReadOnlyChildren, RepeatStatement, Statement,
+    Arguments, AssignStatement, BinaryOperator, Block, BlockIdentity, ChildVisitor, DoStatement,
+    Expression, Identifier, LastStatement, Prefix, ReadOnlyChildren, RepeatStatement, Statement,
     TableExpression, TypedIdentifier, Variable, VariableAssignment,
 };
 use crate::rules::NameGenerator;
@@ -153,6 +153,7 @@ pub fn inline_local_functions(
         names: &mut names,
         current_scope: None,
         current_position: None,
+        clean: false,
         inlined: &mut inlined,
     };
     inliner.rewrite_block(block);
@@ -713,6 +714,9 @@ struct Inliner<'m, 'n, 'i> {
     /// The statement being rewritten, or the position after the block's last
     /// statement when rewriting its last statement.
     current_position: Option<StatementOrigin>,
+    /// Whether the statement has not evaluated anything observable yet, so a
+    /// call can be moved to the statement's start without reordering.
+    clean: bool,
     inlined: &'i mut usize,
 }
 
@@ -720,6 +724,7 @@ impl Inliner<'_, '_, '_> {
     fn rewrite_block(&mut self, block: &mut Block) {
         let previous_scope = self.current_scope;
         let previous_position = self.current_position;
+        let previous_clean = self.clean;
         let scope = self.model.try_scope_of(block).ok();
         self.current_scope = scope;
         let identity = block.get_identity();
@@ -731,6 +736,7 @@ impl Inliner<'_, '_, '_> {
                 block,
                 index: index as u32,
             });
+            self.clean = true;
             let mut preambles = Vec::new();
             self.rewrite_statement(&mut statement, &mut preambles);
             rewritten.append(&mut preambles);
@@ -743,6 +749,7 @@ impl Inliner<'_, '_, '_> {
                 block,
                 index: count as u32,
             });
+            self.clean = true;
             let mut preambles = Vec::new();
             self.rewrite_last_statement(&mut last, &mut preambles);
             if !preambles.is_empty() {
@@ -754,20 +761,29 @@ impl Inliner<'_, '_, '_> {
         }
         self.current_scope = previous_scope;
         self.current_position = previous_position;
+        self.clean = previous_clean;
     }
 
     fn rewrite_statement(&mut self, statement: &mut Statement, preambles: &mut Vec<Statement>) {
         match statement {
             Statement::Assign(assignment) => {
                 let variables: Vec<Variable> = assignment.iter_variables().cloned().collect();
-                for variable in &variables {
-                    let mut variable = variable.clone();
+                let evaluated_variables = variables
+                    .iter()
+                    .any(|variable| !matches!(variable, Variable::Identifier(_)));
+                let mut rewritten_variables = Vec::with_capacity(variables.len());
+                for mut variable in variables {
                     self.rewrite_variable(&mut variable, preambles);
+                    rewritten_variables.push(variable);
+                }
+                if evaluated_variables {
+                    // The variable expressions are evaluated before the values.
+                    self.clean = false;
                 }
                 let mut values: Vec<Expression> = assignment.iter_values().cloned().collect();
-                let multi_tail = variables.len() >= 2;
+                let multi_tail = rewritten_variables.len() >= 2;
                 self.rewrite_values(&mut values, multi_tail, preambles);
-                *assignment = AssignStatement::new(variables, values);
+                *assignment = AssignStatement::new(rewritten_variables, values);
             }
             Statement::LocalAssign(assignment) => {
                 let variables: Vec<TypedIdentifier> =
@@ -779,19 +795,21 @@ impl Inliner<'_, '_, '_> {
             }
             Statement::Call(slot) => {
                 let mut call = slot.clone();
-                self.rewrite_prefix(call.mutate_prefix(), preambles);
-                let mut values: Vec<Expression> = call.get_arguments().clone().to_expressions();
-                self.rewrite_values(&mut values, true, preambles);
-                *call.mutate_arguments() =
-                    crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
                 if self.try_inline(&call, false, preambles).is_some() {
                     // The call's result is discarded; the body ran in the preamble.
                     *statement = Statement::Do(DoStatement::new(Block::new(Vec::new(), None)));
                 } else {
+                    self.rewrite_prefix(call.mutate_prefix(), preambles);
+                    let mut values: Vec<Expression> = call.get_arguments().clone().to_expressions();
+                    self.rewrite_values(&mut values, true, preambles);
+                    *call.mutate_arguments() = crate::nodes::Arguments::Tuple(
+                        crate::nodes::TupleArguments::from_iter(values),
+                    );
                     *slot = call;
                 }
             }
             Statement::CompoundAssign(assignment) => {
+                self.clean = false;
                 let mut variable = assignment.get_variable().clone();
                 self.rewrite_variable(&mut variable, preambles);
                 *assignment.mutate_variable() = variable;
@@ -800,7 +818,12 @@ impl Inliner<'_, '_, '_> {
                 *assignment.mutate_value() = value;
             }
             Statement::If(statement) => {
-                for branch in statement.mutate_branches() {
+                for (index, branch) in statement.mutate_branches().iter_mut().enumerate() {
+                    if index > 0 {
+                        // An `elseif` condition only runs when the earlier
+                        // conditions were false.
+                        self.clean = false;
+                    }
                     let mut condition = branch.get_condition().clone();
                     self.rewrite_single(&mut condition, preambles);
                     *branch.mutate_condition() = condition;
@@ -811,6 +834,9 @@ impl Inliner<'_, '_, '_> {
                 }
             }
             Statement::While(statement) => {
+                // The condition runs before every iteration, so its evaluation
+                // cannot be hoisted to the statement.
+                self.clean = false;
                 let mut condition = statement.get_condition().clone();
                 self.rewrite_single(&mut condition, preambles);
                 statement.mutate_condition().clone_from(&condition);
@@ -818,6 +844,9 @@ impl Inliner<'_, '_, '_> {
             }
             Statement::Repeat(statement) => {
                 self.rewrite_block(statement.mutate_block());
+                // The condition runs after every iteration, so its evaluation
+                // cannot be hoisted to the statement.
+                self.clean = false;
                 let mut condition = statement.get_condition().clone();
                 self.rewrite_single(&mut condition, preambles);
                 statement.mutate_condition().clone_from(&condition);
@@ -912,17 +941,27 @@ impl Inliner<'_, '_, '_> {
         }
         let mut expression = expression;
         self.rewrite_children(&mut expression, preambles);
+        if !expression_is_inert(&expression) {
+            self.clean = false;
+        }
         vec![expression]
     }
 
     fn rewrite_children(&mut self, expression: &mut Expression, preambles: &mut Vec<Statement>) {
         match expression {
             Expression::Binary(binary) => {
+                let conditional =
+                    matches!(binary.operator(), BinaryOperator::And | BinaryOperator::Or);
                 let mut left = binary.left().clone();
-                let mut right = binary.right().clone();
                 self.rewrite_single(&mut left, preambles);
-                self.rewrite_single(&mut right, preambles);
                 *binary.mutate_left() = left;
+                if conditional {
+                    // The right operand only runs when the left one does not
+                    // decide the result.
+                    self.clean = false;
+                }
+                let mut right = binary.right().clone();
+                self.rewrite_single(&mut right, preambles);
                 *binary.mutate_right() = right;
             }
             Expression::Unary(unary) => {
@@ -963,6 +1002,8 @@ impl Inliner<'_, '_, '_> {
                 let mut condition = if_expression.get_condition().clone();
                 self.rewrite_single(&mut condition, preambles);
                 *if_expression.mutate_condition() = condition;
+                // Only one of the result branches runs.
+                self.clean = false;
                 let mut result = if_expression.get_result().clone();
                 self.rewrite_single(&mut result, preambles);
                 *if_expression.mutate_result() = result;
@@ -1029,11 +1070,19 @@ impl Inliner<'_, '_, '_> {
 
     fn rewrite_prefix(&mut self, prefix: &mut Prefix, preambles: &mut Vec<Statement>) {
         match prefix {
-            Prefix::Identifier(_) => {}
+            Prefix::Identifier(identifier) => {
+                // Reading the callee of an inlinable local function is stable:
+                // the symbol is never written after it is bound.
+                if !self.callee_is_inlinable(identifier) {
+                    self.clean = false;
+                }
+            }
             Prefix::Field(field) => {
                 let mut inner = field.get_prefix().clone();
                 self.rewrite_prefix(&mut inner, preambles);
                 *field.mutate_prefix() = inner;
+                // A field read can trigger `__index`.
+                self.clean = false;
             }
             Prefix::Index(index) => {
                 let mut inner = index.get_prefix().clone();
@@ -1042,6 +1091,8 @@ impl Inliner<'_, '_, '_> {
                 let mut key = index.get_index().clone();
                 self.rewrite_single(&mut key, preambles);
                 *index.mutate_index() = key;
+                // An index read can trigger `__index`.
+                self.clean = false;
             }
             Prefix::Call(call) => {
                 let mut inner = call.as_ref().clone();
@@ -1059,6 +1110,7 @@ impl Inliner<'_, '_, '_> {
                         crate::nodes::ParentheseExpression::new(value),
                     ));
                 } else {
+                    self.clean = false;
                     **call = inner;
                 }
             }
@@ -1081,7 +1133,15 @@ impl Inliner<'_, '_, '_> {
         tail: bool,
         preambles: &mut Vec<Statement>,
     ) -> Option<Vec<Expression>> {
-        if call.get_method().is_some() {
+        if !self.clean || call.get_method().is_some() {
+            return None;
+        }
+        // Inserting the preamble declares locals before the call's statement. A
+        // label in the same function could be the target of a goto that jumps
+        // over them, which would be invalid once the locals exist.
+        let position = self.current_position?;
+        let function = self.block_functions.get(&position.block)?;
+        if self.labelled.contains(function) {
             return None;
         }
         let callee = self.model.resolve_identifier(callee(call.get_prefix())?)?;
@@ -1092,7 +1152,6 @@ impl Inliner<'_, '_, '_> {
         }
 
         if let Some(assignment) = function.assignment {
-            let position = self.current_position?;
             if !self.assignment_reaches(assignment, position) {
                 return None;
             }
@@ -1247,6 +1306,15 @@ impl Inliner<'_, '_, '_> {
                 index,
             };
         }
+    }
+
+    /// Returns whether reading `identifier` as a callee is stable: it resolves
+    /// to a recorded local function whose binding is never replaced.
+    fn callee_is_inlinable(&self, identifier: &Identifier) -> bool {
+        let Some(symbol) = self.model.resolve_identifier(identifier) else {
+            return false;
+        };
+        self.resolve_function(symbol).is_some()
     }
 
     fn upvalue_is_reachable(&self, symbol: SymbolId, scope: ScopeId) -> bool {
@@ -1432,6 +1500,18 @@ fn lower_statement_returns(
 
 /// Returns the identifier a call's prefix names, looking through parentheses
 /// and type instantiation.
+/// Returns whether evaluating `expression` is unobservable and cannot raise.
+fn expression_is_inert(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::Nil(_)
+            | Expression::True(_)
+            | Expression::False(_)
+            | Expression::Number(_)
+            | Expression::String(_)
+    )
+}
+
 fn callee(prefix: &Prefix) -> Option<&Identifier> {
     match prefix {
         Prefix::Identifier(identifier) => Some(identifier),
@@ -1797,6 +1877,59 @@ mod test {
     }
 
     #[test]
+    fn inlines_a_call_after_a_literal() {
+        let output =
+            inlined_output("local function value(x)\n    return x\nend\nreturn 1, value(2)");
+        assert!(!output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_after_an_evaluated_expression() {
+        let output = inlined_output(
+            "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first, value(2)",
+        );
+        assert!(output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_in_a_short_circuit_operand() {
+        let output =
+            inlined_output("local function value(x)\n    return x\nend\nreturn false and value(2)");
+        assert!(output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_in_a_while_condition() {
+        let output = inlined_output(
+            "local function check(x)\n    return x\nend\nwhile check(true) do\n    break\nend\nreturn 0",
+        );
+        assert!(output.contains("check(true)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_in_a_repeat_condition() {
+        let output = inlined_output(
+            "local function check(x)\n    return x\nend\nrepeat\n    break\nuntil check(true)\nreturn 0",
+        );
+        assert!(output.contains("check(true)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_in_an_elseif_condition() {
+        let output = inlined_output(
+            "local function check(x)\n    return x\nend\nif true then\n    return 0\nelseif check(true) then\n    return 1\nend\nreturn 2",
+        );
+        assert!(output.contains("check(true)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_in_the_argument_of_another_call() {
+        let output =
+            inlined_output("local function value(x)\n    return x\nend\nprint(value(2))\nreturn 0");
+        assert!(output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
     fn keeps_a_call_before_the_assignment() {
         let output = inlined_output(
             "local f\nlocal value = f\nf = function()\n    return 1\nend\nreturn value",
@@ -1845,6 +1978,9 @@ mod test {
             "local f\nlocal g = function()\n    return f(1)\nend\nf = function(x)\n    return x\nend\nreturn g()",
             "local f\ndo\n    f = function()\n        return 1\n    end\nend\nreturn f()",
             "local f\nrepeat\n    f = function()\n        return 1\n    end\nuntil true\nreturn f()",
+            "local function check(x)\n    return x\nend\nwhile check(true) do\n    break\nend\nreturn 0",
+            "local function check(x)\n    return x\nend\nrepeat\n    break\nuntil check(true)\nreturn 0",
+            "local function value(x)\n    return x\nend\nreturn false and value(2)",
             "local value = 0\nlocal function set(x)\n    value = x\nend\nset(5)\nreturn value",
             "local value = 0\nlocal function set()\n    value = 5\nend\ndo\n    local value = 100\n    set()\nend\nreturn value",
         ] {
