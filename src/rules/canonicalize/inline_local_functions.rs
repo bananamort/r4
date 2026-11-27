@@ -2123,7 +2123,9 @@ impl Inliner<'_, '_, '_> {
         }
 
         let mut body = function.body.clone();
-        rename_labels(&mut body, self.model, self.names);
+        if !rename_labels(&mut body, self.model, self.names) {
+            return None;
+        }
         lower_returns(&mut body, &results, &done, 0);
         guard_loops(&mut body, &done, 0);
 
@@ -2778,86 +2780,118 @@ impl NodeProcessor for BindingRenamer<'_, '_> {
     }
 }
 
-/// Gives every label in a body a fresh name, with its `goto`s.
-fn rename_labels(block: &mut Block, model: &SemanticModel, names: &mut NameGenerator) {
-    let mut renames: HashMap<LabelId, String> = HashMap::new();
+/// Gives every label in a function body a fresh name, with its `goto`s.
+///
+/// Labels carry a semantic binding, but goto identifiers do not: the analyzer
+/// records their target only in the source-ordered goto binding list. This
+/// renames labels by binding and gotos by matching that source order, so a
+/// cloned body cannot keep a stale goto name.
+fn rename_labels(block: &mut Block, model: &SemanticModel, names: &mut NameGenerator) -> bool {
+    let Ok(scope) = model.try_scope_of(block) else {
+        return false;
+    };
+    let Some(function) = model.function_scope_of(scope) else {
+        return false;
+    };
+    let labels: Vec<LabelId> = model
+        .labels_in_function(function)
+        .map(|label| label.id)
+        .collect();
+    let targets: Vec<LabelId> = model
+        .goto_bindings_in_function(function)
+        .map(|binding| binding.label)
+        .collect();
+    let mut renames: HashMap<LabelId, String> = HashMap::with_capacity(labels.len());
+    for label in &labels {
+        renames.insert(*label, names.generate());
+    }
 
-    fn collect(
-        block: &Block,
-        model: &SemanticModel,
-        renames: &mut HashMap<LabelId, String>,
-        names: &mut NameGenerator,
-    ) {
-        for statement in block.iter_statements() {
-            match statement {
-                Statement::Label(label) => {
-                    if let Some(id) = model.resolve_label(label.get_label()) {
-                        renames.entry(id).or_insert_with(|| names.generate());
+    struct Renamer<'a, 'm> {
+        model: &'m SemanticModel,
+        renames: &'a HashMap<LabelId, String>,
+        targets: &'a [LabelId],
+        label_index: usize,
+        goto_index: usize,
+    }
+
+    impl Renamer<'_, '_> {
+        fn apply(&mut self, block: &mut Block) -> bool {
+            for statement in block.iter_mut_statements() {
+                match statement {
+                    Statement::Label(label) => {
+                        let Some(id) = self.model.resolve_label(label.get_label()) else {
+                            return false;
+                        };
+                        let Some(name) = self.renames.get(&id) else {
+                            return false;
+                        };
+                        label.mutate_label().set_name(name.clone());
+                        self.label_index += 1;
                     }
-                }
-                Statement::Do(statement) => collect(statement.get_block(), model, renames, names),
-                Statement::While(statement) => {
-                    collect(statement.get_block(), model, renames, names)
-                }
-                Statement::Repeat(statement) => {
-                    collect(statement.get_block(), model, renames, names)
-                }
-                Statement::NumericFor(statement) => {
-                    collect(statement.get_block(), model, renames, names)
-                }
-                Statement::GenericFor(statement) => {
-                    collect(statement.get_block(), model, renames, names)
-                }
-                Statement::If(statement) => {
-                    for branch in statement.iter_branches() {
-                        collect(branch.get_block(), model, renames, names);
+                    Statement::Goto(goto) => {
+                        let Some(&target) = self.targets.get(self.goto_index) else {
+                            return false;
+                        };
+                        let Some(name) = self.renames.get(&target) else {
+                            return false;
+                        };
+                        goto.mutate_label().set_name(name.clone());
+                        self.goto_index += 1;
                     }
-                    if let Some(else_block) = statement.get_else_block() {
-                        collect(else_block, model, renames, names);
+                    Statement::Do(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
                     }
+                    Statement::While(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
+                    }
+                    Statement::Repeat(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
+                    }
+                    Statement::NumericFor(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
+                    }
+                    Statement::GenericFor(statement) => {
+                        if !self.apply(statement.mutate_block()) {
+                            return false;
+                        }
+                    }
+                    Statement::If(statement) => {
+                        for branch in statement.mutate_branches() {
+                            if !self.apply(branch.mutate_block()) {
+                                return false;
+                            }
+                        }
+                        if let Some(else_block) = statement.mutate_else_block() {
+                            if !self.apply(else_block) {
+                                return false;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            true
         }
     }
 
-    fn apply(block: &mut Block, model: &SemanticModel, renames: &HashMap<LabelId, String>) {
-        for statement in block.iter_mut_statements() {
-            match statement {
-                Statement::Label(label) => {
-                    if let Some(id) = model.resolve_label(label.get_label()) {
-                        if let Some(name) = renames.get(&id) {
-                            label.mutate_label().set_name(name.clone());
-                        }
-                    }
-                }
-                Statement::Goto(goto) => {
-                    if let Some(id) = model.resolve_label(goto.get_label()) {
-                        if let Some(name) = renames.get(&id) {
-                            goto.mutate_label().set_name(name.clone());
-                        }
-                    }
-                }
-                Statement::Do(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::While(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::Repeat(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::NumericFor(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::GenericFor(statement) => apply(statement.mutate_block(), model, renames),
-                Statement::If(statement) => {
-                    for branch in statement.mutate_branches() {
-                        apply(branch.mutate_block(), model, renames);
-                    }
-                    if let Some(else_block) = statement.mutate_else_block() {
-                        apply(else_block, model, renames);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    collect(block, model, &mut renames, names);
-    apply(block, model, &renames);
+    let mut renamer = Renamer {
+        model,
+        renames: &renames,
+        targets: &targets,
+        label_index: 0,
+        goto_index: 0,
+    };
+    renamer.apply(block)
+        && renamer.label_index == labels.len()
+        && renamer.goto_index == targets.len()
 }
 
 /// Lowers every `return` to a result assignment and a `break`.
