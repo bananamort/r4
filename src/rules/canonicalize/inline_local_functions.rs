@@ -77,8 +77,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::cfg::{
-    build_chunk, build_function, validate_block_identities, CfgError, ConditionOrigin,
-    StatementOrigin, UnidentifiedBlock,
+    build_chunk, build_function, validate_block_identities, CfgError, ConditionKind,
+    ConditionOrigin, StatementOrigin, UnidentifiedBlock,
 };
 use crate::nodes::{
     Arguments, AssignStatement, BinaryOperator, Block, BlockIdentity, ChildVisitor, DoStatement,
@@ -1314,8 +1314,9 @@ impl Inliner<'_, '_, '_> {
     /// after it would put the label inside the scope of earlier locals and
     /// invalidate the jump in the generated code.
     fn trailing_label_is_targeted(&self, body: &Block) -> bool {
-        let trailing: Vec<LabelId> = body
-            .iter_statements()
+        let statements: Vec<&Statement> = body.iter_statements().collect();
+        let trailing: Vec<LabelId> = statements
+            .iter()
             .rev()
             .take_while(|statement| matches!(statement, Statement::Label(_)))
             .filter_map(|statement| match statement {
@@ -1482,7 +1483,7 @@ impl Inliner<'_, '_, '_> {
                     *expression.mutate_attributes() = function.attributes().clone();
                     transformed.push(Statement::from(AssignStatement::new(
                         vec![Variable::Identifier(Identifier::new(name))],
-                        vec![Expression::Function(expression)],
+                        vec![Expression::Function(Box::new(expression))],
                     )));
                 }
                 other => transformed.push(other),
@@ -1617,7 +1618,8 @@ impl Inliner<'_, '_, '_> {
                             receiver.clone(),
                             Identifier::new(method.get_name().clone()),
                         );
-                        let method_value = self.materialize(Expression::Field(field), preambles);
+                        let method_value =
+                            self.materialize(Expression::Field(Box::new(field)), preambles);
                         let mut values = arguments;
                         self.rewrite_values(&mut values, true, preambles);
                         let mut call_values = Vec::with_capacity(values.len() + 1);
