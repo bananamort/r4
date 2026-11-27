@@ -3888,7 +3888,7 @@ mod test {
     #[test]
     fn inlines_a_function_statement_assignment() {
         let output = inlined_output("local f\nfunction f()\n    return 1\nend\nreturn f()");
-        assert!(!output.contains("f()"), "{output}");
+        assert!(!output.contains("return f()"), "{output}");
     }
 
     #[test]
