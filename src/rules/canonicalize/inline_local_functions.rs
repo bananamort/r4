@@ -1286,6 +1286,7 @@ impl Inliner<'_, '_, '_> {
         let has_continue = block_contains_continue(&body);
         if has_continue
             && (body_has_close_local(&body)
+                || body_declares_environment_local(&body, body_scope, self.model)
                 || !self.hoist_repeat_condition_locals(
                     &mut body,
                     body_scope,
@@ -2605,6 +2606,36 @@ fn statement_contains_continue(statement: &Statement) -> bool {
         }
         _ => false,
     }
+}
+
+/// Returns whether a repeat body declares a top-level local named `_ENV`.
+///
+/// Guarding statements after a `continue` can shrink that local's scope, which
+/// would change the environment the appended condition uses. Only a directly
+/// declared body-scope `_ENV` is affected; nested blocks already ended before
+/// the condition.
+fn body_declares_environment_local(
+    block: &Block,
+    body_scope: ScopeId,
+    model: &SemanticModel,
+) -> bool {
+    block.iter_statements().any(|statement| match statement {
+        Statement::LocalAssign(assignment) => assignment.iter_variables().any(|variable| {
+            model
+                .resolve_identifier(variable.get_identifier())
+                .is_some_and(|symbol| {
+                    model.symbol(symbol).declaring_scope == body_scope
+                        && model.symbol(symbol).name == "_ENV"
+                })
+        }),
+        Statement::LocalFunction(function) => model
+            .resolve_identifier(function.get_identifier())
+            .is_some_and(|symbol| {
+                model.symbol(symbol).declaring_scope == body_scope
+                    && model.symbol(symbol).name == "_ENV"
+            }),
+        _ => false,
+    })
 }
 
 /// Returns whether a block owns a `<close>` local whose closing point the
