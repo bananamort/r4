@@ -1059,13 +1059,24 @@ impl Inliner<'_, '_, '_> {
         self.current_condition = None;
         self.allow_inline = true;
         self.hoist_locals = true;
-        let identity = block.get_identity();
+        let Some(identity) = block.get_identity() else {
+            self.error = Some(InlineError::Invariant {
+                detail: "a rewritten block has no structural identity",
+            });
+            return;
+        };
+        if !self.block_functions.contains_key(&identity) {
+            self.error = Some(InlineError::Invariant {
+                detail: "a rewritten block has no function scope mapping",
+            });
+            return;
+        }
         let statements = block.take_statements();
         let count = statements.len();
         let mut rewritten = Vec::with_capacity(count);
         for (index, mut statement) in statements.into_iter().enumerate() {
-            self.current_position = identity.map(|block| StatementOrigin {
-                block,
+            self.current_position = Some(StatementOrigin {
+                block: identity,
                 index: index as u32,
             });
             self.clean = true;
@@ -1080,8 +1091,8 @@ impl Inliner<'_, '_, '_> {
         block.set_statements(rewritten);
 
         if let Some(mut last) = block.take_last_statement() {
-            self.current_position = identity.map(|block| StatementOrigin {
-                block,
+            self.current_position = Some(StatementOrigin {
+                block: identity,
                 index: count as u32,
             });
             self.clean = true;
@@ -1365,10 +1376,17 @@ impl Inliner<'_, '_, '_> {
         // remove the label's block-end scope relaxation for a goto that relies
         // on it. Refuse those shapes rather than emit invalid or unreachable
         // code.
+        let trailing_targeted = match self.trailing_label_is_targeted(&body) {
+            Ok(targeted) => targeted,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
         if matches!(
             body.get_last_statement(),
             Some(LastStatement::Return(_)) | Some(LastStatement::Break(_))
-        ) || self.trailing_label_is_targeted(&body)
+        ) || trailing_targeted
         {
             self.repeat_fallback(
                 repeat,
@@ -1498,14 +1516,24 @@ impl Inliner<'_, '_, '_> {
     /// a goto. Appending the condition there would remove the label's
     /// block-end scope relaxation in dialects that apply it, so such a body is
     /// left alone.
-    fn trailing_label_is_targeted(&self, body: &Block) -> bool {
+    fn trailing_label_is_targeted(&self, body: &Block) -> Result<bool, InlineError> {
+        let identity = body.get_identity().ok_or(InlineError::Invariant {
+            detail: "a repeat body has no structural identity",
+        })?;
         let statements: Vec<&Statement> = body.iter_statements().collect();
-        for statement in statements.iter().rev() {
-            let Statement::Label(label) = statement else {
-                return false;
+        for index in (0..statements.len()).rev() {
+            let Statement::Label(label) = statements[index] else {
+                return Ok(false);
             };
             let Some(id) = self.model.resolve_label(label.get_label()) else {
-                return true;
+                return Err(InlineError::LabelMismatch {
+                    kind: "label",
+                    name: label.get_label_name().to_owned(),
+                    position: StatementPosition {
+                        block: identity,
+                        index: index as u32,
+                    },
+                });
             };
             if self
                 .model
@@ -1513,10 +1541,10 @@ impl Inliner<'_, '_, '_> {
                 .iter()
                 .any(|binding| binding.label == id)
             {
-                return true;
+                return Ok(true);
             }
         }
-        false
+        Ok(false)
     }
 
     /// Moves the body locals read by a repeat condition to the top of the loop
