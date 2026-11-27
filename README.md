@@ -62,11 +62,7 @@ cargo llvm-cov --workspace --all-features --fail-under-lines 94
 
 The `luau_execution_oracle_test` integration test runs a corpus of programs in
 an embedded Lune VM (Roblox runtime included), both before and after r4's
-transformations, and asserts byte-identical observable behavior. It also has a
-dialect matrix that runs Lua 5.1, 5.2, 5.3, 5.4, LuaJIT, and the embedded Luau
-VM on the optimized corpus, plus a seeded fuzz corpus in each. The external
-checks are enabled by `R4_LUA_DIALECTS` (for example `lua54,luajit`); CI runs
-each dialect in its own matrix job.
+transformations, and asserts byte-identical observable behavior.
 
 ## License
 
