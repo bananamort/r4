@@ -77,8 +77,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::cfg::{
-    build_chunk, build_function, validate_block_identities, CfgError, ConditionKind,
-    ConditionOrigin, StatementOrigin, UnidentifiedBlock,
+    build_chunk, build_function, validate_block_identities, CfgError, ConditionOrigin,
+    StatementOrigin, UnidentifiedBlock,
 };
 use crate::nodes::{
     Arguments, AssignStatement, BinaryOperator, Block, BlockIdentity, ChildVisitor, DoStatement,
@@ -1174,17 +1174,92 @@ impl Inliner<'_, '_, '_> {
     /// Rewrites a call's callee and arguments. Earlier arguments are stored in
     /// fresh locals when a later argument can be inlined, so the inline body
     /// still runs after them.
+    ///
+    /// A method call needs one more step. PUC Lua evaluates the receiver and
+    /// performs the method lookup before the arguments; Luau evaluates the
+    /// receiver, then the arguments, and only then performs the lookup. When an
+    /// argument may inline, the receiver is stored before the body, and for PUC
+    /// Lua the lookup is stored there too. The call is then a normal call to the
+    /// stored method with the stored receiver as its first argument. Luau keeps
+    /// the method syntax with the stored receiver, so the lookup stays at the
+    /// call. An undetermined dialect only permits this when the receiver is a
+    /// fresh table literal, whose lookup cannot run code.
     fn rewrite_call_contents(
         &mut self,
         call: &mut crate::nodes::FunctionCall,
         preambles: &mut Vec<Statement>,
     ) {
         let arguments: Vec<Expression> = call.get_arguments().clone().to_expressions();
-        let method = call.get_method().is_some();
-        let spill = !method
-            && arguments
-                .iter()
-                .any(|argument| self.expression_may_inline(argument));
+        let method = call.get_method().cloned();
+        let argument_may_inline = arguments
+            .iter()
+            .any(|argument| self.expression_may_inline(argument));
+
+        if let Some(method) = method {
+            if argument_may_inline && self.clean && self.position_allows_insertion() {
+                if let Some(lookup_before_arguments) = self.method_lookup_order() {
+                    let mut prefix = call.get_prefix().clone();
+                    self.rewrite_prefix(&mut prefix, preambles);
+                    let receiver = self.materialize_prefix(prefix, preambles);
+                    self.clean = true;
+                    if lookup_before_arguments {
+                        let field = crate::nodes::FieldExpression::new(
+                            receiver.clone(),
+                            Identifier::new(method.get_name().clone()),
+                        );
+                        let method_value = self.materialize(Expression::Field(field), preambles);
+                        let mut values = arguments;
+                        self.rewrite_values(&mut values, true, preambles);
+                        let mut call_values = Vec::with_capacity(values.len() + 1);
+                        call_values.push(prefix_into_expression(receiver));
+                        call_values.extend(values);
+                        *call = crate::nodes::FunctionCall::new(
+                            prefix_from_expression(method_value),
+                            crate::nodes::Arguments::Tuple(
+                                crate::nodes::TupleArguments::from_iter(call_values),
+                            ),
+                            None,
+                        );
+                    } else {
+                        let mut values = arguments;
+                        self.rewrite_values(&mut values, true, preambles);
+                        *call.mutate_prefix() = receiver;
+                        *call.mutate_arguments() = crate::nodes::Arguments::Tuple(
+                            crate::nodes::TupleArguments::from_iter(values),
+                        );
+                    }
+                    return;
+                }
+
+                if !receiver_lookup_is_inert(call.get_prefix()) {
+                    // `Dialect::Default` has no fixed method lookup order.
+                    return;
+                }
+                let mut prefix = call.get_prefix().clone();
+                self.rewrite_prefix(&mut prefix, preambles);
+                let receiver = self.materialize_prefix(prefix, preambles);
+                self.clean = true;
+                let mut values = arguments;
+                self.rewrite_values(&mut values, true, preambles);
+                *call.mutate_prefix() = receiver;
+                *call.mutate_arguments() =
+                    crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
+                return;
+            }
+
+            let mut prefix = call.get_prefix().clone();
+            self.rewrite_prefix(&mut prefix, preambles);
+            *call.mutate_prefix() = prefix;
+            let mut values = arguments;
+            self.rewrite_values(&mut values, true, preambles);
+            *call.mutate_arguments() =
+                crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
+            return;
+        }
+
+        let spill = arguments
+            .iter()
+            .any(|argument| self.expression_may_inline(argument));
         let prefix_clean = self.clean;
         let mut prefix = call.get_prefix().clone();
         self.rewrite_prefix(&mut prefix, preambles);
@@ -1197,6 +1272,23 @@ impl Inliner<'_, '_, '_> {
         self.rewrite_values(&mut values, true, preambles);
         *call.mutate_arguments() =
             crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
+    }
+
+    /// Returns whether the method lookup precedes the argument evaluation.
+    ///
+    /// PUC Lua and LuaJIT perform `SELF` (receiver and lookup) before the
+    /// arguments. Luau emits `NAMECALL` after the arguments, so its lookup runs
+    /// last. `Dialect::Default` is undetermined and returns `None`.
+    fn method_lookup_order(&self) -> Option<bool> {
+        match self.model.dialect() {
+            crate::Dialect::Lua51
+            | crate::Dialect::Lua52
+            | crate::Dialect::Lua53
+            | crate::Dialect::Lua54
+            | crate::Dialect::LuaJit => Some(true),
+            crate::Dialect::Luau => Some(false),
+            crate::Dialect::Default => None,
+        }
     }
 
     /// Stores `expression` in a fresh local, preserving when it is evaluated.
@@ -1534,7 +1626,6 @@ impl Inliner<'_, '_, '_> {
         if !self.clean || call.get_method().is_some() {
             return None;
         }
-        let position = self.current_position?;
         if !self.position_allows_insertion() {
             return None;
         }
@@ -2178,6 +2269,48 @@ fn prefix_into_expression(prefix: Prefix) -> Expression {
         Prefix::Index(index) => Expression::Index(index),
         Prefix::Parenthese(parenthese) => Expression::Parenthese(parenthese),
         Prefix::TypeInstantiation(instantiation) => Expression::TypeInstantiation(instantiation),
+    }
+}
+
+fn prefix_from_expression(expression: Expression) -> Prefix {
+    match expression {
+        Expression::Call(call) => Prefix::Call(call),
+        Expression::Field(field) => Prefix::Field(field),
+        Expression::Identifier(identifier) => Prefix::Identifier(identifier),
+        Expression::Index(index) => Prefix::Index(index),
+        Expression::Parenthese(parenthese) => Prefix::Parenthese(parenthese),
+        Expression::TypeInstantiation(instantiation) => Prefix::TypeInstantiation(instantiation),
+        expression => Prefix::Parenthese(Box::new(crate::nodes::ParentheseExpression::new(
+            expression,
+        ))),
+    }
+}
+
+/// Returns whether looking up a method on `prefix` cannot run user code or
+/// raise. Only a fresh table literal has no metatable and no string/library
+/// fallback.
+fn receiver_lookup_is_inert(prefix: &Prefix) -> bool {
+    match prefix {
+        Prefix::Parenthese(parenthese) => {
+            receiver_lookup_expression_is_inert(parenthese.inner_expression())
+        }
+        Prefix::TypeInstantiation(instantiation) => {
+            receiver_lookup_is_inert(instantiation.get_prefix())
+        }
+        _ => false,
+    }
+}
+
+fn receiver_lookup_expression_is_inert(expression: &Expression) -> bool {
+    match expression {
+        Expression::Table(_) => true,
+        Expression::Parenthese(parenthese) => {
+            receiver_lookup_expression_is_inert(parenthese.inner_expression())
+        }
+        Expression::TypeCast(type_cast) => {
+            receiver_lookup_expression_is_inert(type_cast.get_expression())
+        }
+        _ => false,
     }
 }
 

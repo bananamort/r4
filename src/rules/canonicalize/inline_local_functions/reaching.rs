@@ -158,9 +158,9 @@ impl FunctionRegion {
         let mut terminator_blocks = HashMap::new();
 
         for block in &cfg.blocks {
-            let mut current = entry[block.index()].clone();
+            let mut current = entry[block.id.index()].clone();
             let mut per_statement = Vec::with_capacity(block.statements.len());
-            for (index, ids) in statement_definitions_per_block[block.index()]
+            for (index, ids) in statement_definitions_per_block[block.id.index()]
                 .iter()
                 .enumerate()
             {
@@ -190,7 +190,7 @@ impl FunctionRegion {
             if let Some(origin) = block.branch_origin {
                 condition_definitions
                     .entry(origin)
-                    .or_insert_with(|| ids_from_bits(&entry[block.index()]));
+                    .or_insert_with(|| ids_from_bits(&entry[block.id.index()]));
             }
         }
 
