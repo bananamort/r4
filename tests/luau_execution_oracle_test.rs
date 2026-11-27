@@ -1391,7 +1391,7 @@ return calls
 "#,
     ),
     (
-        "a while condition is not hoisted",
+        "a while condition is re-evaluated every iteration",
         r#"
 local calls = 0
 local function limit()
@@ -1410,7 +1410,7 @@ return calls
 "#,
     ),
     (
-        "a repeat condition is not hoisted",
+        "a repeat condition is re-evaluated every iteration",
         r#"
 local calls = 0
 local function stop()
@@ -1424,6 +1424,147 @@ repeat
 until stop() or iterations > 5
 print(calls, iterations)
 return calls
+"#,
+    ),
+    (
+        "method arguments preserve the dialect's lookup order",
+        r#"
+local log = {}
+local function note(value)
+    log[#log + 1] = value
+end
+local function argument()
+    note("argument")
+    return 7
+end
+local target = setmetatable({}, {
+    __index = function(_, key)
+        note("lookup:" .. key)
+        return function(self, value)
+            note("call:" .. tostring(value))
+        end
+    end,
+})
+target:method(argument())
+print(table.concat(log, ","))
+return #log
+"#,
+    ),
+    (
+        "a while condition sees the outer binding, not the body's shadow",
+        r#"
+local calls = 0
+local function limit(x)
+    calls = calls + 1
+    return calls < 3 and x
+end
+local body = 0
+while limit(true) do
+    body = body + 1
+    local calls = 100
+    print(body, calls)
+end
+print(calls)
+return calls, body
+"#,
+    ),
+    (
+        "a repeat condition sees a body local",
+        r#"
+local iterations = 0
+local function done(value)
+    return value >= 3
+end
+repeat
+    iterations = iterations + 1
+    local current = iterations
+    print("iteration", current)
+until done(current)
+print("after", iterations)
+return iterations
+"#,
+    ),
+    (
+        "a luau repeat condition runs after continue",
+        r#"
+local value = 0
+local function done()
+    return value >= 4
+end
+repeat
+    value = value + 1
+    if value == 2 then continue end
+    print(value)
+until done()
+print("done", value)
+return value
+"#,
+    ),
+    (
+        "a luau repeat condition reads a local before continue",
+        r#"
+local value = 0
+local function done(step)
+    return step >= 3
+end
+repeat
+    value = value + 1
+    local step = value
+    if value == 2 then continue end
+    print(step)
+until done(step)
+print("done", value)
+return value
+"#,
+    ),
+    (
+        "conditional assignments with the same body inline",
+        r#"
+local choose = 1
+local f
+if choose == 1 then
+    f = function(x)
+        return x + 10
+    end
+else
+    f = function(x)
+        return x + 10
+    end
+end
+local g = function()
+    return f(2)
+end
+print(f(1), g())
+return f(3), g()
+"#,
+    ),
+    (
+        "an alias keeps the value it captured",
+        r#"
+local f = function(x)
+    return x + 1
+end
+local g = f
+f = function(x)
+    return x + 2
+end
+print(f(1), g(1))
+return f(2), g(2)
+"#,
+    ),
+    (
+        "an unreachable repeat condition stays in place",
+        r#"
+local function done()
+    return true
+end
+local function run()
+    repeat
+        return 1
+    until done()
+end
+print(run())
+return 0
 "#,
     ),
     (
@@ -1441,6 +1582,53 @@ elseif check() then
 end
 print(calls)
 return calls
+"#,
+    ),
+];
+
+/// Programs that exercise Lua 5.2+ syntax in the external dialect oracle.
+/// They are not part of the embedded Luau run because Luau has no `goto`.
+const EXTERNAL_ONLY_PROGRAMS: &[(&str, &str)] = &[
+    (
+        "inlining hoists results around goto",
+        r#"
+local function bump(value)
+    return value + 1
+end
+goto done
+print(bump(1))
+::done::
+print(bump(41))
+return bump(0)
+"#,
+    ),
+    (
+        "a callee label does not collide with a caller label",
+        r#"
+local function value()
+    goto done
+    ::done::
+    return 1
+end
+::done::
+goto finish
+print(value())
+::finish::
+return 0
+"#,
+    ),
+    (
+        "a repeat condition after a targeted block-end label stays in place",
+        r#"
+local function done()
+    return true
+end
+repeat
+    goto continue
+    local skipped = 1
+    ::continue::
+until done()
+return 0
 "#,
     ),
 ];
@@ -1584,7 +1772,10 @@ fn optimized_programs_keep_identical_behavior_in_lua_dialects() {
     for dialect in dialects {
         let binary = required_lua_dialect(dialect);
         let mut compared = 0;
-        for (name, program) in OPTIMIZED_PROGRAMS {
+        for (name, program) in OPTIMIZED_PROGRAMS
+            .iter()
+            .chain(EXTERNAL_ONLY_PROGRAMS.iter())
+        {
             if Parser::default()
                 .dialect(dialect.dialect)
                 .parse(program)

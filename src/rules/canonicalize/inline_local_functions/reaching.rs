@@ -119,6 +119,8 @@ impl From<CfgError> for ReachingError {
 /// function body).
 #[derive(Clone, Debug)]
 pub(crate) struct FunctionRegion {
+    /// The control-flow graph this region describes.
+    pub cfg: ControlFlowGraph,
     /// All definitions, addressed by [`DefinitionId`].
     pub definitions: Vec<Definition>,
     /// The reaching set immediately before each CFG statement, indexed by
@@ -222,6 +224,7 @@ impl FunctionRegion {
         }
 
         Ok(Self {
+            cfg,
             definitions,
             statement_definitions,
             terminator_definitions,
@@ -260,6 +263,50 @@ impl FunctionRegion {
     /// Returns the definitions in effect at the entry of a branch condition.
     pub(crate) fn at_condition(&self, origin: ConditionOrigin) -> Option<&[DefinitionId]> {
         self.condition_definitions.get(&origin).map(Vec::as_slice)
+    }
+
+    /// Returns whether `symbol` can be written after `origin` on any path.
+    ///
+    /// The creation point is a statement. A write in the same block after it,
+    /// or in any block reachable from it, can run later. A write before it in
+    /// the same block can run again when that block is part of a cycle. Writes
+    /// in unreachable blocks cannot run after the point.
+    pub(crate) fn has_write_after(
+        &self,
+        symbol: SymbolId,
+        origin: StatementOrigin,
+    ) -> Option<bool> {
+        let (creation_block, creation_index) = *self.statement_blocks.get(&origin)?;
+        let mut reachable = HashSet::new();
+        let mut stack: Vec<BlockId> = self.cfg.successors(creation_block).to_vec();
+        let mut repeats = false;
+        while let Some(block) = stack.pop() {
+            if block == creation_block {
+                repeats = true;
+                continue;
+            }
+            if !reachable.insert(block) {
+                continue;
+            }
+            stack.extend(self.cfg.successors(block));
+        }
+
+        for definition in &self.definitions {
+            if definition.symbol != symbol {
+                continue;
+            }
+            let Some((block, index)) = self.statement_blocks.get(&definition.origin) else {
+                return Some(true);
+            };
+            if *block == creation_block {
+                if *index >= creation_index || repeats {
+                    return Some(true);
+                }
+            } else if reachable.contains(block) {
+                return Some(true);
+            }
+        }
+        Some(false)
     }
 
     /// Filters a reaching set to the definitions of `symbol`.

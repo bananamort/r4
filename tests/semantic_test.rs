@@ -1423,3 +1423,31 @@ fn goto_out_of_a_local_scope_is_allowed() {
         .analyze(&block)
         .expect("jumping out of a scope is allowed");
 }
+
+#[test]
+fn labels_and_gotos_record_structural_positions() {
+    let block = parse_lua52("do\n  ::start::\n  goto start\nend\nreturn 1");
+    let model = SemanticAnalyzer::new()
+        .analyze(&block)
+        .expect("the program must analyze");
+
+    let label = &model.labels[0];
+    let site = &model.goto_bindings[0].site;
+    assert_eq!(label.position.index, 0);
+    assert_eq!(site.position.index, 1);
+    assert_eq!(label.position.block, site.position.block);
+
+    let Statement::Do(statement) = block
+        .first_statement()
+        .expect("the chunk has a do statement")
+    else {
+        panic!("expected a do statement");
+    };
+    assert_eq!(
+        label.position.block,
+        statement
+            .get_block()
+            .get_identity()
+            .expect("the do body is analyzed")
+    );
+}

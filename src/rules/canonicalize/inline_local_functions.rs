@@ -216,6 +216,8 @@ pub fn inline_local_functions(
         functions: &collector.functions,
         literal_symbols: &collector.literal_symbols,
         aliases: &collector.aliases,
+        parents: &collector.parents,
+        function_roots: &collector.function_roots,
         labelled: &collector.labelled,
         block_functions: &collector.block_functions,
         regions: &collector.regions,
@@ -565,6 +567,10 @@ struct FunctionCollector<'m> {
     literal_symbols: HashSet<SymbolId>,
     /// Direct `alias = target` assignments, for the same over-approximation.
     aliases: HashMap<SymbolId, HashSet<SymbolId>>,
+    /// The statement that contains each AST block.
+    parents: HashMap<BlockIdentity, (BlockIdentity, u32)>,
+    /// The body block of each function region.
+    function_roots: HashMap<ScopeId, BlockIdentity>,
     /// Function scopes whose bodies contain a `goto` or label.
     labelled: HashSet<ScopeId>,
     /// The function scope that owns each block.
@@ -588,6 +594,8 @@ impl<'m> FunctionCollector<'m> {
             functions: HashMap::new(),
             literal_symbols: HashSet::new(),
             aliases: HashMap::new(),
+            parents: HashMap::new(),
+            function_roots: HashMap::new(),
             labelled: HashSet::new(),
             block_functions: HashMap::new(),
             regions: HashMap::new(),
@@ -664,6 +672,9 @@ impl<'m> FunctionCollector<'m> {
     /// Builds the control-flow graph and reaching definitions of the function
     /// region that owns `block`, the first time the block is visited.
     fn ensure_region(&mut self, block: &Block) {
+        let Some(identity) = block.get_identity() else {
+            return;
+        };
         let Ok(scope) = self.model.try_scope_of(block) else {
             let error = self
                 .model
@@ -685,6 +696,7 @@ impl<'m> FunctionCollector<'m> {
             Ok(cfg) => match FunctionRegion::analyze(cfg, self.model) {
                 Ok(region) => {
                     self.regions.insert(scope, region);
+                    self.function_roots.insert(scope, identity);
                 }
                 Err(error) => self.error = Some(error.into()),
             },
@@ -810,7 +822,10 @@ impl<'m> FunctionCollector<'m> {
         self.functions.insert(key, function);
     }
 
-    fn walk_child(&mut self, child: &Block, _parent: StatementOrigin) {
+    fn walk_child(&mut self, child: &Block, parent: StatementOrigin) {
+        if let Some(identity) = child.get_identity() {
+            self.parents.insert(identity, (parent.block, parent.index));
+        }
         self.walk(child);
     }
 
@@ -907,6 +922,10 @@ struct Inliner<'m, 'n, 'i> {
     literal_symbols: &'m HashSet<SymbolId>,
     /// Direct alias assignments.
     aliases: &'m HashMap<SymbolId, HashSet<SymbolId>>,
+    /// The statement that contains each AST block.
+    parents: &'m HashMap<BlockIdentity, (BlockIdentity, u32)>,
+    /// The body block of each function region.
+    function_roots: &'m HashMap<ScopeId, BlockIdentity>,
     /// The statement that contains each nested block.
     /// Function scopes whose bodies contain a `goto` or label.
     labelled: &'m HashSet<ScopeId>,
@@ -2160,17 +2179,45 @@ impl Inliner<'_, '_, '_> {
         if declaring_function == region_scope {
             let definitions = self.definitions_at(region_scope, position)?;
             self.resolve_definitions(symbol, definitions, region_scope, &mut HashSet::new())
-        } else {
-            if !self.model.is_immutable(symbol) {
-                return None;
-            }
+        } else if self.model.is_immutable(symbol) {
             let locations = self.definition_locations.get(&symbol)?;
             if locations.len() != 1 {
                 return None;
             }
             let (scope, id) = locations[0];
             self.resolve_definition(scope, id, symbol, &mut HashSet::new())
+        } else {
+            self.resolve_captured_function(symbol, region_scope)
         }
+    }
+
+    /// Resolves a mutable upvalue read by a nested function.
+    ///
+    /// The upvalue cell is captured when the nested function is created. If no
+    /// write to it can run after that creation, every later call observes the
+    /// value that reached the creation statement. Only a function created
+    /// directly inside the declaring function is considered; an intermediate
+    /// function could be called before or after later writes, so that shape is
+    /// refused.
+    fn resolve_captured_function(
+        &self,
+        symbol: SymbolId,
+        call_region: ScopeId,
+    ) -> Option<FunctionKey> {
+        let call_root = *self.function_roots.get(&call_region)?;
+        let (block, index) = *self.parents.get(&call_root)?;
+        let creation = StatementOrigin { block, index };
+        let declaring_scope = self.model.symbol(symbol).declaring_scope;
+        let declaring_function = self.model.function_scope_of(declaring_scope)?;
+        if self.block_functions.get(&creation.block).copied() != Some(declaring_function) {
+            return None;
+        }
+        let region = self.regions.get(&declaring_function)?;
+        if region.has_write_after(symbol, creation)? {
+            return None;
+        }
+        let definitions = region.at_statement(creation)?;
+        self.resolve_definitions(symbol, definitions, declaring_function, &mut HashSet::new())
     }
 
     /// Returns the reaching definitions at the current position within
@@ -2257,16 +2304,15 @@ impl Inliner<'_, '_, '_> {
             let region = self.regions.get(&region_scope)?;
             let definitions = region.at_statement(origin)?;
             self.resolve_definitions(target, definitions, region_scope, visited)
-        } else {
-            if !self.model.is_immutable(target) {
-                return None;
-            }
+        } else if self.model.is_immutable(target) {
             let locations = self.definition_locations.get(&target)?;
             if locations.len() != 1 {
                 return None;
             }
             let (scope, id) = locations[0];
             self.resolve_definition(scope, id, target, visited)
+        } else {
+            self.resolve_captured_function(target, region_scope)
         }
     }
 
@@ -3211,11 +3257,11 @@ mod test {
     }
 
     #[test]
-    fn keeps_an_assignment_inside_a_repeat_body() {
+    fn inlines_an_assignment_inside_a_repeat_body_that_runs_once() {
         let output = inlined_output(
             "local f\nrepeat\n    f = function()\n        return 1\n    end\nuntil true\nreturn f()",
         );
-        assert!(output.contains("f()"), "{output}");
+        assert!(!output.contains("f()"), "{output}");
     }
 
     #[test]
@@ -3457,11 +3503,12 @@ mod test {
     }
 
     #[test]
-    fn keeps_a_call_in_a_while_condition() {
+    fn inlines_a_call_in_a_while_condition() {
         let output = inlined_output(
             "local function check(x)\n    return x\nend\nwhile check(true) do\n    break\nend\nreturn 0",
         );
-        assert!(output.contains("check(true)"), "{output}");
+        assert!(!output.contains("check(true)"), "{output}");
+        assert!(output.contains("while true"), "{output}");
     }
 
     #[test]
@@ -3504,11 +3551,222 @@ mod test {
     }
 
     #[test]
-    fn keeps_an_assignment_bound_call_after_a_goto() {
+    fn inlines_an_assignment_bound_call_after_a_goto() {
         let output = inlined_output(
             "local f\nf = function()\n    return 1\nend\ngoto done\n::done::\nreturn f()",
         );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    fn inlined_dialect(code: &str, dialect: crate::Dialect) -> String {
+        let (mut block, model) = crate::Parser::default()
+            .dialect(dialect)
+            .parse_analyzed(code)
+            .unwrap_or_else(|error| panic!("failed to analyze `{code}`: {error}"));
+        inline_local_functions(&mut block, &model).expect("the analyzed tree has block identities");
+        generate(&block)
+    }
+
+    #[test]
+    fn inlines_a_method_argument_after_the_puc_lookup() {
+        let output = inlined_dialect(
+            "local function arg()\n    return 1\nend\nlocal obj = { m = print }\nobj:m(arg())",
+            crate::Dialect::Lua53,
+        );
+        assert!(!output.contains("arg()"), "{output}");
+        assert!(output.contains("obj"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_method_argument_before_the_luau_lookup() {
+        let output = inlined_dialect(
+            "local function arg()\n    return 1\nend\nlocal obj = { m = print }\nobj:m(arg())",
+            crate::Dialect::Luau,
+        );
+        assert!(!output.contains("arg()"), "{output}");
+        assert!(output.contains(":m"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_method_argument_with_an_unknown_lookup_order() {
+        let output = inlined_output(
+            "local function arg()\n    return 1\nend\nlocal obj = { m = print }\nobj:m(arg())",
+        );
+        assert!(output.contains("arg()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_method_argument_on_a_fresh_table_in_an_unknown_dialect() {
+        let output =
+            inlined_output("local function arg()\n    return 1\nend\n({ m = print }):m(arg())");
+        assert!(!output.contains("arg()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_when_every_reaching_definition_has_the_same_body() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function(x)\n        return x + 1\n    end\nelse\n    f = function(x)\n        return x + 1\n    end\nend\nreturn f(1)",
+        );
+        assert!(!output.contains("f(1)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_reaching_definitions_have_different_bodies() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function()\n        return 1\n    end\nelse\n    f = function()\n        return 2\n    end\nend\nreturn f()",
+        );
         assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_one_path_leaves_the_local_nil() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function()\n        return 1\n    end\nend\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_the_last_of_several_assignments() {
+        let output = inlined_output(
+            "local f\nf = function()\n    return 1\nend\nf = function()\n    return 2\nend\nreturn f()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_an_alias_that_captured_the_value_before_a_reassignment() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nlocal g = f\nf = function()\n    return 2\nend\nreturn g()",
+        );
+        assert!(!output.contains("g()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_call_after_an_assignment_in_the_same_loop_iteration() {
+        let output = inlined_output(
+            "for i = 1, 3 do\n    local f\n    f = function()\n        return i\n    end\n    print(f())\nend\nreturn 0",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_a_nested_function_can_rewrite_the_local() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nlocal function reset()\n    f = function()\n        return 2\n    end\nend\nreset()\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_when_a_goto_can_skip_the_assignment() {
+        let output = inlined_dialect(
+            "local f\nif flag then goto after end\nf = function()\n    return 1\nend\n::after::\nreturn f()",
+            crate::Dialect::Lua52,
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_closure_call_created_after_the_assignment() {
+        let output = inlined_output(
+            "local f\nif math.random() > 0.5 then\n    f = function(x)\n        return x + 1\n    end\nelse\n    f = function(x)\n        return x + 1\n    end\nend\nlocal g = function()\n    return f(1)\nend\nreturn g()",
+        );
+        assert!(!output.contains("f(1)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_closure_call_when_a_later_write_can_run() {
+        let output = inlined_output(
+            "local f = function()\n    return 1\nend\nlocal g = function()\n    return f()\nend\nf = function()\n    return 2\nend\nreturn g()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_closure_call_when_a_loop_can_rewrite_the_upvalue() {
+        let output = inlined_output(
+            "local f\nfor i = 1, 2 do\n    f = function()\n        return i\n    end\n    local g = function()\n        return f()\n    end\n    print(g())\nend\nreturn 0",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_while_condition_without_capturing_a_body_local() {
+        let output = inlined_output(
+            "local value = 0\nlocal function check()\n    value = value + 1\n    return value < 2\nend\nwhile check() do\n    local value = 10\n    print(value)\nend\nreturn value",
+        );
+        assert!(!output.contains("check()"), "{output}");
+        assert!(output.contains("while true"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_conditional_while_condition_operand() {
+        let output = inlined_output(
+            "local function check()\n    return true\nend\nwhile false and check() do\n    break\nend\nreturn 0",
+        );
+        assert!(output.contains("check()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_repeat_condition_with_a_body_local() {
+        let output = inlined_output(
+            "local i = 0\nlocal function check(value)\n    return value >= 2\nend\nrepeat\n    i = i + 1\n    local done = i\nuntil check(done)\nreturn i",
+        );
+        assert!(!output.contains("check("), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_luau_repeat_condition_across_continue() {
+        let output = inlined_dialect(
+            "local i = 0\nlocal function check()\n    return i >= 3\nend\nrepeat\n    i = i + 1\n    if i == 2 then continue end\n    print(i)\nuntil check()\nreturn i",
+            crate::Dialect::Luau,
+        );
+        assert!(!output.contains("check()"), "{output}");
+        assert!(!output.contains("continue"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_luau_repeat_condition_that_reads_a_local_before_continue() {
+        let output = inlined_dialect(
+            "local i = 0\nlocal function check(value)\n    return value >= 3\nend\nrepeat\n    i = i + 1\n    local value = i\n    if i == 2 then continue end\n    print(value)\nuntil check(value)\nreturn i",
+            crate::Dialect::Luau,
+        );
+        assert!(!output.contains("check("), "{output}");
+        assert!(!output.contains("continue"), "{output}");
+        assert!(output.contains("local"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_repeat_condition_after_a_targeted_block_end_label() {
+        let code = "local function check()\n    return true\nend\nrepeat\n    goto continue\n    local skipped = 1\n    ::continue::\nuntil check()\nreturn 0";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(output.contains("check()"), "{output}");
+        parse(&output);
+    }
+
+    #[test]
+    fn keeps_an_unreachable_repeat_condition_after_return() {
+        let output = inlined_output(
+            "local function check()\n    return true\nend\nrepeat\n    return 1\nuntil check()",
+        );
+        assert!(output.contains("check()"), "{output}");
+    }
+
+    #[test]
+    fn inlining_after_a_goto_hoists_the_result_local() {
+        let code = "local function value(x)\n    return x\nend\ngoto done\nprint(value(1))\n::done::\nprint(0)\nreturn 0";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("value(1)"), "{output}");
+        parse(&output);
+    }
+
+    #[test]
+    fn renames_a_callee_label_that_collides_with_a_caller_label() {
+        let code = "local function value()\n    goto done\n    ::done::\n    return 1\nend\n::done::\ngoto finish\nprint(value())\n::finish::\nreturn 0";
+        let output = inlined_dialect(code, crate::Dialect::Lua52);
+        assert!(!output.contains("value()"), "{output}");
+        parse(&output);
     }
 
     #[test]
