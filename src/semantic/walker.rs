@@ -10,6 +10,7 @@ use crate::nodes::*;
 use super::analyzer::AnalyzerState;
 use super::error::SemanticResult;
 use super::goto::is_block_end_label;
+use super::label::StatementPosition;
 use super::scope::{ScopeId, ScopeKind};
 use super::symbol::SymbolKind;
 
@@ -30,6 +31,12 @@ impl AnalyzerState {
         }
 
         for (index, statement) in block.iter_statements().enumerate() {
+            let position = StatementPosition {
+                block: block
+                    .get_identity()
+                    .expect("the block identity was just assigned"),
+                index: index as u32,
+            };
             if matches!(statement, Statement::TypeDeclaration(_)) {
                 if let Some(cursor) = self.type_declaration_cursors.last_mut() {
                     *cursor += 1;
@@ -38,9 +45,9 @@ impl AnalyzerState {
             match statement {
                 Statement::Label(label) => {
                     let is_block_end = is_block_end_label(block, index);
-                    self.record_label(label, is_block_end)?;
+                    self.record_label(label, is_block_end, position)?;
                 }
-                statement => self.walk_statement(statement)?,
+                statement => self.walk_statement(statement, position)?,
             }
         }
 
@@ -98,7 +105,11 @@ impl AnalyzerState {
         result
     }
 
-    fn walk_statement(&mut self, statement: &Statement) -> SemanticResult<()> {
+    fn walk_statement(
+        &mut self,
+        statement: &Statement,
+        position: StatementPosition,
+    ) -> SemanticResult<()> {
         match statement {
             Statement::Assign(assign) => {
                 for value in assign.iter_values() {
@@ -142,7 +153,7 @@ impl AnalyzerState {
                 self.pop_scope();
                 result?;
             }
-            Statement::Goto(goto_statement) => self.record_goto(goto_statement),
+            Statement::Goto(goto_statement) => self.record_goto(goto_statement, position),
             Statement::If(if_statement) => {
                 for branch in if_statement.iter_branches() {
                     self.walk_expression(branch.get_condition())?;
@@ -155,7 +166,7 @@ impl AnalyzerState {
             Statement::Label(label) => {
                 // Labels are normally recorded by `walk_block_statements`; handle
                 // them here too so the walk is total.
-                self.record_label(label, false)?;
+                self.record_label(label, false, position)?;
             }
             Statement::LocalAssign(assign) => {
                 // Values are resolved before the locals are declared, so that

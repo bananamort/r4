@@ -97,6 +97,9 @@ pub struct BasicBlock {
     /// The AST construct that produced a [`Terminator::Branch`], when the
     /// terminator is a branch lowered from source.
     pub branch_origin: Option<ConditionOrigin>,
+    /// The structural position of the source last statement that produced the
+    /// terminator, when it was lowered from a `return`, `break` or `continue`.
+    pub terminator_origin: Option<StatementOrigin>,
     /// Blocks that can transfer control to this block.
     pub predecessors: Vec<BlockId>,
     /// Blocks this block can transfer control to.
@@ -114,6 +117,7 @@ impl BasicBlock {
             statement_origins: Vec::new(),
             expressions: Vec::new(),
             branch_origin: None,
+            terminator_origin: None,
             predecessors: Vec::new(),
             successors: Vec::new(),
             terminator: Terminator::Unreachable,

@@ -76,16 +76,32 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::cfg::{validate_block_identities, StatementOrigin, UnidentifiedBlock};
+use crate::cfg::{
+    build_chunk, build_function, validate_block_identities, CfgError, ConditionKind,
+    ConditionOrigin, StatementOrigin, UnidentifiedBlock,
+};
 use crate::nodes::{
     Arguments, AssignStatement, BinaryOperator, Block, BlockIdentity, ChildVisitor, DoStatement,
     Expression, Identifier, LastStatement, Prefix, ReadOnlyChildren, RepeatStatement, Statement,
     TableExpression, TypedIdentifier, Variable, VariableAssignment,
 };
 use crate::rules::NameGenerator;
-use crate::semantic::{LabelId, ScopeId, SemanticModel, SymbolId, SymbolKind};
+use crate::semantic::{LabelId, ScopeId, SemanticModel, SemanticQueryError, SymbolId, SymbolKind};
+
+mod reaching;
+
+use reaching::{DefinitionValue, FunctionRegion, ReachingError};
+
+/// Identifies one function literal by the statement that assigns it and the
+/// variable slot it occupies in that statement.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+struct FunctionKey {
+    origin: StatementOrigin,
+    slot: u32,
+}
 
 /// A local function that can be inlined at its call sites.
+#[derive(Clone, Debug)]
 struct InlinableFunction {
     /// The parameter names, in declaration order.
     parameters: Vec<String>,
@@ -100,10 +116,17 @@ struct InlinableFunction {
     uniform: bool,
     /// The symbols the body reads from outside the function.
     upvalues: Vec<SymbolId>,
-    /// The `f = function ...` statement that binds the function, when the
-    /// declaration and the assignment are separate. Calls are inlined only
-    /// where this assignment provably runs first.
-    assignment: Option<StatementOrigin>,
+}
+
+impl InlinableFunction {
+    /// Returns whether two definitions denote behaviorally identical functions.
+    fn same_function(&self, other: &Self) -> bool {
+        self.parameters == other.parameters
+            && self.body == other.body
+            && self.arity == other.arity
+            && self.uniform == other.uniform
+            && self.upvalues == other.upvalues
+    }
 }
 
 /// An error produced while inlining local functions.
@@ -112,12 +135,19 @@ pub enum InlineError {
     /// A block has no structural identity, so statement positions cannot be
     /// trusted.
     Provenance(UnidentifiedBlock),
+    /// The semantic model and the tree disagree on a statement or identifier,
+    /// or a function's control flow could not be built.
+    Reaching(ReachingError),
+    /// A block could not be mapped to the analyzed scope it belongs to.
+    Scope(SemanticQueryError),
 }
 
 impl fmt::Display for InlineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Provenance(error) => write!(f, "cannot inline local functions: {error}"),
+            Self::Reaching(error) => write!(f, "cannot inline local functions: {error}"),
+            Self::Scope(error) => write!(f, "cannot inline local functions: {error}"),
         }
     }
 }
@@ -126,6 +156,8 @@ impl std::error::Error for InlineError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Provenance(error) => Some(error),
+            Self::Reaching(error) => Some(error),
+            Self::Scope(error) => Some(error),
         }
     }
 }
@@ -133,6 +165,24 @@ impl std::error::Error for InlineError {
 impl From<UnidentifiedBlock> for InlineError {
     fn from(error: UnidentifiedBlock) -> Self {
         Self::Provenance(error)
+    }
+}
+
+impl From<ReachingError> for InlineError {
+    fn from(error: ReachingError) -> Self {
+        Self::Reaching(error)
+    }
+}
+
+impl From<CfgError> for InlineError {
+    fn from(error: CfgError) -> Self {
+        Self::Reaching(ReachingError::ControlFlow(error))
+    }
+}
+
+impl From<SemanticQueryError> for InlineError {
+    fn from(error: SemanticQueryError) -> Self {
+        Self::Scope(error)
     }
 }
 
@@ -151,8 +201,7 @@ pub fn inline_local_functions(
 ) -> Result<usize, InlineError> {
     validate_block_identities(block)?;
 
-    let mut collector = FunctionCollector::new(model);
-    collector.walk(block);
+    let collector = FunctionCollector::collect(block, model)?;
 
     if collector.functions.is_empty() {
         return Ok(0);
@@ -163,16 +212,20 @@ pub fn inline_local_functions(
     let mut inliner = Inliner {
         model,
         functions: &collector.functions,
-        parents: &collector.parents,
-        declarations: &collector.declarations,
+        literal_symbols: &collector.literal_symbols,
         aliases: &collector.aliases,
         labelled: &collector.labelled,
         block_functions: &collector.block_functions,
-        unconditional: &collector.unconditional,
+        regions: &collector.regions,
+        definition_locations: &collector.definition_locations,
+        nested_writes: &collector.nested_writes,
         names: &mut names,
         current_scope: None,
         current_position: None,
+        current_condition: None,
         clean: false,
+        hoist_locals: true,
+        hoisted: HashMap::new(),
         inlined: &mut inlined,
     };
     inliner.rewrite_block(block);
@@ -189,22 +242,10 @@ fn inlinable(
     symbol: SymbolId,
     body: &Block,
     parameters: &[&TypedIdentifier],
-    assignment: Option<StatementOrigin>,
 ) -> Option<InlinableFunction> {
     let info = model.symbol(symbol);
     if info.kind != SymbolKind::Local {
         return None;
-    }
-    match assignment {
-        // The declaration plus this one assignment is the whole history of the
-        // symbol. The call-site check proves the assignment has already run; a
-        // second write could have replaced the function before the call.
-        Some(_) if info.write_count == 2 => {}
-        Some(_) => return None,
-        // A declaration binds the function before the symbol is in scope, so
-        // every call already sees it.
-        None if model.is_immutable(symbol) => {}
-        None => return None,
     }
 
     let mut check = BodyCheck {
@@ -236,7 +277,6 @@ fn inlinable(
         arity,
         uniform,
         upvalues: check.upvalues,
-        assignment,
     })
 }
 
@@ -508,44 +548,80 @@ impl BodyCheck<'_> {
 // ----------------------------------------------------------------------
 
 /// Gathers the functions that can be inlined, the position of every function
-/// assignment, the enclosing statement of every block, and the function scopes
-/// that contain a `goto` or label.
+/// assignment, the enclosing statement of every block, the reaching
+/// definitions of every function region, and the function scopes that contain a
+/// `goto` or label.
 struct FunctionCollector<'m> {
     model: &'m SemanticModel,
-    functions: HashMap<SymbolId, InlinableFunction>,
-    /// The statement that evaluates each local's initializer.
-    declarations: HashMap<SymbolId, StatementOrigin>,
-    /// A local whose only non-declaration write is `alias = target`.
-    aliases: HashMap<SymbolId, (SymbolId, StatementOrigin)>,
-    /// The statement that contains each AST block.
-    parents: HashMap<BlockIdentity, (BlockIdentity, u32)>,
+    /// Every function literal assigned to a local, keyed by its structural
+    /// position. `None` records a literal that the inliner cannot reproduce.
+    functions: HashMap<FunctionKey, Option<InlinableFunction>>,
+    /// Local symbols that receive at least one function literal. This is an
+    /// over-approximation used only to decide when an earlier value must be
+    /// stored.
+    literal_symbols: HashSet<SymbolId>,
+    /// Direct `alias = target` assignments, for the same over-approximation.
+    aliases: HashMap<SymbolId, HashSet<SymbolId>>,
     /// Function scopes whose bodies contain a `goto` or label.
     labelled: HashSet<ScopeId>,
     /// The function scope that owns each block.
     block_functions: HashMap<BlockIdentity, ScopeId>,
-    /// Blocks that are the body of a `do` statement. Such a body always runs to
-    /// completion, so an assignment at its top level completes with the `do`.
-    unconditional: HashSet<BlockIdentity>,
+    /// Reaching definitions for each function region.
+    regions: HashMap<ScopeId, FunctionRegion>,
+    /// Where each symbol is defined.
+    definition_locations: HashMap<SymbolId, Vec<(ScopeId, reaching::DefinitionId)>>,
+    /// Captured locals written by a nested function. Such a local can change
+    /// whenever that function runs, so only its single immutable definition is
+    /// usable.
+    nested_writes: HashSet<SymbolId>,
+    /// The first structural inconsistency, if any.
+    error: Option<InlineError>,
 }
 
 impl<'m> FunctionCollector<'m> {
-    fn new(model: &'m SemanticModel) -> Self {
-        Self {
+    fn collect(root: &Block, model: &'m SemanticModel) -> Result<Self, InlineError> {
+        let mut collector = Self {
             model,
             functions: HashMap::new(),
-            declarations: HashMap::new(),
+            literal_symbols: HashSet::new(),
             aliases: HashMap::new(),
-            parents: HashMap::new(),
             labelled: HashSet::new(),
             block_functions: HashMap::new(),
-            unconditional: HashSet::new(),
+            regions: HashMap::new(),
+            definition_locations: HashMap::new(),
+            nested_writes: nested_writes(model),
+            error: None,
+        };
+        collector.walk(root);
+        if let Some(error) = collector.error {
+            return Err(error);
         }
+
+        let mut locations: HashMap<SymbolId, Vec<(ScopeId, reaching::DefinitionId)>> =
+            HashMap::new();
+        for (scope, region) in &collector.regions {
+            for (id, definition) in region.definitions.iter().enumerate() {
+                locations
+                    .entry(definition.symbol)
+                    .or_default()
+                    .push((*scope, id));
+            }
+        }
+        collector.definition_locations = locations;
+        Ok(collector)
     }
 
     fn walk(&mut self, block: &Block) {
+        if self.error.is_some() {
+            return;
+        }
         let Some(identity) = block.get_identity() else {
             return;
         };
+        self.ensure_region(block);
+        if self.error.is_some() {
+            return;
+        }
         let function = self.function_scope(block);
         if let Some(function) = function {
             self.block_functions.insert(identity, function);
@@ -557,14 +633,12 @@ impl<'m> FunctionCollector<'m> {
                 index: index as u32,
             };
             self.record_statement(statement, origin);
+            if self.error.is_some() {
+                return;
+            }
             if matches!(statement, Statement::Goto(_) | Statement::Label(_)) {
                 if let Some(function) = function {
                     self.labelled.insert(function);
-                }
-            }
-            if let Statement::Do(statement) = statement {
-                if let Some(identity) = statement.get_block().get_identity() {
-                    self.unconditional.insert(identity);
                 }
             }
             statement.for_each_child(&mut ChildWalker {
@@ -584,94 +658,156 @@ impl<'m> FunctionCollector<'m> {
         }
     }
 
+    /// Builds the control-flow graph and reaching definitions of the function
+    /// region that owns `block`, the first time the block is visited.
+    fn ensure_region(&mut self, block: &Block) {
+        let Ok(scope) = self.model.try_scope_of(block) else {
+            let error = self
+                .model
+                .try_scope_of(block)
+                .expect_err("the scope query just failed");
+            self.error = Some(InlineError::Scope(error));
+            return;
+        };
+        if !self.model.scope(scope).kind.is_function_boundary() || self.regions.contains_key(&scope)
+        {
+            return;
+        }
+        let cfg = if scope == self.model.chunk_scope() {
+            build_chunk(block, self.model)
+        } else {
+            build_function(block, self.model, scope)
+        };
+        match cfg {
+            Ok(cfg) => match FunctionRegion::analyze(cfg, self.model) {
+                Ok(region) => {
+                    self.regions.insert(scope, region);
+                }
+                Err(error) => self.error = Some(error.into()),
+            },
+            Err(error) => self.error = Some(error.into()),
+        }
+    }
+
     fn record_statement(&mut self, statement: &Statement, origin: StatementOrigin) {
         match statement {
             Statement::LocalFunction(function) => {
                 let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
-                self.record(
+                self.record_literal(
+                    FunctionKey { origin, slot: 0 },
                     function.get_identifier(),
                     function.get_block(),
                     &parameters,
-                    None,
+                );
+            }
+            Statement::Function(function) => {
+                let name = function.get_name();
+                if !name.get_field_names().is_empty() || name.get_method().is_some() {
+                    return;
+                }
+                let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
+                self.record_literal(
+                    FunctionKey { origin, slot: 0 },
+                    name.get_name(),
+                    function.get_block(),
+                    &parameters,
                 );
             }
             Statement::LocalAssign(assignment) => {
-                if assignment.variables_len() == 1 && assignment.values_len() == 1 {
-                    if let (Some(variable), Some(Expression::Function(function))) = (
-                        assignment.iter_variables().next(),
-                        assignment.iter_values().next(),
-                    ) {
-                        let parameters: Vec<&TypedIdentifier> =
-                            function.iter_parameters().collect();
-                        self.record(
-                            variable.get_identifier(),
-                            function.get_block(),
-                            &parameters,
-                            None,
-                        );
-                    }
-                }
-                for (variable, value) in assignment.iter_variables().zip(assignment.iter_values()) {
-                    if !matches!(value, Expression::Identifier(_)) {
+                let values: Vec<&Expression> = assignment.iter_values().collect();
+                for (index, variable) in assignment.iter_variables().enumerate() {
+                    let Some(value) = values.get(index) else {
                         continue;
-                    }
-                    if let Some(symbol) = self.model.resolve_identifier(variable.get_identifier()) {
-                        self.declarations.entry(symbol).or_insert(origin);
-                    }
+                    };
+                    self.record_initializer(variable.get_identifier(), value, origin, index);
                 }
             }
             Statement::Assign(assignment) => {
-                if assignment.variables_len() != 1 || assignment.values_len() != 1 {
-                    return;
-                }
-                let Some(Variable::Identifier(identifier)) = assignment.iter_variables().next()
-                else {
-                    return;
-                };
-                match assignment.iter_values().next() {
-                    Some(Expression::Function(function)) => {
-                        let parameters: Vec<&TypedIdentifier> =
-                            function.iter_parameters().collect();
-                        self.record(identifier, function.get_block(), &parameters, Some(origin));
-                    }
-                    Some(Expression::Identifier(target)) => {
-                        let Some(symbol) = self.model.resolve_identifier(identifier) else {
-                            return;
-                        };
-                        let Some(target) = self.model.resolve_identifier(target) else {
-                            return;
-                        };
-                        let info = self.model.symbol(symbol);
-                        if info.kind == SymbolKind::Local && info.write_count == 2 {
-                            self.aliases.insert(symbol, (target, origin));
-                        }
-                    }
-                    _ => {}
+                let values: Vec<&Expression> = assignment.iter_values().collect();
+                for (index, variable) in assignment.iter_variables().enumerate() {
+                    let Variable::Identifier(identifier) = variable else {
+                        continue;
+                    };
+                    let Some(value) = values.get(index) else {
+                        continue;
+                    };
+                    self.record_initializer(identifier, value, origin, index);
                 }
             }
             _ => {}
         }
     }
 
-    fn record(
+    fn record_initializer(
         &mut self,
         identifier: &Identifier,
-        body: &Block,
-        parameters: &[&TypedIdentifier],
-        assignment: Option<StatementOrigin>,
+        value: &Expression,
+        origin: StatementOrigin,
+        slot: usize,
     ) {
-        let Some(symbol) = self.model.resolve_identifier(identifier) else {
+        if let Some(function) = reaching::function_expression(value) {
+            let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
+            self.record_literal(
+                FunctionKey {
+                    origin,
+                    slot: slot as u32,
+                },
+                identifier,
+                function.get_block(),
+                &parameters,
+            );
+            return;
+        }
+        let Some(target) = identifier_expression(value) else {
             return;
         };
-        if let Some(function) = inlinable(self.model, symbol, body, parameters, assignment) {
-            self.functions.insert(symbol, function);
+        let (Some(symbol), Some(target)) = (
+            self.model.resolve_identifier(identifier),
+            self.model.resolve_identifier(target),
+        ) else {
+            let unresolved = if self.model.resolve_identifier(identifier).is_none() {
+                identifier
+            } else {
+                target
+            };
+            self.error = Some(InlineError::Reaching(ReachingError::UnresolvedIdentifier {
+                name: unresolved.get_name().clone(),
+                line: unresolved
+                    .get_token()
+                    .and_then(|token| token.get_line_number()),
+            }));
+            return;
+        };
+        if self.model.symbol(symbol).kind == SymbolKind::Local {
+            self.aliases.entry(symbol).or_default().insert(target);
         }
     }
 
-    fn walk_child(&mut self, child: &Block, parent: StatementOrigin) {
-        if let Some(identity) = child.get_identity() {
-            self.parents.insert(identity, (parent.block, parent.index));
+    fn record_literal(
+        &mut self,
+        key: FunctionKey,
+        identifier: &Identifier,
+        body: &Block,
+        parameters: &[&TypedIdentifier],
+    ) {
+        let Some(symbol) = self.model.resolve_identifier(identifier) else {
+            self.error = Some(InlineError::Reaching(ReachingError::UnresolvedIdentifier {
+                name: identifier.get_name().clone(),
+                line: identifier
+                    .get_token()
+                    .and_then(|token| token.get_line_number()),
+            }));
+            return;
+        };
+        if self.model.symbol(symbol).kind != SymbolKind::Local {
+            return;
         }
+        self.literal_symbols.insert(symbol);
+        let function = inlinable(self.model, symbol, body, parameters);
+        self.functions.insert(key, function);
+    }
+
+    fn walk_child(&mut self, child: &Block, _parent: StatementOrigin) {
         self.walk(child);
     }
 
@@ -689,6 +825,35 @@ impl<'m> FunctionCollector<'m> {
             scope = current.parent?;
         }
     }
+}
+
+fn identifier_expression(expression: &Expression) -> Option<&Identifier> {
+    match expression {
+        Expression::Identifier(identifier) => Some(identifier),
+        Expression::Parenthese(parenthese) => identifier_expression(parenthese.inner_expression()),
+        Expression::TypeCast(type_cast) => identifier_expression(type_cast.get_expression()),
+        _ => None,
+    }
+}
+
+/// Returns the captured local symbols that a nested function can write.
+fn nested_writes(model: &SemanticModel) -> HashSet<SymbolId> {
+    let mut result = HashSet::new();
+    for symbol in &model.symbols {
+        if symbol.kind != SymbolKind::Local || symbol.capturing_scopes.is_empty() {
+            continue;
+        }
+        let declaring_function = model.function_scope_of(symbol.declaring_scope);
+        if let Some(uses) = model.try_uses_of(symbol.id) {
+            if uses.iter().any(|r#use| {
+                r#use.kind == crate::semantic::AccessKind::Write
+                    && model.function_scope_of(r#use.scope) != declaring_function
+            }) {
+                result.insert(symbol.id);
+            }
+        }
+    }
+    result
 }
 
 /// Finds every block nested in a statement's expressions, recording the
@@ -734,28 +899,40 @@ impl ChildVisitor for ChildWalker<'_, '_> {
 /// so an inserted preamble is never visited again.
 struct Inliner<'m, 'n, 'i> {
     model: &'m SemanticModel,
-    functions: &'m HashMap<SymbolId, InlinableFunction>,
+    functions: &'m HashMap<FunctionKey, Option<InlinableFunction>>,
+    /// Local symbols that receive at least one function literal.
+    literal_symbols: &'m HashSet<SymbolId>,
+    /// Direct alias assignments.
+    aliases: &'m HashMap<SymbolId, HashSet<SymbolId>>,
     /// The statement that contains each nested block.
-    parents: &'m HashMap<BlockIdentity, (BlockIdentity, u32)>,
-    /// The statement that evaluates each local's initializer.
-    declarations: &'m HashMap<SymbolId, StatementOrigin>,
-    /// A local whose only non-declaration write is `alias = target`.
-    aliases: &'m HashMap<SymbolId, (SymbolId, StatementOrigin)>,
     /// Function scopes whose bodies contain a `goto` or label.
     labelled: &'m HashSet<ScopeId>,
     /// The function scope that owns each block.
     block_functions: &'m HashMap<BlockIdentity, ScopeId>,
-    /// Blocks that are the body of a `do` statement.
-    unconditional: &'m HashSet<BlockIdentity>,
+    /// Reaching definitions for each function region.
+    regions: &'m HashMap<ScopeId, FunctionRegion>,
+    /// Where each tracked symbol is defined.
+    definition_locations: &'m HashMap<SymbolId, Vec<(ScopeId, reaching::DefinitionId)>>,
+    /// Captured locals written by a nested function.
+    nested_writes: &'m HashSet<SymbolId>,
     names: &'n mut NameGenerator,
     /// The scope of the block currently being rewritten.
     current_scope: Option<ScopeId>,
     /// The statement being rewritten, or the position after the block's last
     /// statement when rewriting its last statement.
     current_position: Option<StatementOrigin>,
+    /// The branch condition whose expression is being rewritten, when the
+    /// current call sits in an `if`, `while` or `repeat` condition.
+    current_condition: Option<ConditionOrigin>,
     /// Whether the statement has not evaluated anything observable yet, so a
     /// call can be moved to the statement's start without reordering.
     clean: bool,
+    /// Whether escaping locals may be hoisted to the function start. Condition
+    /// preambles disable this because they run inside the loop.
+    hoist_locals: bool,
+    /// Escaping locals that must be declared at the start of a function whose
+    /// body contains `goto` or labels, keyed by the function scope.
+    hoisted: HashMap<ScopeId, Vec<TypedIdentifier>>,
     inlined: &'i mut usize,
 }
 
@@ -763,9 +940,12 @@ impl Inliner<'_, '_, '_> {
     fn rewrite_block(&mut self, block: &mut Block) {
         let previous_scope = self.current_scope;
         let previous_position = self.current_position;
+        let previous_condition = self.current_condition;
         let previous_clean = self.clean;
+        let previous_hoist = self.hoist_locals;
         let scope = self.model.try_scope_of(block).ok();
         self.current_scope = scope;
+        self.current_condition = None;
         let identity = block.get_identity();
         let statements = block.take_statements();
         let count = statements.len();
@@ -798,9 +978,25 @@ impl Inliner<'_, '_, '_> {
             }
             block.set_last_statement(last);
         }
+
+        if let Some(scope) = scope {
+            if self.model.scope(scope).kind.is_function_boundary() {
+                if let Some(declarations) = self.hoisted.remove(&scope) {
+                    let mut statements = block.take_statements();
+                    statements.insert(
+                        0,
+                        Statement::from(VariableAssignment::new(declarations, Vec::new())),
+                    );
+                    block.set_statements(statements);
+                }
+            }
+        }
+
         self.current_scope = previous_scope;
         self.current_position = previous_position;
+        self.current_condition = previous_condition;
         self.clean = previous_clean;
+        self.hoist_locals = previous_hoist;
     }
 
     fn rewrite_statement(&mut self, statement: &mut Statement, preambles: &mut Vec<Statement>) {
@@ -1013,11 +1209,36 @@ impl Inliner<'_, '_, '_> {
             return expression;
         }
         let name = self.names.generate();
-        preambles.push(Statement::from(VariableAssignment::new(
-            vec![TypedIdentifier::new(name.clone())],
-            vec![expression],
-        )));
+        if let Some(scope) = self.hoist_target() {
+            // A label in the same function could be jumped over; keep the
+            // declaration at the function start so the jump never enters its
+            // scope. The value is still computed here.
+            self.hoisted
+                .entry(scope)
+                .or_default()
+                .push(TypedIdentifier::new(name.clone()));
+            preambles.push(Statement::from(AssignStatement::new(
+                vec![Variable::Identifier(Identifier::new(name.clone()))],
+                vec![expression],
+            )));
+        } else {
+            preambles.push(Statement::from(VariableAssignment::new(
+                vec![TypedIdentifier::new(name.clone())],
+                vec![expression],
+            )));
+        }
         Expression::identifier(name)
+    }
+
+    /// Returns the function scope whose start must receive escaping locals,
+    /// when the current function contains a `goto` or label.
+    fn hoist_target(&self) -> Option<ScopeId> {
+        if !self.hoist_locals {
+            return None;
+        }
+        let position = self.current_position?;
+        let function = *self.block_functions.get(&position.block)?;
+        self.labelled.contains(&function).then_some(function)
     }
 
     fn materialize_prefix(&mut self, prefix: Prefix, preambles: &mut Vec<Statement>) -> Prefix {
@@ -1030,16 +1251,16 @@ impl Inliner<'_, '_, '_> {
         }
     }
 
-    /// Returns whether a new local can be declared at the current position
-    /// without disturbing a `goto`.
+    /// Returns whether a new local can be declared at the current position.
+    ///
+    /// Locals that escape the preamble are hoisted to the start of functions
+    /// containing labels, so inserting at the statement itself is always safe
+    /// for the statements this pass rewrites.
     fn position_allows_insertion(&self) -> bool {
         let Some(position) = self.current_position else {
             return false;
         };
-        let Some(function) = self.block_functions.get(&position.block) else {
-            return false;
-        };
-        !self.labelled.contains(function)
+        self.block_functions.contains_key(&position.block)
     }
 
     fn rewrite_single(&mut self, expression: &mut Expression, preambles: &mut Vec<Statement>) {
@@ -1313,33 +1534,15 @@ impl Inliner<'_, '_, '_> {
         if !self.clean || call.get_method().is_some() {
             return None;
         }
-        // Inserting the preamble declares locals before the call's statement. A
-        // label in the same function could be the target of a goto that jumps
-        // over them, which would be invalid once the locals exist.
         let position = self.current_position?;
         if !self.position_allows_insertion() {
             return None;
         }
         let callee = self.model.resolve_identifier(callee(call.get_prefix())?)?;
-        let (symbol, hops) = self.resolve_function(callee)?;
-        let function = self.functions.get(&symbol)?;
+        let key = self.resolve_call_function(callee)?;
+        let function = self.functions.get(&key)?.as_ref()?.clone();
         if tail && !function.uniform {
             return None;
-        }
-
-        // Each hop captures the value it reads, so the hop must run after that
-        // value is bound and before the position that reads the hop.
-        let mut reader = position;
-        for hop in hops {
-            if !self.assignment_reaches(hop, reader) {
-                return None;
-            }
-            reader = hop;
-        }
-        if let Some(assignment) = function.assignment {
-            if !self.assignment_reaches(assignment, reader) {
-                return None;
-            }
         }
 
         let scope = self.current_scope?;
@@ -1398,10 +1601,14 @@ impl Inliner<'_, '_, '_> {
                 .iter()
                 .map(|name| TypedIdentifier::new(name.clone()))
                 .collect();
-            preambles.push(Statement::from(VariableAssignment::new(
-                declarations,
-                Vec::new(),
-            )));
+            if let Some(scope) = self.hoist_target() {
+                self.hoisted.entry(scope).or_default().extend(declarations);
+            } else {
+                preambles.push(Statement::from(VariableAssignment::new(
+                    declarations,
+                    Vec::new(),
+                )));
+            }
         }
         preambles.push(Statement::from(DoStatement::new(inner)));
         *self.inlined += 1;
@@ -1416,90 +1623,167 @@ impl Inliner<'_, '_, '_> {
         }
     }
 
-    /// Resolves a call target through immutable local aliases to a recorded
-    /// function.
+    /// Resolves the function key that `symbol` holds at the current position.
     ///
-    /// Returns the function's symbol and the declaration positions of the
-    /// aliases on the way, so an assignment-bound function can prove it was
-    /// the value each alias captured.
-    fn resolve_function(&self, mut symbol: SymbolId) -> Option<(SymbolId, Vec<StatementOrigin>)> {
-        let mut hops = Vec::new();
-        for _ in 0..self.model.symbols.len() {
-            if self.functions.contains_key(&symbol) {
-                return Some((symbol, hops));
-            }
-            let next = if let Some((target, position)) = self.aliases.get(&symbol) {
-                hops.push(*position);
-                *target
-            } else if self.model.is_immutable(symbol) {
-                let next = self.model.symbol(symbol).initializer?;
-                hops.push(*self.declarations.get(&symbol)?);
-                next
-            } else {
-                return None;
-            };
-            if next == symbol {
+    /// Direct calls use the reaching definitions of the enclosing function.
+    /// A call inside a nested function reads an upvalue; only an immutable
+    /// symbol has one fixed value, so a mutable upvalue is refused. The alias
+    /// chain is followed at the position each alias captured its value, not at
+    /// the call site.
+    fn resolve_call_function(&self, symbol: SymbolId) -> Option<FunctionKey> {
+        let position = self.current_position?;
+        let region_scope = *self.block_functions.get(&position.block)?;
+        let declaring_scope = self.model.symbol(symbol).declaring_scope;
+        let declaring_function = self.model.function_scope_of(declaring_scope)?;
+
+        if declaring_function == region_scope {
+            let definitions = self.definitions_at(region_scope, position)?;
+            self.resolve_definitions(symbol, definitions, region_scope, &mut HashSet::new())
+        } else {
+            if !self.model.is_immutable(symbol) {
                 return None;
             }
-            symbol = next;
+            let locations = self.definition_locations.get(&symbol)?;
+            if locations.len() != 1 {
+                return None;
+            }
+            let (scope, id) = locations[0];
+            self.resolve_definition(scope, id, symbol, &mut HashSet::new())
         }
-        None
     }
 
-    /// Returns whether the assignment at `origin` runs before `position` on
-    /// every path, reasoning only about structured control flow.
-    ///
-    /// The position's enclosing blocks form a chain. The assignment must be on
-    /// that chain with the statement leading toward the position after it. An
-    /// assignment deeper than the position is lifted out of each enclosing `do`
-    /// body, because a `do` body always runs to completion before its statement
-    /// finishes.
-    ///
-    /// A call inside a nested function is accepted when the assignment precedes
-    /// the function's definition, because the body cannot run before the
-    /// definition completes.
-    fn assignment_reaches(&self, assignment: StatementOrigin, position: StatementOrigin) -> bool {
-        let Some(function) = self.block_functions.get(&position.block) else {
-            return false;
-        };
-        if self.labelled.contains(function) {
-            return false;
+    /// Returns the reaching definitions at the current position within
+    /// `region_scope`.
+    fn definitions_at(
+        &self,
+        region_scope: ScopeId,
+        position: StatementOrigin,
+    ) -> Option<&[reaching::DefinitionId]> {
+        let region = self.regions.get(&region_scope)?;
+        if let Some(condition) = self.current_condition {
+            if let Some(definitions) = region.at_condition(condition) {
+                return Some(definitions);
+            }
+        }
+        if let Some(definitions) = region.at_statement(position) {
+            return Some(definitions);
+        }
+        if let Some(definitions) = region.at_loop_initial(position) {
+            return Some(definitions);
+        }
+        region.at_terminator(position)
+    }
+
+    fn resolve_definition(
+        &self,
+        region_scope: ScopeId,
+        id: reaching::DefinitionId,
+        symbol: SymbolId,
+        visited: &mut HashSet<(SymbolId, StatementOrigin)>,
+    ) -> Option<FunctionKey> {
+        self.resolve_definitions(symbol, &[id], region_scope, visited)
+    }
+
+    /// Resolves a reaching set to one function that every reaching definition
+    /// agrees on.
+    fn resolve_definitions(
+        &self,
+        symbol: SymbolId,
+        definitions: &[reaching::DefinitionId],
+        region_scope: ScopeId,
+        visited: &mut HashSet<(SymbolId, StatementOrigin)>,
+    ) -> Option<FunctionKey> {
+        let region = self.regions.get(&region_scope)?;
+        let relevant = region.definitions_of(definitions, symbol);
+        if relevant.is_empty() {
+            return None;
         }
 
-        let mut chain = vec![position];
-        let mut current = position;
-        let mut remaining = self.parents.len() + 1;
-        while let Some(&(parent, index)) = self.parents.get(&current.block) {
-            if parent == current.block || remaining == 0 {
-                return false;
-            }
-            current = StatementOrigin {
-                block: parent,
-                index,
+        let mut chosen: Option<(FunctionKey, InlinableFunction)> = None;
+        for id in relevant {
+            let definition = region.definition(id);
+            let key = match &definition.value {
+                DefinitionValue::Function(key) => *key,
+                DefinitionValue::Alias(target) => {
+                    self.resolve_alias(*target, definition.origin, region_scope, visited)?
+                }
+                DefinitionValue::Other => return None,
             };
-            chain.push(current);
-            remaining -= 1;
+            let function = self.functions.get(&key)?.as_ref()?.clone();
+            match &chosen {
+                Some((_, previous)) if !previous.same_function(&function) => return None,
+                Some(_) => {}
+                None => chosen = Some((key, function)),
+            }
         }
+        chosen.map(|(key, _)| key)
+    }
 
-        let mut current = assignment;
-        loop {
-            if let Some(entry) = chain.iter().find(|entry| entry.block == current.block) {
-                return current.index < entry.index;
-            }
-            if !self.unconditional.contains(&current.block) {
-                return false;
-            }
-            let Some(&(parent, index)) = self.parents.get(&current.block) else {
-                return false;
-            };
-            if parent == current.block {
-                return false;
-            }
-            current = StatementOrigin {
-                block: parent,
-                index,
-            };
+    /// Resolves the value captured by `target` at the alias statement.
+    fn resolve_alias(
+        &self,
+        target: SymbolId,
+        origin: StatementOrigin,
+        region_scope: ScopeId,
+        visited: &mut HashSet<(SymbolId, StatementOrigin)>,
+    ) -> Option<FunctionKey> {
+        if !visited.insert((target, origin)) {
+            return None;
         }
+        let target_scope = self.model.symbol(target).declaring_scope;
+        let target_function = self.model.function_scope_of(target_scope)?;
+        if target_function == region_scope {
+            let region = self.regions.get(&region_scope)?;
+            let definitions = region.at_statement(origin)?;
+            self.resolve_definitions(target, definitions, region_scope, visited)
+        } else {
+            if !self.model.is_immutable(target) {
+                return None;
+            }
+            let locations = self.definition_locations.get(&target)?;
+            if locations.len() != 1 {
+                return None;
+            }
+            let (scope, id) = locations[0];
+            self.resolve_definition(scope, id, target, visited)
+        }
+    }
+
+    /// Returns whether `symbol` can ever denote one of the recorded functions.
+    fn may_resolve_function(&self, symbol: SymbolId) -> bool {
+        let mut visited = HashSet::new();
+        self.may_resolve_function_inner(symbol, &mut visited)
+    }
+
+    fn may_resolve_function_inner(
+        &self,
+        symbol: SymbolId,
+        visited: &mut HashSet<SymbolId>,
+    ) -> bool {
+        if !visited.insert(symbol) {
+            return false;
+        }
+        if self.literal_symbols.contains(&symbol) {
+            return true;
+        }
+        self.aliases.get(&symbol).is_some_and(|targets| {
+            targets
+                .iter()
+                .any(|target| self.may_resolve_function_inner(*target, visited))
+        })
+    }
+
+    /// Returns whether reading `symbol` as a callee is stable: it resolves to a
+    /// local function value that a later inline body in the same expression
+    /// cannot change.
+    fn callee_binding_is_stable(&self, symbol: SymbolId) -> bool {
+        if !self.may_resolve_function(symbol) {
+            return false;
+        }
+        let info = self.model.symbol(symbol);
+        info.write_count <= 1
+            || info.capturing_scopes.is_empty()
+            || !self.nested_writes.contains(&symbol)
     }
 
     fn table_entry_may_inline(&self, entry: &crate::nodes::TableEntry) -> bool {
@@ -1650,16 +1934,16 @@ impl Inliner<'_, '_, '_> {
         let Some(symbol) = self.model.resolve_identifier(identifier) else {
             return false;
         };
-        self.resolve_function(symbol).is_some()
+        self.may_resolve_function(symbol)
     }
 
     /// Returns whether reading `identifier` as a callee is stable: it resolves
-    /// to a recorded local function whose binding is never replaced.
+    /// to a local function value that a later inline body cannot replace.
     fn callee_is_inlinable(&self, identifier: &Identifier) -> bool {
         let Some(symbol) = self.model.resolve_identifier(identifier) else {
             return false;
         };
-        self.resolve_function(symbol).is_some()
+        self.callee_binding_is_stable(symbol)
     }
 
     /// Returns whether no scope between `scope` and the global scope declares an
