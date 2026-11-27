@@ -1286,6 +1286,7 @@ impl Inliner<'_, '_, '_> {
         let has_continue = block_contains_continue(&body);
         if has_continue
             && (body_has_close_local(&body)
+                || body_contains_goto_or_label(&body)
                 || body_declares_environment_local(&body, body_scope, self.model)
                 || !self.hoist_repeat_condition_locals(
                     &mut body,
@@ -2604,6 +2605,37 @@ fn statement_contains_continue(statement: &Statement) -> bool {
                     .get_else_block()
                     .is_some_and(block_contains_continue)
         }
+        _ => false,
+    }
+}
+
+/// Returns whether a body contains a `goto` or label outside nested functions.
+///
+/// A `continue` only exists in Luau, which has no labels, but an undetermined
+/// dialect can parse both. Guarding statements after a `continue` would move
+/// labels into nested blocks, so that combination is refused.
+fn body_contains_goto_or_label(block: &Block) -> bool {
+    block
+        .iter_statements()
+        .any(statement_contains_goto_or_label)
+}
+
+fn statement_contains_goto_or_label(statement: &Statement) -> bool {
+    match statement {
+        Statement::Goto(_) | Statement::Label(_) => true,
+        Statement::Do(statement) => body_contains_goto_or_label(statement.get_block()),
+        Statement::If(statement) => {
+            statement
+                .iter_branches()
+                .any(|branch| body_contains_goto_or_label(branch.get_block()))
+                || statement
+                    .get_else_block()
+                    .is_some_and(body_contains_goto_or_label)
+        }
+        Statement::While(statement) => body_contains_goto_or_label(statement.get_block()),
+        Statement::Repeat(statement) => body_contains_goto_or_label(statement.get_block()),
+        Statement::NumericFor(statement) => body_contains_goto_or_label(statement.get_block()),
+        Statement::GenericFor(statement) => body_contains_goto_or_label(statement.get_block()),
         _ => false,
     }
 }
@@ -3991,6 +4023,14 @@ mod test {
         );
         assert!(!output.contains("until check"), "{output}");
         assert!(!output.contains("continue"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_repeat_condition_that_mixes_continue_and_labels() {
+        let output = inlined_output(
+            "local function check()\n    return true\nend\nrepeat\n    local x = 1\n    if x == 1 then continue end\n    goto done\n    ::done::\nuntil check()\nreturn 0",
+        );
+        assert!(output.contains("until check()"), "{output}");
     }
 
     #[test]
