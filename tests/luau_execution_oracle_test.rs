@@ -1647,10 +1647,22 @@ local function value()
     return 1
 end
 ::done::
-goto finish
 print(value())
-::finish::
 return 0
+"#,
+    ),
+    (
+        "a reachable call hoists its result around a later goto",
+        r#"
+local function value(x)
+    return x
+end
+local first = value(1)
+goto done
+print(first)
+::done::
+print(first)
+return first
 "#,
     ),
     (
