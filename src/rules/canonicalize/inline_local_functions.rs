@@ -50,9 +50,12 @@
 //! bodies. PUC Lua and LuaJIT perform the method lookup before the arguments,
 //! so the lookup value is stored there too and the call becomes a normal call
 //! with the receiver as its first argument. Luau evaluates the arguments before
-//! `NAMECALL`, so it keeps the method syntax with the stored receiver and the
-//! lookup stays at the call. An undetermined dialect only reorders when the
-//! receiver is a fresh table literal, whose lookup cannot run code.
+//! `NAMECALL`, so it keeps the method syntax. A bare local receiver (or a
+//! grouped or type-asserted local, which Luau unwraps to the same register)
+//! stays live, because `NAMECALL` reads its current value after the arguments;
+//! every other receiver is stored before them. An undetermined dialect only
+//! reorders when the receiver is a fresh table literal, whose lookup cannot run
+//! code.
 //!
 //! # Loop conditions
 //!
@@ -69,8 +72,10 @@
 //! move a condition-visible local into a nested scope, its declaration is moved
 //! to the top of the loop body under a fresh name and every bound reference is
 //! renamed, preserving the per-iteration cell for closures. A repeat condition
-//! that is unreachable after a final `return`/`break`, or whose `continue`
-//! lowering would move a `<close>` local's closing point, is left alone.
+//! that is unreachable after a final `return`/`break`, whose body ends in a
+//! goto-targeted label (appending would remove the label's block-end scope
+//! relaxation), or whose `continue` lowering would move a `<close>` local's
+//! closing point, is left alone.
 //!
 //! # `goto` and labels
 //!
