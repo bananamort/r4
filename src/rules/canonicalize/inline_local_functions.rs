@@ -1575,8 +1575,15 @@ impl Inliner<'_, '_, '_> {
                     if !group_visible {
                         continue;
                     }
+                    // Hoisting replaces the declaration with an assignment, so
+                    // it must not silently drop a type annotation, a Lua local
+                    // attribute, or a Luau `const` declaration.
+                    if assignment.get_assignment_kind() == crate::nodes::AssignmentKind::Const {
+                        safe = false;
+                        break;
+                    }
                     for (variable, symbol) in assignment.iter_variables().zip(&symbols) {
-                        if variable.get_attribute() == Some("close") {
+                        if variable.get_attribute().is_some() || variable.get_type().is_some() {
                             safe = false;
                             break;
                         }
@@ -1596,6 +1603,10 @@ impl Inliner<'_, '_, '_> {
                     };
                     if !visible.contains(&symbol) {
                         continue;
+                    }
+                    if function.get_assignment_kind() == crate::nodes::AssignmentKind::Const {
+                        safe = false;
+                        break;
                     }
                     hoisted_symbols.insert(symbol);
                     renames
@@ -4597,6 +4608,18 @@ mod test {
             trailing_label_is_targeted(&unidentified, &model),
             Err(InlineError::Invariant { .. })
         ));
+    }
+
+    #[test]
+    fn keeps_a_typed_repeat_condition_local_unchanged() {
+        let code = "local i = 0\nlocal function id(value)\n    return value\nend\nrepeat\n    i = i + 1\n    local current: number = i\n    if i == 2 then\n        continue\n    end\nuntil id(current) >= 2\nreturn i";
+        let output = inlined_dialect(code, crate::Dialect::Luau);
+        assert!(output.contains("local current: number = i"), "{output}");
+        assert!(output.contains("until id(current) >= 2"), "{output}");
+        crate::Parser::default()
+            .luau()
+            .parse_analyzed(&output)
+            .unwrap_or_else(|error| panic!("failed to re-analyze:\n{error}\n{output}"));
     }
 
     #[test]
