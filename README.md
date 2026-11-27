@@ -62,7 +62,10 @@ cargo llvm-cov --workspace --all-features --fail-under-lines 94
 
 The `luau_execution_oracle_test` integration test runs a corpus of programs in
 an embedded Lune VM (Roblox runtime included), both before and after r4's
-transformations, and asserts byte-identical observable behavior.
+transformations, and asserts byte-identical observable behavior. It also reruns
+the optimized programs and a seeded fuzz corpus under an external Lua 5.4
+interpreter, so `lua5.4` must be on `PATH` (or `LUA54` set) for that part.
+Local runs skip it when no Lua 5.4 is found; CI installs it and requires it.
 
 ## License
 

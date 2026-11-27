@@ -25,6 +25,11 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y lua5.4
+
       - name: Run cargo test
         run: cargo test --workspace --all-targets
 
@@ -92,6 +97,11 @@ jobs:
         run: |
           rustup component add llvm-tools-preview
           command -v cargo-llvm-cov >/dev/null || cargo install cargo-llvm-cov --locked
+
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y lua5.4
 
       - name: Measure coverage
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 94

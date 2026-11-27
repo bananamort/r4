@@ -949,11 +949,15 @@ impl Inliner<'_, '_, '_> {
     ) {
         let length = values.len();
         let original = std::mem::take(values);
+        let mut later_may_inline = vec![false; length];
+        let mut seen = false;
+        for index in (0..length).rev() {
+            later_may_inline[index] = seen;
+            seen = seen || self.expression_may_inline(&original[index]);
+        }
         let mut rewritten = Vec::with_capacity(length);
         for (index, value) in original.iter().enumerate() {
-            let later_may_inline = original[index + 1..]
-                .iter()
-                .any(|later| self.expression_may_inline(later));
+            let later_may_inline = later_may_inline[index];
             let clean = self.clean;
             let tail = multi_tail && index + 1 == length;
             let results = self.rewrite(value.clone(), tail, preambles);
@@ -1160,12 +1164,15 @@ impl Inliner<'_, '_, '_> {
                     _ => true,
                 });
                 let length = entries.len();
+                let mut later_may_inline = vec![false; length];
+                let mut seen = false;
+                for index in (0..length).rev() {
+                    later_may_inline[index] = seen;
+                    seen = seen || self.table_entry_may_inline(&entries[index]);
+                }
                 let mut replacement: Vec<crate::nodes::TableEntry> = Vec::with_capacity(length);
                 for (index, entry) in entries.iter().enumerate() {
-                    let later_may_inline = spillable
-                        && entries[index + 1..]
-                            .iter()
-                            .any(|later| self.table_entry_may_inline(later));
+                    let later_may_inline = spillable && later_may_inline[index];
                     let clean = self.clean;
                     let tail = index + 1 == length;
                     match entry.clone() {

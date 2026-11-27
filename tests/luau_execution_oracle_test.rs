@@ -11,34 +11,63 @@
 //! binary, no Roblox Studio install, and no textual comparison against another
 //! compiler.
 
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+
 use r4::generator::{LuaGenerator, ReadableLuaGenerator};
 use r4::rules::canonicalize;
 use r4::rules::desugar_to_lua51;
 use r4::rules::rename_variables::rename_variables;
 use r4::semantic::SemanticAnalyzer;
 use r4::{Dialect, Parser};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 
-/// Wraps a program so that its `print` output and its return values (or the
-/// error it raises) are captured into a single, canonical string.
+/// Builds a program that captures `print` output and return values (or the
+/// raised error) into one canonical string.
 ///
-/// The program is placed inside a function, so a top-level `return` becomes the
-/// captured result. `print` is temporarily replaced with a collector; a string
-/// `__encode` renders tables with sorted keys so the rendering is deterministic.
-fn harness(program: &str) -> String {
+/// `external` selects the Lua 5.4 form, which installs an instruction hook so a
+/// non-terminating program is reported instead of hanging, and writes the
+/// result to stdout.
+fn harness_source(program: &str, external: bool) -> String {
+    let hook = if external {
+        r#"local __hooked = false
+if debug and debug.sethook then
+    debug.sethook(function() error("__timeout") end, "", 500000)
+    __hooked = true
+end
+"#
+    } else {
+        ""
+    };
+    let unhook = if external {
+        "if __hooked then debug.sethook() end\n"
+    } else {
+        ""
+    };
+    let ending = if external {
+        "io.write(__result)"
+    } else {
+        "return __result"
+    };
     format!(
         r##"local __log = {{}}
 local __print = print
-print = function(...)
-    local parts = {{}}
-    for i = 1, select("#", ...) do
-        parts[i] = tostring((select(i, ...)))
-    end
-    __log[#__log + 1] = table.concat(parts, "\t")
-end
 
-local function __encode(value)
+local function __encode(value, seen, depth)
     local kind = type(value)
     if kind == "table" then
+        seen = seen or {{}}
+        depth = depth or 0
+        if seen[value] then
+            return "<cycle>"
+        end
+        if depth >= 8 then
+            return "<deep>"
+        end
+        seen[value] = true
         local keys = {{}}
         for key in pairs(value) do
             keys[#keys + 1] = key
@@ -46,27 +75,119 @@ local function __encode(value)
         table.sort(keys, function(a, b) return __encode(a) < __encode(b) end)
         local rendered = {{}}
         for _, key in ipairs(keys) do
-            rendered[#rendered + 1] = __encode(key) .. "=" .. __encode(value[key])
+            rendered[#rendered + 1] = __encode(key) .. "=" .. __encode(value[key], seen, depth + 1)
         end
+        seen[value] = nil
         return "{{" .. table.concat(rendered, ",") .. "}}"
     elseif kind == "string" then
         return string.format("%q", value)
+    elseif kind == "function" or kind == "thread" or kind == "userdata" then
+        return "<" .. kind .. ">"
     end
     return tostring(value)
 end
 
-local __packed = table.pack(pcall(function()
+print = function(...)
+    local parts = {{}}
+    for i = 1, select("#", ...) do
+        parts[i] = __encode((select(i, ...)))
+    end
+    __log[#__log + 1] = table.concat(parts, "\t")
+end
+
+{hook}local __packed = table.pack(pcall(function()
 {program}
 end))
-print = __print
+{unhook}print = __print
+
+if __packed[1] == false and type(__packed[2]) == "string" then
+    __packed[2] = string.gsub(__packed[2], "^.-:%d+: ", "")
+end
 
 local __results = {{}}
 for i = 1, __packed.n do
     __results[i] = __encode(__packed[i])
 end
-return table.concat(__results, "\t") .. "\n---log---\n" .. table.concat(__log, "\n")
+local __result = table.concat(__results, "\t") .. "\n---log---\n" .. table.concat(__log, "\n")
+{ending}
 "##
     )
+}
+
+fn harness(program: &str) -> String {
+    harness_source(program, false)
+}
+
+fn lua_harness(program: &str) -> String {
+    harness_source(program, true)
+}
+
+/// Finds a Lua 5.4 interpreter. `LUA54` overrides the search; otherwise the
+/// usual binary names are checked and their version is confirmed.
+fn find_lua54() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(path) = std::env::var_os("LUA54") {
+        candidates.push(PathBuf::from(path));
+    }
+    candidates.extend(["lua5.4", "lua54", "lua"].into_iter().map(PathBuf::from));
+    for candidate in candidates {
+        let Ok(output) = Command::new(&candidate).arg("-v").output() else {
+            continue;
+        };
+        let mut version = String::from_utf8_lossy(&output.stdout).into_owned();
+        version.push_str(&String::from_utf8_lossy(&output.stderr));
+        if version.contains("Lua 5.4") {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn lua54_binary() -> Option<&'static Path> {
+    static BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
+    BINARY.get_or_init(find_lua54).as_deref()
+}
+
+/// Returns the Lua 5.4 interpreter, or `None` when it is unavailable outside CI.
+fn required_lua54() -> Option<&'static Path> {
+    let binary = lua54_binary();
+    if binary.is_none() {
+        if std::env::var_os("CI").is_some() {
+            panic!("Lua 5.4 is required in CI; install `lua5.4` or set `LUA54`");
+        }
+        eprintln!("skipping the Lua 5.4 oracle: no Lua 5.4 interpreter found");
+    }
+    binary
+}
+
+/// Runs `program` in an external Lua 5.4 process and returns its captured
+/// behavior. The harness turns errors into captured output, so this only fails
+/// when the interpreter itself could not run the chunk.
+fn observe_lua54(binary: &Path, program: &str) -> String {
+    let chunk = lua_harness(program);
+    let mut child = Command::new(binary)
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("failed to start `{}`: {error}", binary.display()));
+    child
+        .stdin
+        .as_mut()
+        .expect("the Lua process has piped stdin")
+        .write_all(chunk.as_bytes())
+        .expect("the harness must be written to Lua");
+    drop(child.stdin.take());
+    let output = child
+        .wait_with_output()
+        .expect("the Lua process must finish");
+    assert!(
+        output.status.success(),
+        "Lua 5.4 could not run the program:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("the Lua output is UTF-8")
 }
 
 /// Runs `program` in a fresh embedded Luau VM and returns its captured behavior.
@@ -1236,6 +1357,151 @@ fn optimized_programs_keep_identical_behavior() {
         assert_eq!(
             before, after,
             "`{name}` changed behavior after optimization:\n{optimized}"
+        );
+    }
+}
+
+/// Number of seeded fuzz programs compared under Lua 5.4.
+const FUZZ_PROGRAMS: u64 = 40;
+
+/// Builds a deterministic, terminating Lua 5.4 program from `seed`.
+///
+/// The programs exercise helper inlining, assignment-bound helpers, aliases,
+/// upvalue reads and writes, bounded loops, tables, nested functions, shadowed
+/// names, and calls in arguments, operands, index keys, and table entries.
+fn generate_fuzz_program(seed: u64) -> String {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let base = rng.random_range(1..=9);
+    let value = rng.random_range(1..=9);
+    let tag = ["alpha", "beta", "gamma"][rng.random_range(0..3)];
+
+    let mut lines: Vec<String> = vec![
+        format!("local counter = {base}"),
+        format!("local value = {value}"),
+        format!("local tag = {tag:?}"),
+        "local function bump(step)".to_string(),
+        "    counter = counter + step".to_string(),
+        "    return counter".to_string(),
+        "end".to_string(),
+        "local function set_value(next)".to_string(),
+        "    value = next".to_string(),
+        "    return value".to_string(),
+        "end".to_string(),
+        "local function read_value()".to_string(),
+        "    return value".to_string(),
+        "end".to_string(),
+        "local function combine(a, b)".to_string(),
+        "    return a + b".to_string(),
+        "end".to_string(),
+        "local function choose(n)".to_string(),
+        format!("    if n > {} then", rng.random_range(1..=9)),
+        "        return n".to_string(),
+        "    end".to_string(),
+        "    return n + 1".to_string(),
+        "end".to_string(),
+        "local function sum_to(n)".to_string(),
+        "    local total = 0".to_string(),
+        "    for i = 1, n do".to_string(),
+        "        total = total + i".to_string(),
+        "    end".to_string(),
+        "    return total".to_string(),
+        "end".to_string(),
+        "local function make(x)".to_string(),
+        "    return function()".to_string(),
+        "        return x".to_string(),
+        "    end".to_string(),
+        "end".to_string(),
+        "local later".to_string(),
+        format!(
+            "later = function(x) return x + {} end",
+            rng.random_range(1..=9)
+        ),
+        "local alias".to_string(),
+        "alias = combine".to_string(),
+    ];
+
+    let statements = rng.random_range(4..=8);
+    let mut next = 0usize;
+    for _ in 0..statements {
+        let step = rng.random_range(1..=5);
+        match rng.random_range(0..10) {
+            0 => lines.push(format!("print(counter, bump({step}))")),
+            1 => lines.push(format!("print(value + bump({step}))")),
+            2 => lines.push(format!("print(tag .. bump({step}))")),
+            3 => {
+                lines.push(format!(
+                    "local t{next} = {{ value, bump({step}), item = value, other = bump({step}) }}"
+                ));
+                lines.push(format!(
+                    "print(t{next}[1], t{next}.item, t{next}[2], t{next}.other)"
+                ));
+                lines.push(format!("print(t{next})"));
+                next += 1;
+            }
+            4 => {
+                lines.push(format!("local n{next} = combine(counter, {step})"));
+                lines.push(format!("print(n{next}, choose(n{next}))"));
+                next += 1;
+            }
+            5 => lines.push(format!("print(sum_to({}))", rng.random_range(1..=4))),
+            6 => lines.push(format!("print(make({step})())")),
+            7 => lines.push(format!("print(later({step}), alias({step}, {step}))")),
+            8 => lines.push(format!(
+                "do local value = {step}; print(value, read_value(), bump({step})) end"
+            )),
+            _ => {
+                lines.push(format!(
+                    "for i = 1, {} do counter = counter + i end",
+                    rng.random_range(1..=4)
+                ));
+                lines.push("print(counter)".to_string());
+            }
+        }
+    }
+
+    lines.push("print(counter, value, tag)".to_string());
+    lines.push("return counter, value".to_string());
+    lines.join("\n")
+}
+
+#[test]
+fn optimized_programs_keep_identical_behavior_in_lua54() {
+    let Some(binary) = required_lua54() else {
+        return;
+    };
+    let mut compared = 0;
+    for (name, program) in OPTIMIZED_PROGRAMS {
+        if Parser::default().lua54().parse(program).is_err() {
+            continue;
+        }
+        let optimized = optimize(program);
+        if Parser::default().lua54().parse(&optimized).is_err() {
+            continue;
+        }
+        let before = observe_lua54(binary, program);
+        let after = observe_lua54(binary, &optimized);
+        assert_eq!(
+            before, after,
+            "`{name}` changed behavior under Lua 5.4:\n{optimized}"
+        );
+        compared += 1;
+    }
+    assert!(compared > 0, "no oracle program is valid Lua 5.4");
+}
+
+#[test]
+fn fuzzed_programs_keep_identical_behavior_in_lua54() {
+    let Some(binary) = required_lua54() else {
+        return;
+    };
+    for seed in 0..FUZZ_PROGRAMS {
+        let program = generate_fuzz_program(seed);
+        let optimized = optimize(&program);
+        let before = observe_lua54(binary, &program);
+        let after = observe_lua54(binary, &optimized);
+        assert_eq!(
+            before, after,
+            "fuzzed program {seed} changed behavior:\n--- source ---\n{program}\n--- optimized ---\n{optimized}"
         );
     }
 }
