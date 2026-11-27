@@ -4490,6 +4490,14 @@ mod test {
     }
 
     #[test]
+    fn uses_definitions_reaching_a_while_condition() {
+        let output = inlined_output(
+            "local f = function()\n    return true\nend\nif true then\nend\nf = function()\n    return false\nend\nwhile f() do\n    break\nend\nreturn 0",
+        );
+        assert!(!output.contains("while f()"), "{output}");
+    }
+
+    #[test]
     fn uses_definitions_reaching_a_for_initializer() {
         let output = inlined_output(
             "local f = function()\n    return 1\nend\nif true then\nend\nf = function()\n    return 2\nend\nfor i = f(), 2 do\n    break\nend\nreturn 0",
