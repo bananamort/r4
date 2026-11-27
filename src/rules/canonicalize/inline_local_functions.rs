@@ -83,8 +83,10 @@ use crate::cfg::{
 use crate::nodes::{
     Arguments, AssignStatement, BinaryOperator, Block, BlockIdentity, ChildVisitor, DoStatement,
     Expression, Identifier, LastStatement, Prefix, ReadOnlyChildren, RepeatStatement, Statement,
-    TableExpression, TypedIdentifier, Variable, VariableAssignment,
+    TableExpression, TypedIdentifier, UnaryExpression, UnaryOperator, Variable, VariableAssignment,
+    WhileStatement,
 };
+use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::rules::NameGenerator;
 use crate::semantic::{LabelId, ScopeId, SemanticModel, SemanticQueryError, SymbolId, SymbolKind};
 
@@ -224,6 +226,7 @@ pub fn inline_local_functions(
         current_position: None,
         current_condition: None,
         clean: false,
+        allow_inline: true,
         hoist_locals: true,
         hoisted: HashMap::new(),
         inlined: &mut inlined,
@@ -927,6 +930,9 @@ struct Inliner<'m, 'n, 'i> {
     /// Whether the statement has not evaluated anything observable yet, so a
     /// call can be moved to the statement's start without reordering.
     clean: bool,
+    /// Whether a call at the current expression position may be inlined. A
+    /// repeat condition that cannot be rewritten falls back to this.
+    allow_inline: bool,
     /// Whether escaping locals may be hoisted to the function start. Condition
     /// preambles disable this because they run inside the loop.
     hoist_locals: bool,
@@ -942,10 +948,13 @@ impl Inliner<'_, '_, '_> {
         let previous_position = self.current_position;
         let previous_condition = self.current_condition;
         let previous_clean = self.clean;
+        let previous_allow_inline = self.allow_inline;
         let previous_hoist = self.hoist_locals;
         let scope = self.model.try_scope_of(block).ok();
         self.current_scope = scope;
         self.current_condition = None;
+        self.allow_inline = true;
+        self.hoist_locals = true;
         let identity = block.get_identity();
         let statements = block.take_statements();
         let count = statements.len();
@@ -996,6 +1005,7 @@ impl Inliner<'_, '_, '_> {
         self.current_position = previous_position;
         self.current_condition = previous_condition;
         self.clean = previous_clean;
+        self.allow_inline = previous_allow_inline;
         self.hoist_locals = previous_hoist;
     }
 
@@ -1054,8 +1064,13 @@ impl Inliner<'_, '_, '_> {
                         // conditions were false.
                         self.clean = false;
                     }
+                    let saved_condition = self.current_condition;
+                    self.current_condition = self.current_position.map(|position| {
+                        ConditionOrigin::new(position, ConditionKind::IfBranch(index as u32))
+                    });
                     let mut condition = branch.get_condition().clone();
                     self.rewrite_single(&mut condition, preambles);
+                    self.current_condition = saved_condition;
                     *branch.mutate_condition() = condition;
                     self.rewrite_block(branch.mutate_block());
                 }
@@ -1064,22 +1079,10 @@ impl Inliner<'_, '_, '_> {
                 }
             }
             Statement::While(statement) => {
-                // The condition runs before every iteration, so its evaluation
-                // cannot be hoisted to the statement.
-                self.clean = false;
-                let mut condition = statement.get_condition().clone();
-                self.rewrite_single(&mut condition, preambles);
-                statement.mutate_condition().clone_from(&condition);
-                self.rewrite_block(statement.mutate_block());
+                self.rewrite_while(statement, preambles);
             }
-            Statement::Repeat(statement) => {
-                self.rewrite_block(statement.mutate_block());
-                // The condition runs after every iteration, so its evaluation
-                // cannot be hoisted to the statement.
-                self.clean = false;
-                let mut condition = statement.get_condition().clone();
-                self.rewrite_single(&mut condition, preambles);
-                statement.mutate_condition().clone_from(&condition);
+            Statement::Repeat(_) => {
+                self.rewrite_repeat_statement(statement, preambles);
             }
             Statement::NumericFor(statement) => {
                 let mut start = statement.get_start().clone();
@@ -1109,6 +1112,390 @@ impl Inliner<'_, '_, '_> {
             Statement::TypeFunction(statement) => self.rewrite_block(statement.mutate_block()),
             _ => {}
         }
+    }
+
+    /// Rewrites a loop or branch condition with reaching definitions taken from
+    /// the condition's CFG entry.
+    fn rewrite_condition(
+        &mut self,
+        condition: &Expression,
+        kind: ConditionKind,
+        scope: Option<ScopeId>,
+        allow_inline: bool,
+    ) -> (Expression, Vec<Statement>) {
+        let saved_condition = self.current_condition;
+        let saved_hoist = self.hoist_locals;
+        let saved_scope = self.current_scope;
+        let saved_clean = self.clean;
+        let saved_allow_inline = self.allow_inline;
+
+        self.current_condition = self
+            .current_position
+            .map(|position| ConditionOrigin::new(position, kind));
+        self.hoist_locals = false;
+        self.allow_inline = allow_inline;
+        if let Some(scope) = scope {
+            self.current_scope = Some(scope);
+        }
+        self.clean = true;
+
+        let mut rewritten = condition.clone();
+        let mut preambles = Vec::new();
+        self.rewrite_single(&mut rewritten, &mut preambles);
+
+        self.current_condition = saved_condition;
+        self.hoist_locals = saved_hoist;
+        self.current_scope = saved_scope;
+        self.clean = saved_clean;
+        self.allow_inline = saved_allow_inline;
+        (rewritten, preambles)
+    }
+
+    /// Rewrites a `while` condition. The condition is evaluated before every
+    /// iteration, so an inline preamble is placed at the top of a `while true`
+    /// body followed by a break when the condition is false.
+    fn rewrite_while(&mut self, statement: &mut WhileStatement, _preambles: &mut Vec<Statement>) {
+        let (condition, condition_preambles) =
+            self.rewrite_condition(statement.get_condition(), ConditionKind::While, None, true);
+
+        self.rewrite_block(statement.mutate_block());
+
+        if condition_preambles.is_empty() {
+            *statement.mutate_condition() = condition;
+            return;
+        }
+
+        let mut body = statement.get_block().clone();
+        let mut statements = condition_preambles;
+        statements.push(break_unless(condition));
+        let original = body.take_statements();
+        statements.extend(original);
+        body.set_statements(statements);
+        *statement = WhileStatement::new(body, Expression::from(true));
+    }
+
+    /// Rewrites a `repeat` condition. The condition is evaluated after each
+    /// iteration and can see the body's top-level locals, including after a
+    /// `continue`. The loop is rewritten to a `while true` whose condition
+    /// check runs at the top of the body after a first-iteration guard.
+    ///
+    /// Body locals the condition reads are declared at the top of the loop body
+    /// under fresh names, and every reference bound to them is renamed. The
+    /// declaration still runs on every iteration, so closures keep their
+    /// per-iteration cells. `continue` jumps to the `while` condition (`true`)
+    /// and then reaches the condition check, exactly like the original
+    /// `repeat`.
+    fn rewrite_repeat_statement(
+        &mut self,
+        statement: &mut Statement,
+        preambles: &mut Vec<Statement>,
+    ) {
+        let Statement::Repeat(repeat) = statement else {
+            return;
+        };
+        let body_scope = self.model.try_scope_of(repeat.get_block()).ok();
+        let original_condition = repeat.get_condition().clone();
+        let before_condition = *self.inlined;
+        let (mut condition, mut condition_preambles) =
+            self.rewrite_condition(&original_condition, ConditionKind::Repeat, body_scope, true);
+        let condition_inlined = *self.inlined - before_condition;
+
+        let mut body = repeat.get_block().clone();
+        self.rewrite_block(&mut body);
+
+        if condition_preambles.is_empty() {
+            *repeat.mutate_condition() = condition;
+            repeat.mutate_block().clone_from(&body);
+            return;
+        }
+
+        let Some(body_scope) = body_scope else {
+            *repeat.mutate_condition() = original_condition;
+            repeat.mutate_block().clone_from(&body);
+            return;
+        };
+
+        if !self.hoist_repeat_condition_locals(
+            &mut body,
+            body_scope,
+            &mut condition,
+            &mut condition_preambles,
+        ) {
+            // The condition cannot be moved to the loop top. Restore the
+            // original condition and rewrite it without inlining. The body is
+            // already rewritten and remains valid.
+            *self.inlined -= condition_inlined;
+            *repeat.mutate_condition() = original_condition.clone();
+            let (fallback, fallback_preambles) = self.rewrite_condition(
+                &original_condition,
+                ConditionKind::Repeat,
+                Some(body_scope),
+                false,
+            );
+            debug_assert!(
+                fallback_preambles.is_empty(),
+                "a non-inlining condition rewrite must not produce a preamble"
+            );
+            *repeat.mutate_condition() = fallback;
+            repeat.mutate_block().clone_from(&body);
+            return;
+        }
+
+        let skip = self.names.generate();
+        self.declare_outside_loop(skip.clone(), Expression::from(true), preambles);
+
+        let skip_identifier = || Identifier::new(skip.clone());
+        let check = Statement::from(crate::nodes::IfStatement::new(
+            vec![crate::nodes::IfBranch::new(
+                Expression::from(UnaryExpression::new(
+                    UnaryOperator::Not,
+                    Expression::identifier(skip.clone()),
+                )),
+                Block::new(
+                    condition_preambles
+                        .into_iter()
+                        .chain(std::iter::once(Statement::from(
+                            crate::nodes::IfStatement::new(
+                                vec![crate::nodes::IfBranch::new(
+                                    condition,
+                                    Block::new(vec![], Some(LastStatement::Break(None))),
+                                )],
+                                None,
+                            ),
+                        )))
+                        .collect(),
+                    None,
+                ),
+            )],
+            None,
+        ));
+
+        let clear_skip = Statement::from(AssignStatement::new(
+            vec![Variable::Identifier(skip_identifier())],
+            vec![Expression::from(false)],
+        ));
+
+        let mut statements = body.take_statements();
+        statements.insert(0, clear_skip);
+        statements.insert(0, check);
+        body.set_statements(statements);
+
+        *statement = Statement::While(WhileStatement::new(body, Expression::from(true)));
+    }
+
+    /// Declares a local at the enclosing statement level. In a function that
+    /// contains labels the declaration is hoisted to the function start so a
+    /// forward `goto` never enters its scope.
+    fn declare_outside_loop(
+        &mut self,
+        name: String,
+        value: Expression,
+        preambles: &mut Vec<Statement>,
+    ) {
+        let target = self.current_position.and_then(|position| {
+            let function = *self.block_functions.get(&position.block)?;
+            self.labelled.contains(&function).then_some(function)
+        });
+        if let Some(scope) = target {
+            self.hoisted
+                .entry(scope)
+                .or_default()
+                .push(TypedIdentifier::new(name.clone()));
+            preambles.push(Statement::from(AssignStatement::new(
+                vec![Variable::Identifier(Identifier::new(name))],
+                vec![value],
+            )));
+        } else {
+            preambles.push(Statement::from(VariableAssignment::new(
+                vec![TypedIdentifier::new(name)],
+                vec![value],
+            )));
+        }
+    }
+
+    /// Moves the body locals read by a repeat condition to the top of the loop
+    /// body under fresh names and renames every bound reference. Returns false
+    /// when a declaration cannot be moved safely.
+    fn hoist_repeat_condition_locals(
+        &mut self,
+        body: &mut Block,
+        body_scope: ScopeId,
+        condition: &mut Expression,
+        condition_preambles: &mut Vec<Statement>,
+    ) -> bool {
+        let mut reads = BodyScopedReads {
+            model: self.model,
+            scope: body_scope,
+            symbols: HashSet::new(),
+        };
+        DefaultVisitor::visit_expression(condition, &mut reads);
+        let mut preamble_block = Block::new(std::mem::take(condition_preambles), None);
+        DefaultVisitor::visit_block(&mut preamble_block, &mut reads);
+        *condition_preambles = preamble_block.take_statements();
+
+        let visible = reads.symbols;
+        if visible.is_empty() {
+            return true;
+        }
+
+        // Find the declaration of every visible symbol. A visible symbol is a
+        // top-level local of the repeat body, so its declaration is either a
+        // `local` assignment or a `local function`.
+        let statements = body.take_statements();
+        let mut hoisted_symbols: HashSet<SymbolId> = HashSet::new();
+        let mut renames: HashMap<SymbolId, String> = HashMap::new();
+        let mut safe = true;
+
+        for statement in &statements {
+            match statement {
+                Statement::LocalAssign(assignment) => {
+                    let identifiers: Vec<&Identifier> = assignment
+                        .iter_variables()
+                        .map(|v| v.get_identifier())
+                        .collect();
+                    let symbols: Vec<Option<SymbolId>> = identifiers
+                        .iter()
+                        .map(|identifier| self.model.resolve_identifier(identifier))
+                        .collect();
+                    let group_visible = symbols
+                        .iter()
+                        .any(|symbol| symbol.is_some_and(|symbol| visible.contains(&symbol)));
+                    if !group_visible {
+                        continue;
+                    }
+                    for (variable, symbol) in assignment.iter_variables().zip(&symbols) {
+                        let Some(symbol) = *symbol else {
+                            safe = false;
+                            break;
+                        };
+                        if variable.get_attribute() == Some("close") {
+                            safe = false;
+                            break;
+                        }
+                        hoisted_symbols.insert(symbol);
+                        if !renames.contains_key(&symbol) {
+                            renames.insert(symbol, self.names.generate());
+                        }
+                    }
+                    if !safe {
+                        break;
+                    }
+                }
+                Statement::LocalFunction(function) => {
+                    let Some(symbol) = self.model.resolve_identifier(function.get_identifier())
+                    else {
+                        safe = false;
+                        break;
+                    };
+                    if !visible.contains(&symbol) {
+                        continue;
+                    }
+                    hoisted_symbols.insert(symbol);
+                    renames
+                        .entry(symbol)
+                        .or_insert_with(|| self.names.generate());
+                }
+                _ => {}
+            }
+        }
+
+        if !safe {
+            body.set_statements(statements);
+            return false;
+        }
+
+        if visible.iter().any(|symbol| !renames.contains_key(symbol)) {
+            body.set_statements(statements);
+            return false;
+        }
+
+        let mut transformed = Vec::with_capacity(statements.len());
+        for statement in statements {
+            match statement {
+                Statement::LocalAssign(assignment) => {
+                    let hoisted = assignment.iter_variables().any(|variable| {
+                        self.model
+                            .resolve_identifier(variable.get_identifier())
+                            .is_some_and(|symbol| hoisted_symbols.contains(&symbol))
+                    });
+                    if !hoisted {
+                        transformed.push(Statement::LocalAssign(assignment));
+                        continue;
+                    }
+                    let values: Vec<Expression> = assignment.iter_values().cloned().collect();
+                    if values.is_empty() {
+                        continue;
+                    }
+                    let variables: Vec<Variable> = assignment
+                        .iter_variables()
+                        .map(|variable| {
+                            let symbol = self
+                                .model
+                                .resolve_identifier(variable.get_identifier())
+                                .expect("hoisted declarations resolve");
+                            Variable::Identifier(Identifier::new(
+                                renames
+                                    .get(&symbol)
+                                    .expect("every hoisted variable has a name")
+                                    .clone(),
+                            ))
+                        })
+                        .collect();
+                    transformed.push(Statement::from(AssignStatement::new(variables, values)));
+                }
+                Statement::LocalFunction(function) => {
+                    let Some(symbol) = self.model.resolve_identifier(function.get_identifier())
+                    else {
+                        return false;
+                    };
+                    if !hoisted_symbols.contains(&symbol) {
+                        transformed.push(Statement::LocalFunction(function));
+                        continue;
+                    }
+                    let name = renames
+                        .get(&symbol)
+                        .expect("every hoisted function has a name")
+                        .clone();
+                    let expression = crate::nodes::FunctionExpression::new(
+                        function.get_block().clone(),
+                        function.iter_parameters().cloned().collect(),
+                        function.is_variadic(),
+                    );
+                    transformed.push(Statement::from(AssignStatement::new(
+                        vec![Variable::Identifier(Identifier::new(name))],
+                        vec![Expression::Function(expression)],
+                    )));
+                }
+                other => transformed.push(other),
+            }
+        }
+
+        body.set_statements(transformed);
+
+        let mut names: Vec<&String> = renames.values().collect();
+        names.sort();
+        let declarations: Vec<TypedIdentifier> = names
+            .into_iter()
+            .map(|name| TypedIdentifier::new(name.clone()))
+            .collect();
+        let mut statements = body.take_statements();
+        statements.insert(
+            0,
+            Statement::from(VariableAssignment::new(declarations, Vec::new())),
+        );
+        body.set_statements(statements);
+
+        let mut renamer = BindingRenamer {
+            model: self.model,
+            renames: &renames,
+        };
+        DefaultVisitor::visit_block(body, &mut renamer);
+        DefaultVisitor::visit_expression(condition, &mut renamer);
+        let mut preamble_block = Block::new(std::mem::take(condition_preambles), None);
+        DefaultVisitor::visit_block(&mut preamble_block, &mut renamer);
+        *condition_preambles = preamble_block.take_statements();
+
+        true
     }
 
     fn rewrite_last_statement(
@@ -1157,7 +1544,7 @@ impl Inliner<'_, '_, '_> {
             let clean = self.clean;
             let tail = multi_tail && index + 1 == length;
             let results = self.rewrite(value.clone(), tail, preambles);
-            if later_may_inline && clean && self.position_allows_insertion() {
+            if later_may_inline && clean && self.allow_inline && self.position_allows_insertion() {
                 // Store this value before the later body runs; the stored value
                 // keeps the original evaluation order.
                 for result in results {
@@ -1196,7 +1583,11 @@ impl Inliner<'_, '_, '_> {
             .any(|argument| self.expression_may_inline(argument));
 
         if let Some(method) = method {
-            if argument_may_inline && self.clean && self.position_allows_insertion() {
+            if argument_may_inline
+                && self.clean
+                && self.allow_inline
+                && self.position_allows_insertion()
+            {
                 if let Some(lookup_before_arguments) = self.method_lookup_order() {
                     let mut prefix = call.get_prefix().clone();
                     self.rewrite_prefix(&mut prefix, preambles);
@@ -1263,7 +1654,7 @@ impl Inliner<'_, '_, '_> {
         let prefix_clean = self.clean;
         let mut prefix = call.get_prefix().clone();
         self.rewrite_prefix(&mut prefix, preambles);
-        if spill && prefix_clean && self.position_allows_insertion() {
+        if spill && self.allow_inline && prefix_clean && self.position_allows_insertion() {
             prefix = self.materialize_prefix(prefix, preambles);
             self.clean = true;
         }
@@ -1392,7 +1783,12 @@ impl Inliner<'_, '_, '_> {
                 let clean = self.clean;
                 let mut left = binary.left().clone();
                 self.rewrite_single(&mut left, preambles);
-                if !conditional && right_may_inline && clean && self.position_allows_insertion() {
+                if !conditional
+                    && right_may_inline
+                    && clean
+                    && self.allow_inline
+                    && self.position_allows_insertion()
+                {
                     // A current-function local is read by the operator after the
                     // other operand runs, so it must not be copied early.
                     if concat || !self.is_delayed_operand(&left) {
@@ -1425,7 +1821,8 @@ impl Inliner<'_, '_, '_> {
                 let clean = self.clean;
                 let mut prefix = index.get_prefix().clone();
                 self.rewrite_prefix(&mut prefix, preambles);
-                if key_may_inline && clean && self.position_allows_insertion() {
+                if key_may_inline && clean && self.allow_inline && self.position_allows_insertion()
+                {
                     // A current-function local is read by the index operation
                     // after the key runs, so it must not be copied early.
                     if !self.prefix_is_delayed(&prefix) {
@@ -1492,7 +1889,11 @@ impl Inliner<'_, '_, '_> {
                         crate::nodes::TableEntry::Field(mut field) => {
                             let mut value = field.get_value().clone();
                             self.rewrite_single(&mut value, preambles);
-                            if later_may_inline && clean && self.position_allows_insertion() {
+                            if later_may_inline
+                                && clean
+                                && self.allow_inline
+                                && self.position_allows_insertion()
+                            {
                                 value = self.materialize(value, preambles);
                                 self.clean = true;
                             }
@@ -1503,6 +1904,7 @@ impl Inliner<'_, '_, '_> {
                             let mut key = index.get_key().clone();
                             self.rewrite_single(&mut key, preambles);
                             if spillable
+                                && self.allow_inline
                                 && later_may_inline
                                 && clean
                                 && self.position_allows_insertion()
@@ -1514,6 +1916,7 @@ impl Inliner<'_, '_, '_> {
                             let mut value = index.get_value().clone();
                             self.rewrite_single(&mut value, preambles);
                             if spillable
+                                && self.allow_inline
                                 && later_may_inline
                                 && clean
                                 && self.position_allows_insertion()
@@ -1531,6 +1934,7 @@ impl Inliner<'_, '_, '_> {
                             for result in results {
                                 let result = if later_may_inline
                                     && clean
+                                    && self.allow_inline
                                     && self.position_allows_insertion()
                                 {
                                     self.clean = true;
@@ -1623,7 +2027,7 @@ impl Inliner<'_, '_, '_> {
         tail: bool,
         preambles: &mut Vec<Statement>,
     ) -> Option<Vec<Expression>> {
-        if !self.clean || call.get_method().is_some() {
+        if !self.clean || !self.allow_inline || call.get_method().is_some() {
             return None;
         }
         if !self.position_allows_insertion() {
@@ -2077,6 +2481,51 @@ impl Inliner<'_, '_, '_> {
             current = self.model.scope(id).parent;
         }
         false
+    }
+}
+
+/// Builds `if not condition then break end`.
+fn break_unless(condition: Expression) -> Statement {
+    Statement::from(crate::nodes::IfStatement::new(
+        vec![crate::nodes::IfBranch::new(
+            Expression::from(UnaryExpression::new(UnaryOperator::Not, condition)),
+            Block::new(vec![], Some(LastStatement::Break(None))),
+        )],
+        None,
+    ))
+}
+
+/// Collects the symbols declared directly in one block scope that an
+/// expression reads. These are the body locals a repeat condition can see.
+struct BodyScopedReads<'m> {
+    model: &'m SemanticModel,
+    scope: ScopeId,
+    symbols: HashSet<SymbolId>,
+}
+
+impl NodeProcessor for BodyScopedReads<'_> {
+    fn process_identifier(&mut self, identifier: &mut Identifier) {
+        if let Some(symbol) = self.model.resolve_identifier(identifier) {
+            if self.model.symbol(symbol).declaring_scope == self.scope {
+                self.symbols.insert(symbol);
+            }
+        }
+    }
+}
+
+/// Renames every identifier occurrence bound to one of `renames`.
+struct BindingRenamer<'m, 'r> {
+    model: &'m SemanticModel,
+    renames: &'r HashMap<SymbolId, String>,
+}
+
+impl NodeProcessor for BindingRenamer<'_, '_> {
+    fn process_identifier(&mut self, identifier: &mut Identifier) {
+        if let Some(symbol) = self.model.resolve_identifier(identifier) {
+            if let Some(name) = self.renames.get(&symbol) {
+                identifier.set_name(name.clone());
+            }
+        }
     }
 }
 
