@@ -895,6 +895,19 @@ print(g(2))
 return g(3)
 "#,
     ),
+    (
+        "assignment-bound helper declared in an unconditional block",
+        r#"
+local f
+do
+    f = function(x)
+        return x + 1
+    end
+end
+print(f(1))
+return f(2)
+"#,
+    ),
 ];
 
 #[test]

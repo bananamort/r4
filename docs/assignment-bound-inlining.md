@@ -23,7 +23,10 @@ only when the assignment provably runs first:
   assignment;
 - a call inside a nested function is accepted when the assignment precedes the
   function's definition, because the body cannot run before the definition
-  completes.
+  completes;
+- an assignment inside a `do` body is lifted to the `do` statement, because the
+  body always runs to completion before that statement finishes. Loop bodies are
+  not lifted: a `break` or `continue` can leave them before the assignment.
 
 This accepts `local f; f = function() ... end; return f()` and rejects a
 conditional assignment (`if c then f = ... end; return f()`) or a call that

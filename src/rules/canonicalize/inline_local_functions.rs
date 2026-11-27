@@ -149,6 +149,7 @@ pub fn inline_local_functions(
         declarations: &collector.declarations,
         labelled: &collector.labelled,
         block_functions: &collector.block_functions,
+        unconditional: &collector.unconditional,
         names: &mut names,
         current_scope: None,
         current_position: None,
@@ -489,6 +490,9 @@ struct FunctionCollector<'m> {
     labelled: HashSet<ScopeId>,
     /// The function scope that owns each block.
     block_functions: HashMap<BlockIdentity, ScopeId>,
+    /// Blocks that are the body of a `do` statement. Such a body always runs to
+    /// completion, so an assignment at its top level completes with the `do`.
+    unconditional: HashSet<BlockIdentity>,
 }
 
 impl<'m> FunctionCollector<'m> {
@@ -500,6 +504,7 @@ impl<'m> FunctionCollector<'m> {
             parents: HashMap::new(),
             labelled: HashSet::new(),
             block_functions: HashMap::new(),
+            unconditional: HashSet::new(),
         }
     }
 
@@ -521,6 +526,11 @@ impl<'m> FunctionCollector<'m> {
             if matches!(statement, Statement::Goto(_) | Statement::Label(_)) {
                 if let Some(function) = function {
                     self.labelled.insert(function);
+                }
+            }
+            if let Statement::Do(statement) = statement {
+                if let Some(identity) = statement.get_block().get_identity() {
+                    self.unconditional.insert(identity);
                 }
             }
             statement.for_each_child(&mut ChildWalker {
@@ -684,6 +694,8 @@ struct Inliner<'m, 'n, 'i> {
     labelled: &'m HashSet<ScopeId>,
     /// The function scope that owns each block.
     block_functions: &'m HashMap<BlockIdentity, ScopeId>,
+    /// Blocks that are the body of a `do` statement.
+    unconditional: &'m HashSet<BlockIdentity>,
     names: &'n mut NameGenerator,
     /// The scope of the block currently being rewritten.
     current_scope: Option<ScopeId>,
@@ -1173,11 +1185,15 @@ impl Inliner<'_, '_, '_> {
     /// Returns whether the assignment at `origin` runs before `position` on
     /// every path, reasoning only about structured control flow.
     ///
-    /// Walks outwards from the position's block. When the assignment's block is
-    /// reached, the statement that leads toward the position must follow the
-    /// assignment. A call inside a nested function is accepted when the
-    /// assignment precedes the function's definition, because the body cannot
-    /// run before the definition completes.
+    /// The position's enclosing blocks form a chain. The assignment must be on
+    /// that chain with the statement leading toward the position after it. An
+    /// assignment deeper than the position is lifted out of each enclosing `do`
+    /// body, because a `do` body always runs to completion before its statement
+    /// finishes.
+    ///
+    /// A call inside a nested function is accepted when the assignment precedes
+    /// the function's definition, because the body cannot run before the
+    /// definition completes.
     fn assignment_reaches(&self, assignment: StatementOrigin, position: StatementOrigin) -> bool {
         let Some(function) = self.block_functions.get(&position.block) else {
             return false;
@@ -1185,25 +1201,40 @@ impl Inliner<'_, '_, '_> {
         if self.labelled.contains(function) {
             return false;
         }
-        let mut block = position.block;
-        let mut index = position.index;
+
+        let mut chain = vec![position];
+        let mut current = position;
         let mut remaining = self.parents.len() + 1;
-        loop {
-            if block == assignment.block {
-                return assignment.index < index;
+        while let Some(&(parent, index)) = self.parents.get(&current.block) {
+            if parent == current.block || remaining == 0 {
+                return false;
             }
-            let Some(&(parent, parent_index)) = self.parents.get(&block) else {
+            current = StatementOrigin {
+                block: parent,
+                index,
+            };
+            chain.push(current);
+            remaining -= 1;
+        }
+
+        let mut current = assignment;
+        loop {
+            if let Some(entry) = chain.iter().find(|entry| entry.block == current.block) {
+                return current.index < entry.index;
+            }
+            if !self.unconditional.contains(&current.block) {
+                return false;
+            }
+            let Some(&(parent, index)) = self.parents.get(&current.block) else {
                 return false;
             };
-            if parent == block {
+            if parent == current.block {
                 return false;
             }
-            block = parent;
-            index = parent_index;
-            remaining -= 1;
-            if remaining == 0 {
-                return false;
-            }
+            current = StatementOrigin {
+                block: parent,
+                index,
+            };
         }
     }
 
@@ -1619,6 +1650,30 @@ mod test {
     }
 
     #[test]
+    fn inlines_an_assignment_inside_an_unconditional_block() {
+        let output = inlined_output(
+            "local f\ndo\n    f = function()\n        return 1\n    end\nend\nreturn f()",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_an_assignment_inside_nested_unconditional_blocks() {
+        let output = inlined_output(
+            "local f\ndo\n    do\n        f = function()\n            return 1\n        end\n    end\n    local value = f()\nend\nreturn 0",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_an_assignment_inside_a_repeat_body() {
+        let output = inlined_output(
+            "local f\nrepeat\n    f = function()\n        return 1\n    end\nuntil true\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
     fn inlines_an_assignment_bound_call_after_an_unconditional_block() {
         let output = inlined_output(
             "local f\ndo\n    f = function()\n        return 1\n    end\n    return f()\nend",
@@ -1711,6 +1766,8 @@ mod test {
             "local f\nlocal g = f\nf = function()\n    return 1\nend\nreturn g()",
             "local f\nf = function(x)\n    return x\nend\nlocal g = function()\n    return f(1)\nend\nreturn g()",
             "local f\nlocal g = function()\n    return f(1)\nend\nf = function(x)\n    return x\nend\nreturn g()",
+            "local f\ndo\n    f = function()\n        return 1\n    end\nend\nreturn f()",
+            "local f\nrepeat\n    f = function()\n        return 1\n    end\nuntil true\nreturn f()",
         ] {
             let output = inlined_output(code);
             parse(&output);
