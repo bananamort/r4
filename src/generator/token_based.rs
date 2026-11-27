@@ -178,9 +178,10 @@ impl<'a> TokenBasedLuaGenerator<'a> {
             if let Some(semicolon) = tokens.semicolons.get(index).unwrap_or(&None) {
                 self.write_token(semicolon);
             } else if let Some((_, next_statement)) = iterator.peek() {
-                if utils::starts_with_parenthese(next_statement)
-                    && utils::ends_with_prefix(statement)
-                {
+                if utils::starts_with_parenthese(next_statement) {
+                    // A following parenthesized expression would otherwise be
+                    // parsed as the arguments of the previous statement's last
+                    // callable expression (Lua ignores the line break).
                     self.write_symbol(";");
                 }
             };
