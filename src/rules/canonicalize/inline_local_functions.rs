@@ -28,13 +28,15 @@
 //! scoped to the inline.
 //!
 //! The preamble runs at the start of the statement, so a call is inlined only
-//! when nothing observable was evaluated before it in that statement. Literals
-//! and earlier inlined calls keep that property; a read, a field or index
-//! access, a non-inlined evaluation, a short-circuit operand, an `if`
-//! expression branch, an `elseif` condition, or a `while`/`repeat` condition
-//! stops further inlining for the statement. A function that contains a `goto`
-//! or label refuses inlining entirely, because the preamble declares locals
-//! that a forward jump could enter.
+//! when everything evaluated before it in that statement is inert or can be
+//! stored first. When a later expression can be inlined, earlier argument
+//! values, return values, binary operands, and index keys are stored in fresh
+//! locals in their original order, and the callee is stored before an inlined
+//! argument. A short-circuit operand, an `if` expression branch, an `elseif`
+//! condition, or a `while`/`repeat` condition cannot be reordered this way and
+//! stops further inlining. A function that contains a `goto` or label refuses
+//! inlining entirely, because the preamble declares locals that a forward jump
+//! could enter.
 //!
 //! The `repeat ... until true` runs the body once and gives every `return` a
 //! `break` to leave through; the `if __done then break end` after each loop
@@ -808,12 +810,7 @@ impl Inliner<'_, '_, '_> {
                     // The call's result is discarded; the body ran in the preamble.
                     *statement = Statement::Do(DoStatement::new(Block::new(Vec::new(), None)));
                 } else {
-                    self.rewrite_prefix(call.mutate_prefix(), preambles);
-                    let mut values: Vec<Expression> = call.get_arguments().clone().to_expressions();
-                    self.rewrite_values(&mut values, true, preambles);
-                    *call.mutate_arguments() = crate::nodes::Arguments::Tuple(
-                        crate::nodes::TupleArguments::from_iter(values),
-                    );
+                    self.rewrite_call_contents(&mut call, preambles);
                     *slot = call;
                 }
             }
@@ -923,12 +920,94 @@ impl Inliner<'_, '_, '_> {
         preambles: &mut Vec<Statement>,
     ) {
         let length = values.len();
+        let original = std::mem::take(values);
         let mut rewritten = Vec::with_capacity(length);
-        for (index, value) in values.drain(..).enumerate() {
+        for (index, value) in original.iter().enumerate() {
+            let later_may_inline = original[index + 1..]
+                .iter()
+                .any(|later| self.expression_may_inline(later));
+            let clean = self.clean;
             let tail = multi_tail && index + 1 == length;
-            rewritten.extend(self.rewrite(value, tail, preambles));
+            let results = self.rewrite(value.clone(), tail, preambles);
+            if later_may_inline && clean && self.position_allows_insertion() {
+                // Store this value before the later body runs; the stored value
+                // keeps the original evaluation order.
+                for result in results {
+                    rewritten.push(self.materialize(result, preambles));
+                }
+                self.clean = true;
+            } else {
+                rewritten.extend(results);
+            }
         }
         *values = rewritten;
+    }
+
+    /// Rewrites a call's callee and arguments. Earlier arguments are stored in
+    /// fresh locals when a later argument can be inlined, so the inline body
+    /// still runs after them.
+    fn rewrite_call_contents(
+        &mut self,
+        call: &mut crate::nodes::FunctionCall,
+        preambles: &mut Vec<Statement>,
+    ) {
+        let arguments: Vec<Expression> = call.get_arguments().clone().to_expressions();
+        let method = call.get_method().is_some();
+        let spill = !method
+            && arguments
+                .iter()
+                .any(|argument| self.expression_may_inline(argument));
+        let prefix_clean = self.clean;
+        let mut prefix = call.get_prefix().clone();
+        self.rewrite_prefix(&mut prefix, preambles);
+        if spill && prefix_clean && self.position_allows_insertion() {
+            prefix = self.materialize_prefix(prefix, preambles);
+            self.clean = true;
+        }
+        *call.mutate_prefix() = prefix;
+        let mut values = arguments;
+        self.rewrite_values(&mut values, true, preambles);
+        *call.mutate_arguments() =
+            crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
+    }
+
+    /// Stores `expression` in a fresh local, preserving when it is evaluated.
+    fn materialize(
+        &mut self,
+        expression: Expression,
+        preambles: &mut Vec<Statement>,
+    ) -> Expression {
+        if expression_is_inert(&expression) {
+            return expression;
+        }
+        let name = self.names.generate();
+        preambles.push(Statement::from(VariableAssignment::new(
+            vec![TypedIdentifier::new(name.clone())],
+            vec![expression],
+        )));
+        Expression::identifier(name)
+    }
+
+    fn materialize_prefix(&mut self, prefix: Prefix, preambles: &mut Vec<Statement>) -> Prefix {
+        let expression = prefix_into_expression(prefix);
+        match self.materialize(expression, preambles) {
+            Expression::Identifier(identifier) => Prefix::Identifier(identifier),
+            expression => Prefix::Parenthese(Box::new(crate::nodes::ParentheseExpression::new(
+                expression,
+            ))),
+        }
+    }
+
+    /// Returns whether a new local can be declared at the current position
+    /// without disturbing a `goto`.
+    fn position_allows_insertion(&self) -> bool {
+        let Some(position) = self.current_position else {
+            return false;
+        };
+        let Some(function) = self.block_functions.get(&position.block) else {
+            return false;
+        };
+        !self.labelled.contains(function)
     }
 
     fn rewrite_single(&mut self, expression: &mut Expression, preambles: &mut Vec<Statement>) {
@@ -961,8 +1040,14 @@ impl Inliner<'_, '_, '_> {
             Expression::Binary(binary) => {
                 let conditional =
                     matches!(binary.operator(), BinaryOperator::And | BinaryOperator::Or);
+                let right_may_inline = self.expression_may_inline(binary.right());
+                let clean = self.clean;
                 let mut left = binary.left().clone();
                 self.rewrite_single(&mut left, preambles);
+                if !conditional && right_may_inline && clean && self.position_allows_insertion() {
+                    left = self.materialize(left, preambles);
+                    self.clean = true;
+                }
                 *binary.mutate_left() = left;
                 if conditional {
                     // The right operand only runs when the left one does not
@@ -984,8 +1069,14 @@ impl Inliner<'_, '_, '_> {
                 *parenthese.mutate_inner_expression() = inner;
             }
             Expression::Index(index) => {
+                let key_may_inline = self.expression_may_inline(index.get_index());
+                let clean = self.clean;
                 let mut prefix = index.get_prefix().clone();
                 self.rewrite_prefix(&mut prefix, preambles);
+                if key_may_inline && clean && self.position_allows_insertion() {
+                    prefix = self.materialize_prefix(prefix, preambles);
+                    self.clean = true;
+                }
                 *index.mutate_prefix() = prefix;
                 let mut key = index.get_index().clone();
                 self.rewrite_single(&mut key, preambles);
@@ -996,17 +1087,7 @@ impl Inliner<'_, '_, '_> {
                 self.rewrite_prefix(&mut prefix, preambles);
                 *field.mutate_prefix() = prefix;
             }
-            Expression::Call(call) => {
-                let mut inner = call.as_ref().clone();
-                let mut prefix = inner.get_prefix().clone();
-                self.rewrite_prefix(&mut prefix, preambles);
-                let mut values: Vec<Expression> = inner.get_arguments().clone().to_expressions();
-                self.rewrite_values(&mut values, true, preambles);
-                *inner.mutate_prefix() = prefix;
-                *inner.mutate_arguments() =
-                    crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
-                **call = inner;
-            }
+            Expression::Call(call) => self.rewrite_call_contents(call, preambles),
             Expression::If(if_expression) => {
                 let mut condition = if_expression.get_condition().clone();
                 self.rewrite_single(&mut condition, preambles);
@@ -1105,13 +1186,6 @@ impl Inliner<'_, '_, '_> {
             }
             Prefix::Call(call) => {
                 let mut inner = call.as_ref().clone();
-                let mut call_prefix = inner.get_prefix().clone();
-                self.rewrite_prefix(&mut call_prefix, preambles);
-                let mut values: Vec<Expression> = inner.get_arguments().clone().to_expressions();
-                self.rewrite_values(&mut values, true, preambles);
-                *inner.mutate_prefix() = call_prefix;
-                *inner.mutate_arguments() =
-                    crate::nodes::Arguments::Tuple(crate::nodes::TupleArguments::from_iter(values));
                 // A call used as a prefix consumes one value.
                 if let Some(mut replacement) = self.try_inline(&inner, false, preambles) {
                     let value = replacement.remove(0);
@@ -1119,6 +1193,7 @@ impl Inliner<'_, '_, '_> {
                         crate::nodes::ParentheseExpression::new(value),
                     ));
                 } else {
+                    self.rewrite_call_contents(&mut inner, preambles);
                     self.clean = false;
                     **call = inner;
                 }
@@ -1149,8 +1224,7 @@ impl Inliner<'_, '_, '_> {
         // label in the same function could be the target of a goto that jumps
         // over them, which would be invalid once the locals exist.
         let position = self.current_position?;
-        let function = self.block_functions.get(&position.block)?;
-        if self.labelled.contains(function) {
+        if !self.position_allows_insertion() {
             return None;
         }
         let callee = self.model.resolve_identifier(callee(call.get_prefix())?)?;
@@ -1322,6 +1396,105 @@ impl Inliner<'_, '_, '_> {
                 index,
             };
         }
+    }
+
+    /// Returns whether `expression` contains a call that could be inlined.
+    ///
+    /// This over-approximates: it ignores dominance, shadowing, arity, and
+    /// conditional positions. A false positive only stores an earlier value in
+    /// a temporary.
+    fn expression_may_inline(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Call(call) => self.call_may_inline(call),
+            Expression::Binary(binary) => {
+                self.expression_may_inline(binary.left())
+                    || self.expression_may_inline(binary.right())
+            }
+            Expression::Unary(unary) => self.expression_may_inline(unary.get_expression()),
+            Expression::Parenthese(parenthese) => {
+                self.expression_may_inline(parenthese.inner_expression())
+            }
+            Expression::TypeCast(type_cast) => {
+                self.expression_may_inline(type_cast.get_expression())
+            }
+            Expression::TypeInstantiation(instantiation) => {
+                self.prefix_may_inline(instantiation.get_prefix())
+            }
+            Expression::Field(field) => self.prefix_may_inline(field.get_prefix()),
+            Expression::Index(index) => {
+                self.prefix_may_inline(index.get_prefix())
+                    || self.expression_may_inline(index.get_index())
+            }
+            Expression::Table(table) => table.iter_entries().any(|entry| match entry {
+                crate::nodes::TableEntry::Field(field) => {
+                    self.expression_may_inline(field.get_value())
+                }
+                crate::nodes::TableEntry::Index(index) => {
+                    self.expression_may_inline(index.get_key())
+                        || self.expression_may_inline(index.get_value())
+                }
+                crate::nodes::TableEntry::Value(value) => self.expression_may_inline(value),
+            }),
+            Expression::If(if_expression) => {
+                self.expression_may_inline(if_expression.get_condition())
+                    || self.expression_may_inline(if_expression.get_result())
+                    || if_expression.iter_branches().any(|branch| {
+                        self.expression_may_inline(branch.get_condition())
+                            || self.expression_may_inline(branch.get_result())
+                    })
+                    || self.expression_may_inline(if_expression.get_else_result())
+            }
+            Expression::InterpolatedString(string) => {
+                string.iter_segments().any(|segment| match segment {
+                    crate::nodes::InterpolationSegment::Value(value) => {
+                        self.expression_may_inline(value.get_expression())
+                    }
+                    _ => false,
+                })
+            }
+            _ => false,
+        }
+    }
+
+    fn prefix_may_inline(&self, prefix: &Prefix) -> bool {
+        match prefix {
+            Prefix::Identifier(_) => false,
+            Prefix::Call(call) => self.call_may_inline(call),
+            Prefix::Field(field) => self.prefix_may_inline(field.get_prefix()),
+            Prefix::Index(index) => {
+                self.prefix_may_inline(index.get_prefix())
+                    || self.expression_may_inline(index.get_index())
+            }
+            Prefix::Parenthese(parenthese) => {
+                self.expression_may_inline(parenthese.inner_expression())
+            }
+            Prefix::TypeInstantiation(instantiation) => {
+                self.prefix_may_inline(instantiation.get_prefix())
+            }
+        }
+    }
+
+    fn call_may_inline(&self, call: &crate::nodes::FunctionCall) -> bool {
+        if self.prefix_may_inline(call.get_prefix())
+            || call
+                .get_arguments()
+                .clone()
+                .to_expressions()
+                .iter()
+                .any(|argument| self.expression_may_inline(argument))
+        {
+            return true;
+        }
+        if call.get_method().is_some() {
+            return false;
+        }
+        let Some(identifier) = callee(call.get_prefix()) else {
+            return false;
+        };
+        let Some(symbol) = self.model.resolve_identifier(identifier) else {
+            return false;
+        };
+        self.resolve_function(symbol).is_some()
     }
 
     /// Returns whether reading `identifier` as a callee is stable: it resolves
@@ -1546,6 +1719,17 @@ fn expression_is_inert(expression: &Expression) -> bool {
             | Expression::Number(_)
             | Expression::String(_)
     )
+}
+
+fn prefix_into_expression(prefix: Prefix) -> Expression {
+    match prefix {
+        Prefix::Call(call) => Expression::Call(call),
+        Prefix::Field(field) => Expression::Field(field),
+        Prefix::Identifier(identifier) => Expression::Identifier(identifier),
+        Prefix::Index(index) => Expression::Index(index),
+        Prefix::Parenthese(parenthese) => Expression::Parenthese(parenthese),
+        Prefix::TypeInstantiation(instantiation) => Expression::TypeInstantiation(instantiation),
+    }
 }
 
 fn callee(prefix: &Prefix) -> Option<&Identifier> {
@@ -1921,6 +2105,62 @@ mod test {
     }
 
     #[test]
+    fn inlines_a_call_argument_after_another_argument() {
+        let output = inlined_output(
+            "local function add(a, b)\n    return a + b\nend\nlocal first = 1\nprint(first, add(1, 2))\nreturn 0",
+        );
+        assert!(!output.contains("add(1, 2)"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_call_argument_after_another_call() {
+        let output = inlined_output(
+            "local function add(a, b)\n    return a + b\nend\nlocal function one()\n    return 1\nend\nprint(one(), add(1, 2))\nreturn 0",
+        );
+        assert!(!output.contains("add(1, 2)"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_call_in_a_return_list() {
+        let output = inlined_output(
+            "local function add(a, b)\n    return a + b\nend\nlocal first = 1\nreturn first, add(1, 2)",
+        );
+        assert!(!output.contains("add(1, 2)"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_call_in_a_binary_operand() {
+        let output = inlined_output(
+            "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first + value(2)",
+        );
+        assert!(!output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_call_in_an_index_key() {
+        let output = inlined_output(
+            "local function value(x)\n    return x\nend\nlocal t = { 1, 2 }\nreturn t[value(2)]",
+        );
+        assert!(!output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_method_argument_when_the_receiver_precedes_it() {
+        let output = inlined_output(
+            "local function value(x)\n    return x\nend\nlocal object = { method = function(self, x) return x end }\nreturn object:method(value(2))",
+        );
+        assert!(output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_conditional_operand_after_a_read() {
+        let output = inlined_output(
+            "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first and value(2)",
+        );
+        assert!(output.contains("value(2)"), "{output}");
+    }
+
+    #[test]
     fn inlines_a_call_after_a_literal() {
         let output =
             inlined_output("local function value(x)\n    return x\nend\nreturn 1, value(2)");
@@ -1928,11 +2168,11 @@ mod test {
     }
 
     #[test]
-    fn keeps_a_call_after_an_evaluated_expression() {
+    fn inlines_a_call_after_an_evaluated_expression() {
         let output = inlined_output(
             "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first, value(2)",
         );
-        assert!(output.contains("value(2)"), "{output}");
+        assert!(!output.contains("value(2)"), "{output}");
     }
 
     #[test]
@@ -1967,10 +2207,10 @@ mod test {
     }
 
     #[test]
-    fn keeps_a_call_in_the_argument_of_another_call() {
+    fn inlines_a_call_in_the_argument_of_another_call() {
         let output =
             inlined_output("local function value(x)\n    return x\nend\nprint(value(2))\nreturn 0");
-        assert!(output.contains("value(2)"), "{output}");
+        assert!(!output.contains("value(2)"), "{output}");
     }
 
     #[test]
@@ -2025,6 +2265,9 @@ mod test {
             "local function check(x)\n    return x\nend\nwhile check(true) do\n    break\nend\nreturn 0",
             "local function check(x)\n    return x\nend\nrepeat\n    break\nuntil check(true)\nreturn 0",
             "local function value(x)\n    return x\nend\nreturn false and value(2)",
+            "local function add(a, b)\n    return a + b\nend\nlocal first = 1\nprint(first, add(1, 2))\nreturn 0",
+            "local function add(a, b)\n    return a + b\nend\nlocal first = 1\nreturn first, add(1, 2)",
+            "local function value(x)\n    return x\nend\nlocal first = 1\nreturn first + value(2)",
             "local value = 0\nlocal function set(x)\n    value = x\nend\nset(5)\nreturn value",
             "local value = 0\nlocal function set()\n    value = 5\nend\ndo\n    local value = 100\n    set()\nend\nreturn value",
         ] {

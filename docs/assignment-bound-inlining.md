@@ -50,25 +50,40 @@ nested in expressions are walked too, so their own gotos are accounted for.
 ## Evaluation order
 
 The preamble runs at the start of the call's statement, so inlining also
-requires that nothing observable was evaluated before the call. The rewriter
-tracks that per statement: literals and earlier inlined calls keep the statement
-clean, while reads, field and index accesses, non-inlined evaluations,
-short-circuit operands, `if` expression branches, `elseif` conditions, and
-`while`/`repeat` conditions stop further hoisting. A function containing a
-`goto` or label refuses inlining because the preamble's locals would make a
-forward jump enter their scope.
+requires that everything evaluated before the call is inert or stored first.
+When a later expression can be inlined, earlier argument values, return values,
+binary operands, and index keys are stored in fresh locals in their original
+order, and a call's callee is stored before an inlined argument. This keeps
+`print(value, set(5))` and `value + set()` correct while still inlining.
+
+Short-circuit operands, `if` expression branches, `elseif` conditions, and
+`while`/`repeat` conditions cannot be reordered this way and stop further
+inlining. A function containing a `goto` or label refuses inlining because the
+preamble's locals would make a forward jump enter their scope. Method calls do
+not spill their receiver, because the method lookup must stay between the
+receiver and the arguments.
 
 A body that reads a global also refuses when the call site shadows `_ENV`,
 because the inlined access would resolve through the caller's environment.
 
 ## Remaining refusals
 
-After this shape, the inliner refuses only:
+Language limits:
 
 - a body that reads `...` (no expression denotes a foreign vararg list);
 - a variable or multi-valued return in a value-consuming position;
-- an upvalue that is shadowed at the call site;
-- mutable aliases (only immutable aliases are resolved).
+- an upvalue, global, or `_ENV` that is shadowed at the call site.
+
+Conservative design limits:
+
+- calls in `while`/`repeat` conditions (evaluated once per iteration);
+- calls in method arguments (the method lookup must stay in place);
+- calls nested in the arguments of an inlined call;
+- table-entry sequences;
+- functions containing `goto`/labels (needs label-scope analysis);
+- mutable alias chains;
+- multiple or conditional assignments to the same local (needs
+  reaching-definition matching).
 
 ## Baseline
 

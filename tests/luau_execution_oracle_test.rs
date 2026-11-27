@@ -973,7 +973,7 @@ return result
 "#,
     ),
     (
-        "an inlined body is not hoisted above an earlier read",
+        "an inlined operand keeps its place",
         r#"
 local value = 1
 local function set()
@@ -981,6 +981,18 @@ local function set()
     return 0
 end
 print(value + set())
+return value
+"#,
+    ),
+    (
+        "an inlined argument keeps its place among the arguments",
+        r#"
+local value = 1
+local function set(x)
+    value = x
+    return value
+end
+print(value, set(5))
 return value
 "#,
     ),
