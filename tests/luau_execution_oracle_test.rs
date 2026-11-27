@@ -908,6 +908,70 @@ print(f(1))
 return f(2)
 "#,
     ),
+    (
+        "upvalue write is not inlined under a shadowing local",
+        r#"
+local value = 0
+local function set()
+    value = 5
+end
+do
+    local value = 100
+    set()
+end
+print(value)
+return value
+"#,
+    ),
+    (
+        "upvalue prefix read is not inlined under a shadowing local",
+        r#"
+local box = { value = 1 }
+local function read()
+    return box.value
+end
+local result
+do
+    local box = { value = 2 }
+    result = read()
+end
+print(result)
+return result
+"#,
+    ),
+    (
+        "shadowed global is not inlined",
+        r#"
+local function hello()
+    return tostring(1)
+end
+local result
+do
+    local tostring = function() return "local" end
+    result = hello()
+end
+print(result)
+return result
+"#,
+    ),
+    (
+        "nested return upvalue is not inlined under a shadowing local",
+        r#"
+local value = 1
+local function make()
+    return function()
+        return value
+    end
+end
+local result
+do
+    local value = 2
+    result = make()()
+end
+print(result)
+return result
+"#,
+    ),
 ];
 
 #[test]

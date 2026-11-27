@@ -293,7 +293,10 @@ impl BodyCheck<'_> {
                 self.visit_loop(statement.get_block());
             }
             Statement::Do(statement) => self.visit(statement.get_block()),
-            Statement::Function(statement) => self.visit_function(statement.get_block()),
+            Statement::Function(statement) => {
+                self.visit_identifier(statement.get_name().get_name());
+                self.visit_function(statement.get_block());
+            }
             Statement::LocalFunction(statement) => self.visit_function(statement.get_block()),
             Statement::TypeFunction(statement) => self.visit_function(statement.get_block()),
             Statement::If(statement) => {
@@ -311,7 +314,7 @@ impl BodyCheck<'_> {
 
     fn visit_variable(&mut self, variable: &Variable) {
         match variable {
-            Variable::Identifier(_) => {}
+            Variable::Identifier(identifier) => self.visit_identifier(identifier),
             Variable::Field(field) => self.visit_prefix(field.get_prefix()),
             Variable::Index(index) => {
                 self.visit_prefix(index.get_prefix());
@@ -336,11 +339,17 @@ impl BodyCheck<'_> {
         let LastStatement::Return(return_statement) = statement else {
             return;
         };
-        if self.function_depth != 0 {
-            return;
-        }
 
         let expressions: Vec<&Expression> = return_statement.iter_expressions().collect();
+        if self.function_depth != 0 {
+            // A nested function's return does not shape this body's arity, but
+            // its expressions still reference names that must resolve at the
+            // call site.
+            for expression in expressions {
+                self.visit_expression(expression);
+            }
+            return;
+        }
         for expression in &expressions {
             if matches!(expression, Expression::Call(_)) {
                 // A returned call yields that call's values, so the count is not
@@ -372,18 +381,7 @@ impl BodyCheck<'_> {
                     self.rejects = true;
                 }
             }
-            Expression::Identifier(identifier) => {
-                let Some(symbol) = self.model.resolve_identifier(identifier) else {
-                    self.rejects = true;
-                    return;
-                };
-                if self.model.symbol(symbol).kind == SymbolKind::Global {
-                    return;
-                }
-                if !self.is_declared_in_function(symbol) && !self.upvalues.contains(&symbol) {
-                    self.upvalues.push(symbol);
-                }
-            }
+            Expression::Identifier(identifier) => self.visit_identifier(identifier),
             Expression::Function(function) => self.visit_function(function.get_block()),
             Expression::Binary(binary) => {
                 self.visit_expression(binary.left());
@@ -435,13 +433,26 @@ impl BodyCheck<'_> {
                 }
             }
             Expression::TypeCast(type_cast) => self.visit_expression(type_cast.get_expression()),
+            Expression::TypeInstantiation(instantiation) => {
+                self.visit_prefix(instantiation.get_prefix());
+            }
             _ => {}
+        }
+    }
+
+    fn visit_identifier(&mut self, identifier: &Identifier) {
+        let Some(symbol) = self.model.resolve_identifier(identifier) else {
+            self.rejects = true;
+            return;
+        };
+        if !self.is_declared_in_function(symbol) && !self.upvalues.contains(&symbol) {
+            self.upvalues.push(symbol);
         }
     }
 
     fn visit_prefix(&mut self, prefix: &Prefix) {
         match prefix {
-            Prefix::Identifier(_) => {}
+            Prefix::Identifier(identifier) => self.visit_identifier(identifier),
             Prefix::Field(field) => self.visit_prefix(field.get_prefix()),
             Prefix::Index(index) => {
                 self.visit_prefix(index.get_prefix());
@@ -1424,11 +1435,20 @@ fn lower_statement_returns(
 fn callee(prefix: &Prefix) -> Option<&Identifier> {
     match prefix {
         Prefix::Identifier(identifier) => Some(identifier),
-        Prefix::Parenthese(parenthese) => match parenthese.inner_expression() {
-            Expression::Identifier(identifier) => Some(identifier),
-            _ => None,
-        },
+        Prefix::Parenthese(parenthese) => callee_expression(parenthese.inner_expression()),
         Prefix::TypeInstantiation(instantiation) => callee(instantiation.get_prefix()),
+        _ => None,
+    }
+}
+
+/// Unwraps the expression forms that preserve a callee's identity: parentheses
+/// and type assertions.
+fn callee_expression(expression: &Expression) -> Option<&Identifier> {
+    match expression {
+        Expression::Identifier(identifier) => Some(identifier),
+        Expression::Parenthese(parenthese) => callee_expression(parenthese.inner_expression()),
+        Expression::TypeCast(type_cast) => callee_expression(type_cast.get_expression()),
+        Expression::TypeInstantiation(instantiation) => callee(instantiation.get_prefix()),
         _ => None,
     }
 }
@@ -1627,6 +1647,22 @@ mod test {
     }
 
     #[test]
+    fn inlines_a_doubly_parenthesized_callee() {
+        let output = inlined_output("local function f(a)\n    return a\nend\nreturn ((f))(1)");
+        assert!(!output.contains("((f))(1)"), "{output}");
+    }
+
+    #[test]
+    fn inlines_a_type_cast_callee() {
+        let (mut block, model) = crate::rules::test_support::analyze_luau_with_tokens(
+            "local function f(a)\n    return a\nend\nreturn (f :: (number) -> number)(1)",
+        );
+        inline_local_functions(&mut block, &model).expect("the analyzed tree has block identities");
+        let output = generate(&block);
+        assert!(!output.contains("(f :: (number) -> number)(1)"), "{output}");
+    }
+
+    #[test]
     fn inlines_through_an_immutable_alias() {
         let output = inlined_output(
             "local function add(a, b)\n    return a + b\nend\nlocal sum = add\nreturn sum(1, 2)",
@@ -1720,6 +1756,47 @@ mod test {
     }
 
     #[test]
+    fn inlines_a_body_that_writes_an_upvalue() {
+        let output = inlined_output(
+            "local value = 0\nlocal function set(x)\n    value = x\nend\nset(5)\nreturn value",
+        );
+        assert!(!output.contains("set(5)"), "{output}");
+        assert!(output.contains("value = x"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_write_to_an_upvalue_shadowed_at_the_call_site() {
+        let output = inlined_output(
+            "local value = 0\nlocal function set()\n    value = 5\nend\ndo\n    local value = 100\n    set()\nend\nreturn value",
+        );
+        assert!(output.contains("set()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_prefix_read_of_an_upvalue_shadowed_at_the_call_site() {
+        let output = inlined_output(
+            "local box = { value = 1 }\nlocal function read()\n    return box.value\nend\ndo\n    local box = { value = 2 }\n    return read()\nend",
+        );
+        assert!(output.contains("read()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_global_shadowed_at_the_call_site() {
+        let output = inlined_output(
+            "local function hello()\n    print(1)\nend\ndo\n    local print = function() end\n    hello()\nend\nreturn 0",
+        );
+        assert!(output.contains("hello()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_nested_return_upvalue_shadowed_at_the_call_site() {
+        let output = inlined_output(
+            "local value = 1\nlocal function make()\n    return function()\n        return value\n    end\nend\ndo\n    local value = 2\n    return make()\nend",
+        );
+        assert!(output.contains("make()"), "{output}");
+    }
+
+    #[test]
     fn keeps_a_call_before_the_assignment() {
         let output = inlined_output(
             "local f\nlocal value = f\nf = function()\n    return 1\nend\nreturn value",
@@ -1768,6 +1845,8 @@ mod test {
             "local f\nlocal g = function()\n    return f(1)\nend\nf = function(x)\n    return x\nend\nreturn g()",
             "local f\ndo\n    f = function()\n        return 1\n    end\nend\nreturn f()",
             "local f\nrepeat\n    f = function()\n        return 1\n    end\nuntil true\nreturn f()",
+            "local value = 0\nlocal function set(x)\n    value = x\nend\nset(5)\nreturn value",
+            "local value = 0\nlocal function set()\n    value = 5\nend\ndo\n    local value = 100\n    set()\nend\nreturn value",
         ] {
             let output = inlined_output(code);
             parse(&output);
