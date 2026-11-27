@@ -112,7 +112,9 @@ use crate::nodes::{
 };
 use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::rules::NameGenerator;
-use crate::semantic::{LabelId, ScopeId, SemanticModel, SemanticQueryError, SymbolId, SymbolKind};
+use crate::semantic::{
+    LabelId, ScopeId, SemanticModel, SemanticQueryError, StatementPosition, SymbolId, SymbolKind,
+};
 
 mod reaching;
 
@@ -2845,10 +2847,10 @@ impl NodeProcessor for BindingRenamer<'_, '_> {
 
 /// Gives every label in a function body a fresh name, with its `goto`s.
 ///
-/// Labels carry a semantic binding, but goto identifiers do not: the analyzer
-/// records their target only in the source-ordered goto binding list. This
-/// renames labels by binding and gotos by matching that source order, so a
-/// cloned body cannot keep a stale goto name.
+/// Labels and goto sites are keyed by their structural statement positions from
+/// the semantic model, so a cloned body cannot pair a goto with the wrong
+/// target. Names are checked through the model and a position that is missing
+/// or mismatched refuses the inline instead of guessing.
 fn rename_labels(block: &mut Block, model: &SemanticModel, names: &mut NameGenerator) -> bool {
     let Ok(scope) = model.try_scope_of(block) else {
         return false;
@@ -2856,50 +2858,66 @@ fn rename_labels(block: &mut Block, model: &SemanticModel, names: &mut NameGener
     let Some(function) = model.function_scope_of(scope) else {
         return false;
     };
-    let labels: Vec<LabelId> = model
-        .labels_in_function(function)
-        .map(|label| label.id)
-        .collect();
-    let targets: Vec<LabelId> = model
-        .goto_bindings_in_function(function)
-        .map(|binding| binding.label)
-        .collect();
-    let mut renames: HashMap<LabelId, String> = HashMap::with_capacity(labels.len());
-    for label in &labels {
-        renames.insert(*label, names.generate());
+
+    let mut renames: HashMap<LabelId, String> = HashMap::new();
+    let mut labels: HashMap<StatementPosition, LabelId> = HashMap::new();
+    let mut targets: HashMap<StatementPosition, (String, LabelId)> = HashMap::new();
+    for label in model.labels_in_function(function) {
+        renames.insert(label.id, names.generate());
+        labels.insert(label.position, label.id);
+    }
+    for binding in model.goto_bindings_in_function(function) {
+        targets.insert(
+            binding.site.position,
+            (binding.site.name.clone(), binding.label),
+        );
     }
 
     struct Renamer<'a, 'm> {
         model: &'m SemanticModel,
         renames: &'a HashMap<LabelId, String>,
-        targets: &'a [LabelId],
-        label_index: usize,
-        goto_index: usize,
+        labels: &'a HashMap<StatementPosition, LabelId>,
+        targets: &'a HashMap<StatementPosition, (String, LabelId)>,
+        label_count: usize,
+        goto_count: usize,
     }
 
     impl Renamer<'_, '_> {
         fn apply(&mut self, block: &mut Block) -> bool {
-            for statement in block.iter_mut_statements() {
+            let Some(identity) = block.get_identity() else {
+                return false;
+            };
+            for (index, statement) in block.iter_mut_statements().enumerate() {
+                let position = StatementPosition {
+                    block: identity,
+                    index: index as u32,
+                };
                 match statement {
                     Statement::Label(label) => {
-                        let Some(id) = self.model.resolve_label(label.get_label()) else {
+                        let Some(&id) = self.labels.get(&position) else {
                             return false;
                         };
+                        if self.model.label(id).name.as_str() != label.get_label_name() {
+                            return false;
+                        }
                         let Some(name) = self.renames.get(&id) else {
                             return false;
                         };
                         label.mutate_label().set_name(name.clone());
-                        self.label_index += 1;
+                        self.label_count += 1;
                     }
                     Statement::Goto(goto) => {
-                        let Some(&target) = self.targets.get(self.goto_index) else {
+                        let Some((name, target)) = self.targets.get(&position) else {
                             return false;
                         };
-                        let Some(name) = self.renames.get(&target) else {
+                        if name.as_str() != goto.get_label_name() {
+                            return false;
+                        }
+                        let Some(new_name) = self.renames.get(target) else {
                             return false;
                         };
-                        goto.mutate_label().set_name(name.clone());
-                        self.goto_index += 1;
+                        goto.mutate_label().set_name(new_name.clone());
+                        self.goto_count += 1;
                     }
                     Statement::Do(statement) => {
                         if !self.apply(statement.mutate_block()) {
@@ -2948,13 +2966,14 @@ fn rename_labels(block: &mut Block, model: &SemanticModel, names: &mut NameGener
     let mut renamer = Renamer {
         model,
         renames: &renames,
+        labels: &labels,
         targets: &targets,
-        label_index: 0,
-        goto_index: 0,
+        label_count: 0,
+        goto_count: 0,
     };
     renamer.apply(block)
-        && renamer.label_index == labels.len()
-        && renamer.goto_index == targets.len()
+        && renamer.label_count == labels.len()
+        && renamer.goto_count == targets.len()
 }
 
 /// Lowers every `return` to a result assignment and a `break`.
