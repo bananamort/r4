@@ -81,15 +81,7 @@ pub(crate) fn is_safe_literal(value: &LuaValue) -> bool {
 /// literal are folded. Division by zero, non-finite results, metamethod-observing
 /// operands and oversized strings are left exactly as they are.
 pub fn compute_expression(block: &mut Block, model: &SemanticModel) {
-    let mut evaluator = Evaluator::default();
-    // Lua 5.3/5.4 have an integer subtype; every other supported dialect folds
-    // numbers as floats.
-    if matches!(
-        model.dialect(),
-        crate::parser::Dialect::Lua53 | crate::parser::Dialect::Lua54
-    ) {
-        evaluator = evaluator.with_integer_numbers();
-    }
+    let evaluator = Evaluator::for_dialect(model.dialect());
     let mut processor = Processor { evaluator };
     DefaultVisitor::visit_block(block, &mut processor);
 }

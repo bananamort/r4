@@ -100,7 +100,7 @@ impl ConstantPropagation {
         cfg: &ControlFlowGraph,
         model: &SemanticModel,
     ) -> Result<Self, ConstantPropagationError> {
-        let evaluator = Evaluator::default();
+        let evaluator = Evaluator::for_dialect(model.dialect());
         let reachability = Reachability::analyze(cfg);
         let collected = collect_definitions(cfg, &evaluator, model)?;
         let definitions = &collected.definitions;
@@ -193,7 +193,7 @@ pub fn fold_constant_branches_with_propagation(
     model: &SemanticModel,
 ) -> Result<usize, ConstantPropagationError> {
     let analysis = ConstantPropagation::analyze(cfg, model)?;
-    let evaluator = Evaluator::default();
+    let evaluator = Evaluator::for_dialect(model.dialect());
 
     let decisions: Vec<Option<bool>> = cfg
         .iter_block_ids()

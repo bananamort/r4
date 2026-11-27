@@ -118,7 +118,7 @@ pub fn propagate_constants(
 
     let mut replacer = ConstantReplacer {
         model,
-        evaluator: Evaluator::default(),
+        evaluator: Evaluator::for_dialect(model.dialect()),
         statements,
         returns,
         frames: Vec::new(),
@@ -224,7 +224,7 @@ impl NodePostProcessor for ConstantReplacer<'_> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::rules::test_support::{analyze, generate};
+    use crate::rules::test_support::{analyze, analyze_lua53, generate};
 
     #[test]
     fn propagates_a_local_constant_into_later_reads() {
@@ -236,6 +236,17 @@ mod test {
         let output = generate(&block);
         assert!(output.contains("local y = 1 + 2"), "{output}");
         assert!(output.contains("return 3"), "{output}");
+    }
+
+    #[test]
+    fn propagates_integer_constants_with_the_integer_subtype() {
+        let (mut block, model) = analyze_lua53("local a = 1\nlocal b = 2\nreturn a + b");
+
+        propagate_constants(&mut block, &model).expect("propagation must succeed");
+
+        let output = generate(&block);
+        assert!(output.contains("return 1 + 2"), "{output}");
+        assert!(!output.contains("1.0"), "{output}");
     }
 
     #[test]

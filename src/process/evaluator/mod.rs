@@ -22,6 +22,21 @@ impl Evaluator {
         self
     }
 
+    /// Creates an evaluator with the number model of `dialect`.
+    ///
+    /// Lua 5.3 and 5.4 distinguish integers from floats; every other supported
+    /// dialect folds every number as a float.
+    pub fn for_dialect(dialect: crate::parser::Dialect) -> Self {
+        let mut evaluator = Self::default();
+        if matches!(
+            dialect,
+            crate::parser::Dialect::Lua53 | crate::parser::Dialect::Lua54
+        ) {
+            evaluator.integers = true;
+        }
+        evaluator
+    }
+
     /// Returns whether Lua 5.3/5.4 integer number semantics are enabled.
     #[inline]
     pub fn integer_numbers(&self) -> bool {

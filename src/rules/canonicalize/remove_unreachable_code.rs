@@ -74,7 +74,7 @@ pub fn remove_unreachable_code(
 
     let mut cfg = build_chunk(block, model)?;
     let analysis = ConstantPropagation::analyze(&cfg, model)?;
-    let evaluator = Evaluator::default();
+    let evaluator = Evaluator::for_dialect(model.dialect());
     let reachability_before_folding = Reachability::analyze(&cfg);
 
     let mut block_decisions: Vec<Option<bool>> = vec![None; cfg.block_count()];
