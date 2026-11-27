@@ -884,6 +884,28 @@ return result
 "#,
     ),
     (
+        "an inlined iterator expression keeps its place",
+        r#"
+local iterations = 0
+local value = 1
+local function set()
+    value = 5
+    return 0
+end
+local function iterator(state, control)
+    if control >= state then
+        return nil
+    end
+    return control + 1
+end
+for item in iterator, value, set() do
+    iterations = iterations + 1
+end
+print(iterations, value)
+return iterations
+"#,
+    ),
+    (
         "assigned local alias is inlined",
         r#"
 local function add(a, b)
