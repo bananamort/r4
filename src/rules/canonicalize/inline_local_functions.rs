@@ -41,20 +41,29 @@
 //!
 //! * a body that reads `...` cannot be reproduced, because `...` is lexical to
 //!   a function and no expression denotes a foreign vararg list;
-//! * a call is left alone when its callee cannot be resolved to an immutable,
-//!   uncaptured local function.
+//! * a call is left alone when its callee cannot be resolved to a local
+//!   function that is bound before the call.
+//!
+//! A function may also be bound by a declaration and a later assignment
+//! (`local f` followed by `f = function() ... end`). Such a call is inlined
+//! only when the assignment provably runs before it: the assignment's block
+//! must contain the call, or contain the statement that leads to it, with the
+//! call after the assignment. A `goto` or label in the same function defeats
+//! that proof, because a backward jump can reach a call before the assignment.
 //!
 //! Everything else — statements, `if`, loops, `return` inside loops,
-//! fall-through, any number of results, upvalue reads, and `goto`/labels — is
-//! handled.
+//! fall-through, any number of results, upvalue reads, immutable aliases, and
+//! `goto`/labels in bodies — is handled.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 
+use crate::cfg::{validate_block_identities, StatementOrigin, UnidentifiedBlock};
 use crate::nodes::{
-    AssignStatement, Block, DoStatement, Expression, FunctionAssignment, Identifier, LastStatement,
-    Prefix, RepeatStatement, Statement, TypedIdentifier, Variable, VariableAssignment,
+    Arguments, AssignStatement, Block, BlockIdentity, ChildVisitor, DoStatement, Expression,
+    Identifier, LastStatement, Prefix, ReadOnlyChildren, RepeatStatement, Statement,
+    TableExpression, TypedIdentifier, Variable, VariableAssignment,
 };
-use crate::process::{DefaultVisitor, NodeProcessor, NodeVisitor};
 use crate::rules::NameGenerator;
 use crate::semantic::{LabelId, ScopeId, SemanticModel, SymbolId, SymbolKind};
 
@@ -73,20 +82,62 @@ struct InlinableFunction {
     uniform: bool,
     /// The symbols the body reads from outside the function.
     upvalues: Vec<SymbolId>,
+    /// The `f = function ...` statement that binds the function, when the
+    /// declaration and the assignment are separate. Calls are inlined only
+    /// where this assignment provably runs first.
+    assignment: Option<StatementOrigin>,
+}
+
+/// An error produced while inlining local functions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InlineError {
+    /// A block has no structural identity, so statement positions cannot be
+    /// trusted.
+    Provenance(UnidentifiedBlock),
+}
+
+impl fmt::Display for InlineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Provenance(error) => write!(f, "cannot inline local functions: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for InlineError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Provenance(error) => Some(error),
+        }
+    }
+}
+
+impl From<UnidentifiedBlock> for InlineError {
+    fn from(error: UnidentifiedBlock) -> Self {
+        Self::Provenance(error)
+    }
 }
 
 /// Replaces calls to inlinable local functions by their body.
 ///
 /// Returns the number of calls inlined.
-pub fn inline_local_functions(block: &mut Block, model: &SemanticModel) -> usize {
-    let mut collector = FunctionCollector {
-        model,
-        functions: HashMap::new(),
-    };
-    DefaultVisitor::visit_block(block, &mut collector);
+///
+/// # Errors
+///
+/// Returns [`InlineError::Provenance`] when a block has no structural identity,
+/// which means the tree was not produced by the semantic model it is being
+/// analyzed with.
+pub fn inline_local_functions(
+    block: &mut Block,
+    model: &SemanticModel,
+) -> Result<usize, InlineError> {
+    validate_block_identities(block)?;
+
+    let mut collector = FunctionCollector::new(model);
+    collector.walk(block);
 
     if collector.functions.is_empty() {
-        return 0;
+        return Ok(0);
     }
 
     let mut names = NameGenerator::new(model);
@@ -94,13 +145,18 @@ pub fn inline_local_functions(block: &mut Block, model: &SemanticModel) -> usize
     let mut inliner = Inliner {
         model,
         functions: &collector.functions,
+        parents: &collector.parents,
+        declarations: &collector.declarations,
+        labelled: &collector.labelled,
+        block_functions: &collector.block_functions,
         names: &mut names,
         current_scope: None,
+        current_position: None,
         inlined: &mut inlined,
     };
     inliner.rewrite_block(block);
 
-    inlined
+    Ok(inlined)
 }
 
 // ----------------------------------------------------------------------
@@ -112,10 +168,22 @@ fn inlinable(
     symbol: SymbolId,
     body: &Block,
     parameters: &[&TypedIdentifier],
+    assignment: Option<StatementOrigin>,
 ) -> Option<InlinableFunction> {
     let info = model.symbol(symbol);
-    if info.kind != SymbolKind::Local || !model.is_immutable(symbol) {
+    if info.kind != SymbolKind::Local {
         return None;
+    }
+    match assignment {
+        // The declaration plus this one assignment is the whole history of the
+        // symbol. The call-site check proves the assignment has already run; a
+        // second write could have replaced the function before the call.
+        Some(_) if info.write_count == 2 => {}
+        Some(_) => return None,
+        // A declaration binds the function before the symbol is in scope, so
+        // every call already sees it.
+        None if model.is_immutable(symbol) => {}
+        None => return None,
     }
 
     let mut check = BodyCheck {
@@ -147,6 +215,7 @@ fn inlinable(
         arity,
         uniform,
         upvalues: check.upvalues,
+        assignment,
     })
 }
 
@@ -406,43 +475,194 @@ impl BodyCheck<'_> {
 // Collecting the functions
 // ----------------------------------------------------------------------
 
+/// Gathers the functions that can be inlined, the position of every function
+/// assignment, the enclosing statement of every block, and the function scopes
+/// that contain a `goto` or label.
 struct FunctionCollector<'m> {
     model: &'m SemanticModel,
     functions: HashMap<SymbolId, InlinableFunction>,
+    /// The statement that evaluates each local's initializer.
+    declarations: HashMap<SymbolId, StatementOrigin>,
+    /// The statement that contains each AST block.
+    parents: HashMap<BlockIdentity, (BlockIdentity, u32)>,
+    /// Function scopes whose bodies contain a `goto` or label.
+    labelled: HashSet<ScopeId>,
+    /// The function scope that owns each block.
+    block_functions: HashMap<BlockIdentity, ScopeId>,
 }
 
-impl FunctionCollector<'_> {
-    fn record(&mut self, identifier: &Identifier, body: &Block, parameters: &[&TypedIdentifier]) {
+impl<'m> FunctionCollector<'m> {
+    fn new(model: &'m SemanticModel) -> Self {
+        Self {
+            model,
+            functions: HashMap::new(),
+            declarations: HashMap::new(),
+            parents: HashMap::new(),
+            labelled: HashSet::new(),
+            block_functions: HashMap::new(),
+        }
+    }
+
+    fn walk(&mut self, block: &Block) {
+        let Some(identity) = block.get_identity() else {
+            return;
+        };
+        let function = self.function_scope(block);
+        if let Some(function) = function {
+            self.block_functions.insert(identity, function);
+        }
+        let count = block.statements_len();
+        for (index, statement) in block.iter_statements().enumerate() {
+            let origin = StatementOrigin {
+                block: identity,
+                index: index as u32,
+            };
+            self.record_statement(statement, origin);
+            if matches!(statement, Statement::Goto(_) | Statement::Label(_)) {
+                if let Some(function) = function {
+                    self.labelled.insert(function);
+                }
+            }
+            statement.for_each_child(&mut ChildWalker {
+                collector: self,
+                parent: origin,
+            });
+        }
+        if let Some(last) = block.get_last_statement() {
+            let origin = StatementOrigin {
+                block: identity,
+                index: count as u32,
+            };
+            last.for_each_child(&mut ChildWalker {
+                collector: self,
+                parent: origin,
+            });
+        }
+    }
+
+    fn record_statement(&mut self, statement: &Statement, origin: StatementOrigin) {
+        match statement {
+            Statement::LocalFunction(function) => {
+                let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
+                self.record(
+                    function.get_identifier(),
+                    function.get_block(),
+                    &parameters,
+                    None,
+                );
+            }
+            Statement::LocalAssign(assignment) => {
+                if assignment.variables_len() == 1 && assignment.values_len() == 1 {
+                    if let (Some(variable), Some(Expression::Function(function))) = (
+                        assignment.iter_variables().next(),
+                        assignment.iter_values().next(),
+                    ) {
+                        let parameters: Vec<&TypedIdentifier> =
+                            function.iter_parameters().collect();
+                        self.record(
+                            variable.get_identifier(),
+                            function.get_block(),
+                            &parameters,
+                            None,
+                        );
+                    }
+                }
+                for (variable, value) in assignment.iter_variables().zip(assignment.iter_values()) {
+                    if !matches!(value, Expression::Identifier(_)) {
+                        continue;
+                    }
+                    if let Some(symbol) = self.model.resolve_identifier(variable.get_identifier()) {
+                        self.declarations.entry(symbol).or_insert(origin);
+                    }
+                }
+            }
+            Statement::Assign(assignment) => {
+                if assignment.variables_len() != 1 || assignment.values_len() != 1 {
+                    return;
+                }
+                let Some(Variable::Identifier(identifier)) = assignment.iter_variables().next()
+                else {
+                    return;
+                };
+                let Some(Expression::Function(function)) = assignment.iter_values().next() else {
+                    return;
+                };
+                let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
+                self.record(identifier, function.get_block(), &parameters, Some(origin));
+            }
+            _ => {}
+        }
+    }
+
+    fn record(
+        &mut self,
+        identifier: &Identifier,
+        body: &Block,
+        parameters: &[&TypedIdentifier],
+        assignment: Option<StatementOrigin>,
+    ) {
         let Some(symbol) = self.model.resolve_identifier(identifier) else {
             return;
         };
-        if let Some(function) = inlinable(self.model, symbol, body, parameters) {
+        if let Some(function) = inlinable(self.model, symbol, body, parameters, assignment) {
             self.functions.insert(symbol, function);
+        }
+    }
+
+    fn walk_child(&mut self, child: &Block, parent: StatementOrigin) {
+        if let Some(identity) = child.get_identity() {
+            self.parents.insert(identity, (parent.block, parent.index));
+        }
+        self.walk(child);
+    }
+
+    fn function_scope(&self, block: &Block) -> Option<ScopeId> {
+        let scope = self.model.try_scope_of(block).ok()?;
+        self.function_boundary(scope)
+    }
+
+    fn function_boundary(&self, mut scope: ScopeId) -> Option<ScopeId> {
+        loop {
+            let current = self.model.scope(scope);
+            if current.kind.is_function_boundary() {
+                return Some(scope);
+            }
+            scope = current.parent?;
         }
     }
 }
 
-impl NodeProcessor for FunctionCollector<'_> {
-    fn process_local_function_statement(&mut self, statement: &mut FunctionAssignment) {
-        let parameters: Vec<&TypedIdentifier> = statement.iter_parameters().collect();
-        let (identifier, body) = (statement.get_identifier(), statement.get_block());
-        self.record(identifier, body, &parameters);
+/// Finds every block nested in a statement's expressions, recording the
+/// statement as its parent. Function expressions are the only expressions that
+/// own a block, but they can be nested in any expression position.
+struct ChildWalker<'a, 'm> {
+    collector: &'a mut FunctionCollector<'m>,
+    parent: StatementOrigin,
+}
+
+impl ChildVisitor for ChildWalker<'_, '_> {
+    fn block(&mut self, block: &Block) {
+        self.collector.walk_child(block, self.parent);
     }
 
-    fn process_local_assign_statement(&mut self, assignment: &mut VariableAssignment) {
-        if assignment.variables_len() != 1 || assignment.values_len() != 1 {
-            return;
-        }
-        let Some(Expression::Function(function)) = assignment.iter_values().next() else {
-            return;
-        };
-        let Some(variable) = assignment.iter_variables().next() else {
-            return;
-        };
-        let parameters: Vec<&TypedIdentifier> = function.iter_parameters().collect();
-        let identifier = variable.get_identifier();
-        let body = function.get_block();
-        self.record(identifier, body, &parameters);
+    fn expression(&mut self, expression: &Expression) {
+        expression.for_each_child(self);
+    }
+
+    fn prefix(&mut self, prefix: &Prefix) {
+        prefix.for_each_child(self);
+    }
+
+    fn variable(&mut self, variable: &Variable) {
+        variable.for_each_child(self);
+    }
+
+    fn table(&mut self, table: &TableExpression) {
+        table.for_each_child(self);
+    }
+
+    fn arguments(&mut self, arguments: &Arguments) {
+        arguments.for_each_child(self);
     }
 }
 
@@ -456,20 +676,38 @@ impl NodeProcessor for FunctionCollector<'_> {
 struct Inliner<'m, 'n, 'i> {
     model: &'m SemanticModel,
     functions: &'m HashMap<SymbolId, InlinableFunction>,
+    /// The statement that contains each nested block.
+    parents: &'m HashMap<BlockIdentity, (BlockIdentity, u32)>,
+    /// The statement that evaluates each local's initializer.
+    declarations: &'m HashMap<SymbolId, StatementOrigin>,
+    /// Function scopes whose bodies contain a `goto` or label.
+    labelled: &'m HashSet<ScopeId>,
+    /// The function scope that owns each block.
+    block_functions: &'m HashMap<BlockIdentity, ScopeId>,
     names: &'n mut NameGenerator,
     /// The scope of the block currently being rewritten.
     current_scope: Option<ScopeId>,
+    /// The statement being rewritten, or the position after the block's last
+    /// statement when rewriting its last statement.
+    current_position: Option<StatementOrigin>,
     inlined: &'i mut usize,
 }
 
 impl Inliner<'_, '_, '_> {
     fn rewrite_block(&mut self, block: &mut Block) {
-        let previous = self.current_scope;
+        let previous_scope = self.current_scope;
+        let previous_position = self.current_position;
         let scope = self.model.try_scope_of(block).ok();
         self.current_scope = scope;
+        let identity = block.get_identity();
         let statements = block.take_statements();
-        let mut rewritten = Vec::with_capacity(statements.len());
-        for mut statement in statements {
+        let count = statements.len();
+        let mut rewritten = Vec::with_capacity(count);
+        for (index, mut statement) in statements.into_iter().enumerate() {
+            self.current_position = identity.map(|block| StatementOrigin {
+                block,
+                index: index as u32,
+            });
             let mut preambles = Vec::new();
             self.rewrite_statement(&mut statement, &mut preambles);
             rewritten.append(&mut preambles);
@@ -478,6 +716,10 @@ impl Inliner<'_, '_, '_> {
         block.set_statements(rewritten);
 
         if let Some(mut last) = block.take_last_statement() {
+            self.current_position = identity.map(|block| StatementOrigin {
+                block,
+                index: count as u32,
+            });
             let mut preambles = Vec::new();
             self.rewrite_last_statement(&mut last, &mut preambles);
             if !preambles.is_empty() {
@@ -487,7 +729,8 @@ impl Inliner<'_, '_, '_> {
             }
             block.set_last_statement(last);
         }
-        self.current_scope = previous;
+        self.current_scope = previous_scope;
+        self.current_position = previous_position;
     }
 
     fn rewrite_statement(&mut self, statement: &mut Statement, preambles: &mut Vec<Statement>) {
@@ -818,11 +1061,25 @@ impl Inliner<'_, '_, '_> {
         if call.get_method().is_some() {
             return None;
         }
-        let symbol = self.model.resolve_identifier(callee(call.get_prefix())?)?;
-        let symbol = self.resolve_function(symbol)?;
+        let callee = self.model.resolve_identifier(callee(call.get_prefix())?)?;
+        let (symbol, hops) = self.resolve_function(callee)?;
         let function = self.functions.get(&symbol)?;
         if tail && !function.uniform {
             return None;
+        }
+
+        if let Some(assignment) = function.assignment {
+            let position = self.current_position?;
+            if !self.assignment_reaches(assignment, position) {
+                return None;
+            }
+            // An alias captures the function where the alias is declared, so
+            // the assignment must run before every hop on the chain as well.
+            for hop in hops {
+                if !self.assignment_reaches(assignment, hop) {
+                    return None;
+                }
+            }
         }
 
         let scope = self.current_scope?;
@@ -890,10 +1147,15 @@ impl Inliner<'_, '_, '_> {
 
     /// Resolves a call target through immutable local aliases to a recorded
     /// function.
-    fn resolve_function(&self, mut symbol: SymbolId) -> Option<SymbolId> {
+    ///
+    /// Returns the function's symbol and the declaration positions of the
+    /// aliases on the way, so an assignment-bound function can prove it was
+    /// the value each alias captured.
+    fn resolve_function(&self, mut symbol: SymbolId) -> Option<(SymbolId, Vec<StatementOrigin>)> {
+        let mut hops = Vec::new();
         for _ in 0..self.model.symbols.len() {
             if self.functions.contains_key(&symbol) {
-                return Some(symbol);
+                return Some((symbol, hops));
             }
             if !self.model.is_immutable(symbol) {
                 return None;
@@ -902,9 +1164,47 @@ impl Inliner<'_, '_, '_> {
             if next == symbol {
                 return None;
             }
+            hops.push(*self.declarations.get(&symbol)?);
             symbol = next;
         }
         None
+    }
+
+    /// Returns whether the assignment at `origin` runs before `position` on
+    /// every path, reasoning only about structured control flow.
+    ///
+    /// Walks outwards from the position's block. When the assignment's block is
+    /// reached, the statement that leads toward the position must follow the
+    /// assignment. A call inside a nested function is accepted when the
+    /// assignment precedes the function's definition, because the body cannot
+    /// run before the definition completes.
+    fn assignment_reaches(&self, assignment: StatementOrigin, position: StatementOrigin) -> bool {
+        let Some(function) = self.block_functions.get(&position.block) else {
+            return false;
+        };
+        if self.labelled.contains(function) {
+            return false;
+        }
+        let mut block = position.block;
+        let mut index = position.index;
+        let mut remaining = self.parents.len() + 1;
+        loop {
+            if block == assignment.block {
+                return assignment.index < index;
+            }
+            let Some(&(parent, parent_index)) = self.parents.get(&block) else {
+                return false;
+            };
+            if parent == block {
+                return false;
+            }
+            block = parent;
+            index = parent_index;
+            remaining -= 1;
+            if remaining == 0 {
+                return false;
+            }
+        }
     }
 
     fn upvalue_is_reachable(&self, symbol: SymbolId, scope: ScopeId) -> bool {
@@ -1157,7 +1457,7 @@ mod test {
 
     fn inlined_output(code: &str) -> String {
         let (mut block, model) = analyze(code);
-        inline_local_functions(&mut block, &model);
+        inline_local_functions(&mut block, &model).expect("the analyzed tree has block identities");
         generate(&block)
     }
 
@@ -1304,6 +1604,91 @@ mod test {
     }
 
     #[test]
+    fn inlines_a_function_bound_by_an_assignment() {
+        let output = inlined_output("local f\nf = function(x)\n    return x + 1\nend\nreturn f(1)");
+        assert!(!output.contains("f(1)"), "{output}");
+        assert!(output.contains("return x + 1"), "{output}");
+    }
+
+    #[test]
+    fn inlines_an_assignment_bound_call_in_a_nested_block() {
+        let output = inlined_output(
+            "local f\nf = function()\n    return 1\nend\nif true then\n    return f()\nend",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_an_assignment_bound_call_after_an_unconditional_block() {
+        let output = inlined_output(
+            "local f\ndo\n    f = function()\n        return 1\n    end\n    return f()\nend",
+        );
+        assert!(!output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_an_assignment_bound_function_through_an_alias_declared_after_it() {
+        let output =
+            inlined_output("local f\nf = function(x)\n    return x\nend\nlocal g = f\nreturn g(1)");
+        assert!(!output.contains("g(1)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_an_alias_declared_before_the_assignment() {
+        let output =
+            inlined_output("local f\nlocal g = f\nf = function()\n    return 1\nend\nreturn g()");
+        assert!(output.contains("g()"), "{output}");
+    }
+
+    #[test]
+    fn inlines_inside_a_function_expression_defined_after_the_assignment() {
+        let output = inlined_output(
+            "local f\nf = function(x)\n    return x\nend\nlocal g = function()\n    return f(1)\nend\nreturn g()",
+        );
+        assert!(!output.contains("f(1)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_inside_a_function_expression_defined_before_the_assignment() {
+        let output = inlined_output(
+            "local f\nlocal g = function()\n    return f(1)\nend\nf = function(x)\n    return x\nend\nreturn g()",
+        );
+        assert!(output.contains("f(1)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_that_depends_on_another_function_running_the_assignment() {
+        let output = inlined_output(
+            "local f\nlocal function set()\n    f = function()\n        return 1\n    end\nend\nset()\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_before_the_assignment() {
+        let output = inlined_output(
+            "local f\nlocal value = f\nf = function()\n    return 1\nend\nreturn value",
+        );
+        assert!(output.contains("local value = f"), "{output}");
+    }
+
+    #[test]
+    fn keeps_a_call_under_a_conditional_assignment() {
+        let output = inlined_output(
+            "local f\nif true then\n    f = function()\n        return 1\n    end\nend\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
+    fn keeps_an_assignment_bound_call_after_a_goto() {
+        let output = inlined_output(
+            "local f\nf = function()\n    return 1\nend\ngoto done\n::done::\nreturn f()",
+        );
+        assert!(output.contains("f()"), "{output}");
+    }
+
+    #[test]
     fn the_inlined_output_reparses() {
         for code in [
             "local function add(a, b)\n    local sum = a + b\n    return sum\nend\nreturn add(1, 2)",
@@ -1321,6 +1706,11 @@ mod test {
             "local function first()\n    return pick()\nend\nlocal x = first()\nreturn x",
             "local function f(a)\n    return a\nend\nreturn (f)(1)",
             "local function add(a, b)\n    return a + b\nend\nlocal sum = add\nreturn sum(1, 2)",
+            "local f\nf = function(x)\n    return x + 1\nend\nreturn f(1)",
+            "local f\nf = function(x)\n    return x\nend\nlocal g = f\nreturn g(1)",
+            "local f\nlocal g = f\nf = function()\n    return 1\nend\nreturn g()",
+            "local f\nf = function(x)\n    return x\nend\nlocal g = function()\n    return f(1)\nend\nreturn g()",
+            "local f\nlocal g = function()\n    return f(1)\nend\nf = function(x)\n    return x\nend\nreturn g()",
         ] {
             let output = inlined_output(code);
             parse(&output);

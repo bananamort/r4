@@ -138,7 +138,8 @@ fn optimize(program: &str) -> String {
     canonicalize(&mut block, &model);
 
     let model = analyze(&block);
-    canonicalize::inline_local_functions(&mut block, &model);
+    canonicalize::inline_local_functions(&mut block, &model)
+        .expect("inlining local functions must succeed");
 
     let model = analyze(&block);
     canonicalize::propagate_constants(&mut block, &model)
@@ -824,6 +825,74 @@ local function bump()
 end
 print(twice(bump()), calls)
 return calls
+"#,
+    ),
+    (
+        "function bound by a separate assignment is inlined",
+        r#"
+local add
+add = function(a, b)
+    return a + b
+end
+print(add(1, 2))
+return add(3, 4)
+"#,
+    ),
+    (
+        "assignment-bound helper with a loop is inlined",
+        r#"
+local total
+total = function(limit)
+    local sum = 0
+    for i = 1, limit do
+        sum = sum + i
+    end
+    return sum
+end
+print(total(3))
+return total(4)
+"#,
+    ),
+    (
+        "assignment-bound helper is read before its assignment",
+        r#"
+local f
+local missing = f == nil
+f = function()
+    return 7
+end
+print(missing, f())
+return missing and f() or 0
+"#,
+    ),
+    (
+        "assignment-bound helper called under a conditional",
+        r#"
+local f
+f = function(value)
+    if value > 0 then
+        return value
+    end
+    return -value
+end
+local result = 0
+if f(-2) > 0 then
+    result = f(3)
+end
+print(result)
+return result
+"#,
+    ),
+    (
+        "assignment-bound helper alias declared after the assignment",
+        r#"
+local f
+f = function(x)
+    return x * 2
+end
+local g = f
+print(g(2))
+return g(3)
 "#,
     ),
 ];

@@ -1,6 +1,6 @@
 # Inlining functions bound by a separate assignment
 
-## Target shape
+## Shape
 
 ```lua
 local f
@@ -8,49 +8,53 @@ f = function(...) ... end
 -- calls to f
 ```
 
-This is the last implementable refusal in `src/rules/canonicalize/inline_local_functions.rs`.
-After it, the only refusals left must be hard language limits:
+`inline_local_functions` inlines calls to a local function that is declared first
+and assigned later, alongside the declaration-bound forms (`local function f` and
+`local f = function`).
 
-- the callee body reads `...`;
-- a variable or multi-valued return sits in a value-consuming position;
-- an upvalue used by the callee is shadowed at the call site.
+## The proof: syntactic dominance
 
-## Decision: syntactic dominance
+A function assignment is recorded with its `StatementOrigin`. A call is inlined
+only when the assignment provably runs first:
 
-A CFG is not required. Structured control flow makes lexical dominance sufficient:
-the assignment's block must be an ancestor of the call's block, and the statement
-that leads from that block toward the call must come *after* the assignment.
+- the assignment's block must contain the call, or contain the statement chain
+  that leads to it;
+- along that chain, the statement leading toward the call must come after the
+  assignment;
+- a call inside a nested function is accepted when the assignment precedes the
+  function's definition, because the body cannot run before the definition
+  completes.
 
-The proof is refused when a `goto` or label exists, because a backward jump can
-reach a call without passing the assignment (the name would be `nil` there and
-the call would raise instead of running the body).
+This accepts `local f; f = function() ... end; return f()` and rejects a
+conditional assignment (`if c then f = ... end; return f()`) or a call that
+occurs before the assignment.
 
-## Implementation steps
+A symbol bound this way is accepted only with exactly two writes: its
+declaration and the one function assignment. A second write could replace the
+function before the call, so it disables the inline.
 
-1. `inlinable` accepts `write_count == 2` when the single non-declaration write is
-   the `f = function(...)` assignment, provided the symbol is a `Local` and is not
-   captured.
-2. Replace the visitor-based `FunctionCollector` with a block walker that carries
-   `(BlockIdentity, statement index)` and records the assignment's
-   `StatementOrigin` next to the body. It recurses into nested blocks exactly like
-   `rewrite_block`.
-3. `Inliner` keeps `frames: Vec<(BlockIdentity, u32)>`. Each `rewrite_block` pushes
-   its block, sets the frame index to the statement being rewritten (and to
-   `statements.len()` for the block's last statement), and truncates on exit.
-4. `try_inline` refuses an assignment-bound callee unless `assignment_dominates`:
-   the assignment's block is on the current frame path and
-   `assignment.index < frame_index`. This accepts
-   `local f; f = function() ... end; return f()` and rejects a conditional
-   assignment (`if c then f = ... end; return f()`) or a call before the assignment.
-5. `goto`/label anywhere disables the assignment-bound proof.
-6. `inline_local_functions` returns `Result<usize, InlineError>` with a provenance
-   error, checked before collection, matching the other CFG-backed passes.
-   Update `.expect(...)` at the execution oracle and in the unit-test helper.
-7. Tests: inlined when dominated; refused when the assignment is conditional, when
-   the call precedes the assignment, and when `f` is captured; plus reparse
-   coverage and an execution-oracle program.
+Immutable aliases (`local g = f`) are followed only when the assignment dominates
+the alias's declaration as well, because the alias captures the value where it is
+declared.
 
-## Current baseline
+## Goto and labels
 
-`HEAD == origin/main == 3237c27`, 1803 lib tests, 2534 non-oracle tests,
-19 inliner tests, clippy/fmt clean, CI run 45910261854 green on all five jobs.
+A `goto` or label in the function that owns the call defeats the proof, because a
+backward jump can reach a call before the assignment (the name would be `nil`
+there and the call would raise instead of running the body). Function bodies
+nested in expressions are walked too, so their own gotos are accounted for.
+
+## Remaining refusals
+
+After this shape, the inliner refuses only:
+
+- a body that reads `...` (no expression denotes a foreign vararg list);
+- a variable or multi-valued return in a value-consuming position;
+- an upvalue that is shadowed at the call site;
+- mutable aliases (only immutable aliases are resolved).
+
+## Baseline
+
+The pass returns `Result<usize, InlineError>`, validating block provenance before
+collection. Coverage lives in the colocated unit tests, the reparse test, and the
+execution-oracle programs (`OPTIMIZED_PROGRAMS`).
