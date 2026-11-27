@@ -346,9 +346,10 @@ impl LuaGenerator for DenseLuaGenerator {
             self.write_statement(statement);
 
             if let Some(next_statement) = statements.peek() {
-                if utils::starts_with_parenthese(next_statement)
-                    && utils::ends_with_prefix(statement)
-                {
+                if utils::starts_with_parenthese(next_statement) {
+                    // A following parenthesized expression would otherwise be
+                    // parsed as the arguments of the previous statement's last
+                    // callable expression (Lua ignores the line break).
                     self.push_char(';');
                 }
             }

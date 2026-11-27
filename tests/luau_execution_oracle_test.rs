@@ -1691,6 +1691,57 @@ return i
 "##,
     ),
     (
+        "an if condition sees a redefinition earlier in the same block",
+        r#"
+local f = function()
+    return 1
+end
+if true then
+end
+f = function()
+    return 2
+end
+if f() == 2 then
+    print("two")
+else
+    print("one")
+end
+return 0
+"#,
+    ),
+    (
+        "a bare local method receiver follows each dialect's evaluation",
+        r#"
+local first = { m = function(self, value) return "first:" .. tostring(value) end }
+local second = { m = function(self, value) return "second:" .. tostring(value) end }
+local obj = first
+local function swap()
+    obj = second
+    return 0
+end
+print(obj:m(swap()))
+obj = first
+print((obj):m(swap()))
+print(obj == second)
+return 0
+"#,
+    ),
+    (
+        "a type-asserted local method receiver stays live in luau",
+        r#"
+local first = { m = function(self, value) return "first:" .. tostring(value) end }
+local second = { m = function(self, value) return "second:" .. tostring(value) end }
+local obj = first
+local function swap()
+    obj = second
+    return 0
+end
+print((obj :: any):m(swap()))
+print(obj == second)
+return 0
+"#,
+    ),
+    (
         "an elseif condition is not hoisted",
         r#"
 local calls = 0
@@ -1802,6 +1853,40 @@ while keep(n) do
     end
     print(n)
     ::continue::
+end
+print(n)
+return n
+"#,
+    ),
+    (
+        "a targeted trailing repeat label keeps the condition",
+        r#"
+local function done()
+    return true
+end
+repeat
+    local marker = 1
+    goto continue
+    ::continue::
+until done()
+print(0)
+return 0
+"#,
+    ),
+    (
+        "a while condition survives a body goto label",
+        r#"
+local function check(n)
+    return n < 2
+end
+local n = 0
+while check(n) do
+    ::again::
+    n = n + 1
+    if n < 2 then
+        goto again
+    end
+    break
 end
 print(n)
 return n
