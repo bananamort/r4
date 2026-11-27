@@ -26,7 +26,7 @@ pub use convert_square_root_call::convert_square_root_call;
 pub use empty_do::remove_empty_do;
 pub use group_local::group_local;
 pub use hoist_loop_invariants::{hoist_loop_invariants, HoistLoopInvariantsError};
-pub use inline_local_functions::{inline_local_functions, InlineError};
+pub use inline_local_functions::{inline_local_functions, InlineError, ReachingError};
 pub use propagate_constants::{propagate_constants, PropagateConstantsError};
 pub use remove_assertions::remove_assertions;
 pub use remove_call_match::{identifier_resolves_to_global, remove_call_matches, CallMatcher};

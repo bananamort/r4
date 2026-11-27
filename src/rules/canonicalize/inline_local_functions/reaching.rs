@@ -193,9 +193,13 @@ impl FunctionRegion {
         let mut condition_definitions = HashMap::new();
         for block in &cfg.blocks {
             if let Some(origin) = block.branch_origin {
+                // An `if` first condition is attached to the block that already
+                // contains the statements before it, so use the definitions
+                // after those statements. While/repeat headers have no
+                // statements, where this is the same as the entry set.
                 condition_definitions
                     .entry(origin)
-                    .or_insert_with(|| ids_from_bits(&entry[block.id.index()]));
+                    .or_insert_with(|| terminator_definitions[block.id.index()].clone());
             }
         }
 
