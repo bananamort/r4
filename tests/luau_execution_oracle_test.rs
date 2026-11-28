@@ -1892,6 +1892,37 @@ print(n)
 return n
 "#,
     ),
+    (
+        "a spilled while condition is re-evaluated around a body goto",
+        r#"
+local function check(value)
+    print("check", value)
+    return value < 4
+end
+local function first()
+    print("first")
+    return 1
+end
+local function second()
+    print("second")
+    return 1
+end
+local function add(a, b)
+    return a + b
+end
+local n = 0
+while check(add(first(), second()) + n) do
+    n = n + 1
+    print("body", n)
+    if n < 4 then
+        goto continue
+    end
+    ::continue::
+end
+print("done", n)
+return n
+"#,
+    ),
 ];
 
 #[test]

@@ -4537,6 +4537,89 @@ mod test {
     }
 
     #[test]
+    fn a_goto_before_a_while_cannot_enter_its_body() {
+        let code = "local function check()\n    return true\nend\ngoto inside\nwhile check() do\n    ::inside::\n    print(\"body\")\n    break\nend\nreturn 0";
+        for dialect in [
+            crate::Dialect::Lua52,
+            crate::Dialect::Lua53,
+            crate::Dialect::Lua54,
+            crate::Dialect::LuaJit,
+        ] {
+            let error = match crate::Parser::default()
+                .dialect(dialect)
+                .parse_analyzed(code)
+            {
+                Ok(_) => panic!("{dialect:?} accepted a goto into a while body"),
+                Err(error) => error,
+            };
+            let crate::AnalyzedParseError::Semantic(error) = error else {
+                panic!("{dialect:?} reported a parse error instead of a semantic error: {error:?}");
+            };
+            assert!(
+                matches!(
+                    &error.kind,
+                    crate::semantic::SemanticErrorKind::UndefinedLabel { name }
+                        if name == "inside"
+                ),
+                "{dialect:?} reported the wrong semantic error: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inlines_a_spilled_while_condition_around_a_body_goto() {
+        let code = "local function check(value)\n    return value < 4\nend\nlocal function first()\n    return 1\nend\nlocal function second()\n    return 1\nend\nlocal function add(a, b)\n    return a + b\nend\nlocal n = 0\nwhile check(add(first(), second()) + n) do\n    n = n + 1\n    if n < 4 then\n        goto continue\n    end\n    ::continue::\nend\nreturn n";
+        for dialect in [
+            crate::Dialect::Lua52,
+            crate::Dialect::Lua53,
+            crate::Dialect::Lua54,
+            crate::Dialect::LuaJit,
+        ] {
+            let (mut block, model) = crate::Parser::default()
+                .dialect(dialect)
+                .parse_analyzed(code)
+                .unwrap_or_else(|error| panic!("{dialect:?} failed to analyze: {error}"));
+            inline_local_functions(&mut block, &model).expect("the inliner succeeds");
+            let first = block
+                .first_statement()
+                .expect("the chunk has hoisted condition temporaries");
+            let Statement::LocalAssign(hoisted) = first else {
+                panic!("{dialect:?}: the hoisted declaration is missing: {first:?}");
+            };
+            assert!(
+                hoisted.variables_len() >= 2,
+                "{dialect:?}: expected the spilled argument and condition result to be hoisted"
+            );
+            let while_statement = block
+                .iter_statements()
+                .find_map(|statement| match statement {
+                    Statement::While(statement) => Some(statement),
+                    _ => None,
+                })
+                .expect("the while survives");
+            assert!(
+                !matches!(
+                    while_statement.get_block().first_statement(),
+                    Some(Statement::LocalAssign(_))
+                ),
+                "{dialect:?}: condition temporaries must not be declared at the body start"
+            );
+            let output = generate(&block);
+            assert!(!output.contains("while check("), "{dialect:?}\n{output}");
+            assert!(
+                !output.contains("add(first(), second())"),
+                "{dialect:?}\n{output}"
+            );
+            crate::Parser::default()
+                .dialect(dialect)
+                .parse_analyzed(&output)
+                .unwrap_or_else(|error| {
+                    panic!("{dialect:?} failed to re-analyze:\n{error}\n{output}")
+                });
+        }
+    }
+
+    #[test]
     fn a_non_targeted_trailing_repeat_label_still_allows_inlining() {
         let code = "local function check()\n    return true\nend\nrepeat\n    local marker = 1\n    ::finish::\nuntil check()\nreturn 0";
         let output = inlined_dialect(code, crate::Dialect::Lua52);
