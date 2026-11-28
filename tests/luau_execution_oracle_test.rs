@@ -1892,6 +1892,32 @@ print(n)
 return n
 "#,
     ),
+    (
+        "a spilled while condition is re-evaluated around a body goto",
+        r#"
+local x = 1
+local n = 0
+local function reassign()
+    print("reassign")
+    x = 2
+    return 0
+end
+local function add(a, b)
+    print("add", a, b)
+    return a + b
+end
+while add(x, reassign()) == 1 do
+    n = n + 1
+    print("body", n)
+    if n < 2 then
+        goto continue
+    end
+    ::continue::
+end
+print("done", n, x)
+return n, x
+"#,
+    ),
 ];
 
 #[test]
