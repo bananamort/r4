@@ -1895,32 +1895,27 @@ return n
     (
         "a spilled while condition is re-evaluated around a body goto",
         r#"
-local function check(value)
-    print("check", value)
-    return value < 4
-end
-local function first()
-    print("first")
-    return 1
-end
-local function second()
-    print("second")
-    return 1
+local x = 1
+local n = 0
+local function reassign()
+    print("reassign")
+    x = 2
+    return 0
 end
 local function add(a, b)
+    print("add", a, b)
     return a + b
 end
-local n = 0
-while check(add(first(), second()) + n) do
+while add(x, reassign()) == 1 do
     n = n + 1
     print("body", n)
-    if n < 4 then
+    if n < 2 then
         goto continue
     end
     ::continue::
 end
-print("done", n)
-return n
+print("done", n, x)
+return n, x
 "#,
     ),
 ];
